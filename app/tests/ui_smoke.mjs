@@ -330,6 +330,11 @@ async function main() {
     for (const [tab, marker] of tabs) {
       await page.goto(`${BASE}/#/p/ddp/${tab}`, { waitUntil: "domcontentloaded" });
       await waitText(page, marker);
+      // 深链必须真的渲染出内容：只断言 marker 会漏掉「路由中断但无报错」（曾真实发生）
+      const viewLen = await page.locator("#view").innerText().then((t) => t.trim().length).catch(() => 0);
+      check(viewLen > 40, `深链 ${tab} 渲染出内容`, `${viewLen} 字符`);
+      const sbCount = await page.locator(".sb-proj").count();
+      check(sbCount >= 1, `深链 ${tab} 侧栏已渲染`, `${sbCount} 个项目`);
       await settle(page, 200);
       const hash = new URL(page.url()).hash;
       const found = await page.getByText(marker, { exact: false }).first().count();

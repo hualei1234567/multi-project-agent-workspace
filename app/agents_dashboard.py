@@ -54,6 +54,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
+    from agent_platform import auth as auth_service
     from agent_platform import config as platform_config
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
@@ -65,6 +66,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import store as platform_store
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
+    from app.agent_platform import auth as auth_service
     from app.agent_platform import config as platform_config
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
@@ -1331,6 +1333,29 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args) -> None:
         return
 
+    def _authorized(self, path: str, query: dict[str, list[str]]) -> bool:
+        """所有请求先过鉴权；不通过时直接写响应并返回 False。"""
+        ok, reason = auth_service.check_request(
+            path=path,
+            client_address=self.client_address[0] if self.client_address else None,
+            headers=self.headers,
+            query_params=query,
+        )
+        if ok:
+            return True
+        self.send_response(401 if reason in {"missing_token", "invalid_token"} else 403)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        body = json.dumps({
+            "ok": False, "error": reason,
+            "message": "需要访问令牌" if reason.endswith("token") else "该接口仅限本机访问",
+            "detail": {"code": reason, "message": reason},
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -1427,6 +1452,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if not self._authorized(path, query):
+            return
         try:
             if path == "/api/open":
                 project = self._project_from_query(query)
@@ -1568,6 +1595,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if not self._authorized(path, parse_qs(parsed.query)):
+            return
         try:
             segments = self._segments(path)
             if len(segments) == 3 and segments[:2] == ["api", "projects"]:
@@ -1587,14 +1616,20 @@ class Handler(BaseHTTPRequestHandler):
             self._error(exc)
 
     def do_PUT(self) -> None:
-        segments = self._segments(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
+        segments = self._segments(parsed.path)
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], True)
             return
         self._not_found_route()
 
     def do_DELETE(self) -> None:
-        segments = self._segments(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
+        segments = self._segments(parsed.path)
         # DELETE /api/shared-resources/{id}/claims/{claim_id}
         if (len(segments) == 5 and segments[:2] == ["api", "shared-resources"]
                 and segments[3] == "claims"):
@@ -1614,6 +1649,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
         path = parsed.path
         query = parse_qs(parsed.query)
         if path.startswith("/api/agent/"):
