@@ -1,0 +1,1773 @@
+#!/usr/bin/env python3
+"""DDP AI 团队看板（本地只读）。
+
+把「谁在干活、干到哪了、产出在哪」变成一块屏：
+
+- **角色花名册**：1 Owner + 6 角色，状态优先读 `ai-team/status/*.json` 自报，
+  读不到才回退到 transcript 启发式（运行中 / 已完成 / 疑似停滞）；
+- **Kanban**：任务板五列（待办 / 进行中 / 评审测试 / 已完成 / 阻塞）；
+- **Worktree**：每个角色独占的 checkout、分支、HEAD、未提交改动、最近提交；
+- **执行过程**：每个 subagent 最近 5 次工具调用（借鉴 AutoGen Studio 的消息流）；
+- **成本**：优先调 `ccusage --json`（若已安装），否则本地按 token 统计（不算钱，
+  避免用过时价目表编造金额）；
+- **证据链**：任务 → 提交 SHA → 交付报告。
+
+数据全部来自本机磁盘，不联网（`ccusage` 仅在本地已安装时调用）、不写仓库：
+
+| 数据源 | 位置 |
+|---|---|
+| 自报状态 | `ai-team/status/<role>.json`（`scripts/agent_status.py` 写入） |
+| 子代理登记 | `~/.claude/projects/<slug>/<session>/subagents/*.meta.json` |
+| 子代理过程 | 同目录 `*.jsonl` |
+| 会话标题 | `<session>/custom-title.json` |
+| 工作树 | `git worktree list` + `status` + `log` |
+| 任务板 | `ai-team/TASK_BOARD.md` |
+| 交付物 | `ai-team/reports/`、`docs/reports/` |
+
+用法::
+
+    python3 scripts/agents_dashboard.py            # http://127.0.0.1:8099
+    python3 scripts/agents_dashboard.py --open
+    python3 scripts/agents_dashboard.py --once      # 只打印一份 JSON 快照
+
+只监听 127.0.0.1。
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import html as html_lib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import webbrowser
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
+    from agent_platform import config as platform_config
+    from agent_platform import openapi as openapi_service
+    from agent_platform import service as platform_service
+    from agent_platform import store as platform_store
+    from agent_platform.state_cache import StateCache
+except ImportError:  # pragma: no cover
+    from app.agent_platform import config as platform_config
+    from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import service as platform_service
+    from app.agent_platform import store as platform_store
+    from app.agent_platform.state_cache import StateCache
+
+#: 默认项目仓库根（平台已脱离单一仓库，由 config/projects.json 决定）
+REPO = platform_config.default_repo_root()
+PROJECTS_ROOT = Path(
+    os.environ.get("DDP_AGENT_PLATFORM_PROJECTS_ROOT") or (Path.home() / ".claude" / "projects")
+).expanduser()
+STATUS_DIR = REPO / "ai-team" / "status"
+
+
+def _repo() -> Path:
+    """当前默认项目仓库根（可被 scan_* 的 repo 参数覆盖）。"""
+    return REPO
+
+
+def _slug_for(repo: Path) -> str:
+    return repo.resolve().as_posix().replace("/", "-")
+
+
+def _slug_prefixes() -> tuple[str, ...]:
+    """会话 slug：config 里所有项目仓库 + 历史迁移前的旧 slug。"""
+    roots = []
+    # 配置异常不阻断看板：坏配置等于只是少了几个 slug 前缀
+    with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+        for item in platform_config.load_projects_config().get("projects", []):
+            raw = item.get("repo_root")
+            if raw:
+                roots.append(_slug_for(Path(raw).expanduser()))
+    roots.extend([_slug_for(REPO), "-Users-hualei-deepseek"])
+    return tuple(dict.fromkeys(roots))
+
+
+SLUG_PREFIXES = _slug_prefixes()
+
+
+def _slug_matches(name: str, slugs: tuple[str, ...]) -> bool:
+    """会话目录名是否属于该项目。
+
+    配置里的 slug 是**精确名单**（含迁移前的旧 slug），不再用前缀匹配：
+    同目录下 ``...-repo`` 会前缀命中 ``...-repo-b``，跨项目串台正是这么来的。
+    """
+    return name in slugs
+
+
+def _configured_slugs_for(repo: Path) -> tuple[str, ...]:
+    """配置里该项目登记的 session slug（含迁移前旧 slug）；未登记时只认仓库自身 slug。
+
+    每个项目只能看到自己的会话目录，跨项目串台会让看板的 Owner / Agent 卡片
+    显示成别的项目的数据。
+    """
+    target = _slug_for(repo)
+    # 配置异常不阻断看板：坏配置退回「只认自身 slug」这一最保守的范围
+    with contextlib.suppress(OSError, ValueError, KeyError, TypeError, AttributeError):
+        for item in platform_config.load_projects_config().get("projects", []):
+            raw = item.get("repo_root")
+            if not raw or _slug_for(Path(raw).expanduser()) != target:
+                continue
+            slugs = [str(s) for s in (item.get("session_slugs") or []) if s]
+            return tuple(dict.fromkeys([target, *slugs]))
+    return (target,)
+
+
+def _prefixes_for(repo: Path | None = None) -> tuple[str, ...]:
+    """只属于某个项目的 slug 前缀：仓库自身 slug + 配置登记的历史旧 slug。"""
+    if repo is None:
+        return SLUG_PREFIXES
+    return _configured_slugs_for(repo)
+
+ROLE_BY_DIR = {
+    "DenseAIDataPlatform": ("General Owner", "主会话 / 主仓库"),
+    "ddp-fe": ("Frontend Engineer", "独立 worktree"),
+    "ddp-be": ("Backend Engineer", "独立 worktree"),
+    "ddp-qa-review": ("QA & DevOps", "独立 worktree / 只读审查"),
+}
+
+ROLE_BY_KEYWORD = (
+    ("PM", "Product Manager"),
+    ("产品", "Product Manager"),
+    ("架构", "System Architect"),
+    ("architect", "System Architect"),
+    ("UX", "UX Designer"),
+    ("UI", "UX Designer"),
+    ("QA", "QA & DevOps"),
+    ("复审", "QA & DevOps"),
+    ("测试", "QA & DevOps"),
+    ("前端", "Frontend Engineer"),
+    ("frontend", "Frontend Engineer"),
+    ("后端", "Backend Engineer"),
+    ("backend", "Backend Engineer"),
+)
+
+ROLE_SLUG = {
+    "general owner": "general-owner",
+    "product manager": "product-manager",
+    "system architect": "system-architect",
+    "ux designer": "ux-designer",
+    "frontend engineer": "frontend-engineer",
+    "backend engineer": "backend-engineer",
+    "qa & devops": "qa-devops",
+}
+
+DISPLAY_BY_SLUG = {
+    "general-owner": "General Owner",
+    "product-manager": "Product Manager",
+    "system-architect": "System Architect",
+    "ux-designer": "UX Designer",
+    "frontend-engineer": "Frontend Engineer",
+    "backend-engineer": "Backend Engineer",
+    "qa-devops": "QA & DevOps",
+}
+
+STALE_SECONDS = 300
+RECENT_TOOL_LIMIT = 5
+USAGE_CACHE_SECONDS = 120
+_usage_cache: dict[str, dict[str, Any]] = {}
+
+
+# ---------------------------------------------------------------------------
+# 基础工具
+# ---------------------------------------------------------------------------
+def _iso(ts: float | None) -> str | None:
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat(  # noqa: UP017
+        timespec="seconds"
+    )
+
+
+def _git(*args: str, cwd: Path | None = None) -> str:
+    try:
+        out = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd or _repo()),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return out.stdout if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _parse_iso(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _slug(role: str) -> str:
+    return ROLE_SLUG.get(role.strip().lower(), re.sub(r"[^a-z0-9]+", "-", role.strip().lower()).strip("-"))
+
+
+# ---------------------------------------------------------------------------
+# 自报状态（STATUS.json 协议）
+# ---------------------------------------------------------------------------
+def scan_status_files(repo: Path | None = None) -> dict[str, dict[str, Any]]:
+    """读 `ai-team/status/*.json`：角色 slug → 自报状态。"""
+    out: dict[str, dict[str, Any]] = {}
+    root = repo or _repo()
+    status_dir = root / "ai-team" / "status"
+    if not status_dir.is_dir():
+        return out
+    for path in status_dir.glob("*.json"):
+        data = _read_json(path)
+        if not data.get("role"):
+            continue
+        data["_file"] = str(path.relative_to(root))
+        out[_slug(str(data["role"]))] = data
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 子代理 / 会话
+# ---------------------------------------------------------------------------
+def _role_of(description: str, agent_type: str) -> str:
+    text = f"{description} {agent_type}"
+    for keyword, role in ROLE_BY_KEYWORD:
+        if keyword.lower() in text.lower():
+            return role
+    return "Subagent"
+
+
+def _tool_detail(payload: dict[str, Any]) -> str:
+    for key in ("description", "command", "file_path", "pattern", "query", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\n", " ")[:160]
+    return ""
+
+
+def _scan_transcript(path: Path) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "started_at": None,
+        "last_event_at": None,
+        "last_tool": None,
+        "last_tool_detail": None,
+        "last_kind": None,
+        "events": 0,
+        "tokens": 0,
+        "model": None,
+        "recent_tools": [],
+    }
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return info
+
+    info["events"] = len(lines)
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        ts = rec.get("timestamp")
+        if ts:
+            if info["started_at"] is None:
+                info["started_at"] = ts
+            info["last_event_at"] = ts
+        message = rec.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        usage = message.get("usage") or {}
+        if isinstance(usage, dict):
+            info["tokens"] += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        if message.get("model"):
+            info["model"] = message["model"]
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                name = block.get("name")
+                detail = _tool_detail(block.get("input") or {})
+                info["last_tool"] = name
+                info["last_tool_detail"] = detail
+                info["last_kind"] = "tool"
+                info["recent_tools"].append({"name": name, "detail": detail, "at": ts})
+            elif block.get("type") == "tool_result":
+                info["last_kind"] = "waiting"
+            elif block.get("type") == "text" and str(block.get("text", "")).strip():
+                info["last_kind"] = "text"
+                info["last_tool"] = None
+                info["last_tool_detail"] = str(block["text"]).strip()[:160]
+    info["recent_tools"] = info["recent_tools"][-RECENT_TOOL_LIMIT:]
+    return info
+
+
+def _agent_entry(meta_path: Path) -> dict[str, Any] | None:
+    agent_id = meta_path.name.replace("agent-", "").replace(".meta.json", "")
+    meta = _read_json(meta_path)
+    transcript = meta_path.with_name(f"agent-{agent_id}.jsonl")
+    if not transcript.exists():
+        return None
+
+    info = _scan_transcript(transcript)
+    try:
+        mtime = transcript.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    finished = bool(meta.get("finished"))
+    description = str(meta.get("description") or "")
+    agent_type = str(meta.get("agentType") or "general-purpose")
+
+    if finished:
+        status, status_text = "done", "已完成"
+    elif mtime and (time.time() - mtime) > STALE_SECONDS:
+        status, status_text = "stalled", "疑似停滞"
+    else:
+        status, status_text = "running", "运行中"
+
+    started_ts = _parse_iso(info["started_at"])
+    last_ts = _parse_iso(info["last_event_at"]) or mtime
+    duration = int(last_ts - started_ts) if started_ts and last_ts else None
+
+    return {
+        "id": agent_id,
+        "role": _role_of(description, agent_type),
+        "description": description,
+        "agent_type": agent_type,
+        "status": status,
+        "status_text": status_text,
+        "started_at": info["started_at"],
+        "last_event_at": _iso(last_ts),
+        "duration_s": duration,
+        "last_tool": info["last_tool"],
+        "last_detail": info["last_tool_detail"],
+        "last_kind": info["last_kind"],
+        "tokens": info["tokens"],
+        "model": info["model"],
+        "recent_tools": info["recent_tools"],
+        "transcript": str(transcript),
+    }
+
+
+def _latest_owner_session(repo: Path | None = None) -> Path | None:
+    """当前仓库 slug 下最新的主会话目录；无会话时依次回退历史 slug。"""
+    if not PROJECTS_ROOT.is_dir():
+        return None
+    for slug in _prefixes_for(repo):
+        slug_dir = PROJECTS_ROOT / slug
+        if not slug_dir.is_dir():
+            continue
+        candidates = [
+            p for p in slug_dir.iterdir()
+            if p.is_dir() and p.with_suffix(".jsonl").is_file()
+        ]
+        if candidates:
+            return max(candidates, key=lambda p: p.with_suffix(".jsonl").stat().st_mtime)
+    return None
+
+
+def scan_agents(limit_sessions: int = 6, per_session: int = 30,
+                repo: Path | None = None) -> dict[str, Any]:
+    prefixes = _prefixes_for(repo)
+    sessions: list[dict[str, Any]] = []
+    if PROJECTS_ROOT.is_dir():
+        for slug_dir in PROJECTS_ROOT.iterdir():
+            if not slug_dir.is_dir() or not _slug_matches(slug_dir.name, prefixes):
+                continue
+            for session in slug_dir.iterdir():
+                sub = session / "subagents"
+                if not sub.is_dir():
+                    continue
+                metas = sorted(sub.glob("*.meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if not metas:
+                    continue
+                sessions.append({
+                    "session": session,
+                    "slug": slug_dir.name,
+                    "session_id": session.name,
+                    "mtime": max(p.stat().st_mtime for p in metas),
+                    "metas": metas,
+                })
+
+    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    agents: list[dict[str, Any]] = []
+    owner: dict[str, Any] = {}
+
+    # Owner 取当前仓库 slug 下最新的主会话（即使本轮还没开子代理）；
+    # 当前 slug 无会话时才回退到历史 slug，避免主会话卡片停留在迁移前的旧会话。
+    owner_session = _latest_owner_session(repo)
+    if owner_session is not None:
+        title = _read_json(owner_session / "custom-title.json").get("customTitle")
+        owner = {
+            "title": title or "General Owner",
+            "session_id": owner_session.name,
+            "slug": owner_session.parent.name,
+            "last_event_at": _iso(owner_session.with_suffix(".jsonl").stat().st_mtime),
+        }
+
+    for idx, item in enumerate(sessions[:limit_sessions]):
+        for meta_path in item["metas"][:per_session]:
+            entry = _agent_entry(meta_path)
+            if entry is None:
+                continue
+            entry["session_id"] = item["session_id"]
+            agents.append(entry)
+        if idx == 0 and not owner:
+            title = _read_json(item["session"] / "custom-title.json").get("customTitle")
+            main_jsonl = item["session"].with_suffix(".jsonl")
+            owner = {
+                "title": title or "General Owner",
+                "session_id": item["session_id"],
+                "slug": item["slug"],
+                "last_event_at": _iso(main_jsonl.stat().st_mtime) if main_jsonl.exists() else None,
+            }
+
+    merged: dict[str, dict[str, Any]] = {}
+    for entry in agents:
+        current = merged.get(entry["id"])
+        if current is None or (entry["last_event_at"] or "") > (current["last_event_at"] or ""):
+            merged[entry["id"]] = entry
+    ordered = sorted(merged.values(), key=lambda a: a["last_event_at"] or "", reverse=True)
+    return {"owner": owner, "agents": ordered}
+
+
+# ---------------------------------------------------------------------------
+# 成本（ccusage 优先，本地 token 兜底）
+# ---------------------------------------------------------------------------
+def scan_usage(repo: Path | None = None) -> dict[str, Any]:
+    """优先调本地已安装的 `ccusage --json`；否则按本地 transcript 统计 token。
+
+    刻意**不**在兜底路径里估算金额：价目表会变，编一个数字比不给更糟。
+    """
+    now = time.time()
+    key = "global" if repo is None else _slug_for(repo)
+    cached = _usage_cache.get(key)
+    if cached and (now - float(cached["at"])) < USAGE_CACHE_SECONDS:
+        return cached["value"]
+
+    if repo is None:
+        # ccusage 按整机会话统计，只用于默认项目的「本机总用量」
+        value = _usage_via_ccusage()
+        if value is None:
+            value = _usage_local()
+    else:
+        # 项目维度必须按 slug 过滤，ccusage 无法区分项目
+        value = _usage_local(repo)
+    _usage_cache[key] = {"at": now, "value": value}
+    return value
+
+
+def _find_ccusage() -> str | None:
+    """找 ccusage：PATH 优先，再扫 nvm 各版本 bin（服务进程 PATH 常常不含 nvm）。"""
+    found = shutil.which("ccusage")
+    if found:
+        return found
+    nvm_bins = sorted((Path.home() / ".nvm" / "versions" / "node").glob("*/bin/ccusage"), reverse=True)
+    if nvm_bins:
+        return str(nvm_bins[0])
+    for candidate in ("/opt/homebrew/bin/ccusage", "/usr/local/bin/ccusage"):
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _usage_via_ccusage() -> dict[str, Any] | None:
+    """调 `ccusage claude daily --json`，取最近一天的用量。
+
+    ccusage 20.x 的 JSON 形如 `{"daily": [{date, totalTokens, totalCost, ...}]}`；
+    直接取日期最大的那一行（即今天），不自己聚合，避免口径和它对不上。
+    """
+    binary = _find_ccusage()
+    if binary is None:
+        return None
+    for args in (["claude", "daily", "--json"], ["--json"]):
+        try:
+            out = subprocess.run(
+                [binary, *args], capture_output=True, text=True, timeout=20, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out.returncode != 0 or not out.stdout.strip():
+            continue
+        try:
+            data = json.loads(out.stdout)
+        except ValueError:
+            continue
+        rows = data.get("daily") or data.get("claude") or []
+        if not isinstance(rows, list) or not rows:
+            continue
+        rows = [r for r in rows if isinstance(r, dict)]
+        if not rows:
+            continue
+        rows.sort(key=lambda r: str(r.get("date") or r.get("period") or ""))
+        latest = rows[-1]
+        days = [
+            {
+                "date": r.get("date") or r.get("period"),
+                "tokens": int(r.get("totalTokens") or 0),
+                "cost": r.get("totalCost"),
+            }
+            for r in rows[-7:]
+        ]
+        models: list[dict[str, Any]] = []
+        for item in latest.get("modelBreakdowns") or []:
+            if not isinstance(item, dict):
+                continue
+            models.append({
+                "name": item.get("modelName"),
+                "tokens": int(item.get("inputTokens") or 0)
+                + int(item.get("outputTokens") or 0)
+                + int(item.get("cacheReadTokens") or 0)
+                + int(item.get("cacheCreationTokens") or 0),
+                "cost": item.get("cost"),
+            })
+        models.sort(key=lambda m: m["tokens"], reverse=True)
+        return {
+            "source": "ccusage",
+            "available": True,
+            "period": latest.get("date") or latest.get("period"),
+            "total_tokens": int(latest.get("totalTokens") or 0),
+            "input_tokens": int(latest.get("inputTokens") or 0),
+            "output_tokens": int(latest.get("outputTokens") or 0),
+            "cache_read_tokens": int(latest.get("cacheReadTokens") or 0),
+            "cost_usd": latest.get("totalCost"),
+            "models": latest.get("modelsUsed") or [],
+            "model_breakdown": models[:4],
+            "days": days,
+            "note": "",
+        }
+    return None
+
+
+def _usage_local(repo: Path | None = None) -> dict[str, Any]:
+    """按本地 transcript 统计最近 24h token。"""
+    prefixes = _prefixes_for(repo)
+    cutoff = time.time() - 86400
+    total = 0
+    files = 0
+    if PROJECTS_ROOT.is_dir():
+        for slug_dir in PROJECTS_ROOT.iterdir():
+            if not slug_dir.is_dir() or not _slug_matches(slug_dir.name, prefixes):
+                continue
+            for path in slug_dir.rglob("*.jsonl"):
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        continue
+                except OSError:
+                    continue
+                files += 1
+                try:
+                    with path.open("r", encoding="utf-8", errors="replace") as fh:
+                        for line in fh:
+                            try:
+                                rec = json.loads(line)
+                            except ValueError:
+                                continue
+                            usage = (rec.get("message") or {}).get("usage") or {}
+                            if isinstance(usage, dict):
+                                total += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+                except OSError:
+                    continue
+    return {
+        "source": "local-jsonl",
+        "available": True,
+        "total_tokens": total,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cost_usd": None,
+        "files": files,
+        "note": "未安装 ccusage，按本机 transcript 统计最近 24h token（不估算金额）",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 单个 agent 的实时执行流
+# ---------------------------------------------------------------------------
+TRACE_MAX_EVENTS = 160
+
+
+def _find_agent_files(agent_id: str) -> tuple[Path, Path] | None:
+    """agent id → (transcript, meta)。会话目录按 slug 分，逐个找。"""
+    if not re.fullmatch(r"[0-9a-zA-Z\-]{6,64}", agent_id or ""):
+        return None
+    if not PROJECTS_ROOT.is_dir():
+        return None
+    for slug_dir in PROJECTS_ROOT.iterdir():
+        if not slug_dir.is_dir() or not _slug_matches(slug_dir.name, SLUG_PREFIXES):
+            continue
+        for session in slug_dir.iterdir():
+            sub = session / "subagents"
+            if not sub.is_dir():
+                continue
+            transcript = sub / f"agent-{agent_id}.jsonl"
+            if transcript.exists():
+                return transcript, sub / f"agent-{agent_id}.meta.json"
+    return None
+
+
+def _result_text(block: dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content[:1200]
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif item.get("type") == "image":
+                    parts.append("[图片]")
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(p for p in parts if p)[:1200]
+    return ""
+
+
+def scan_agent_trace(agent_id: str, limit: int = TRACE_MAX_EVENTS) -> dict[str, Any]:
+    """把 subagent transcript 还原成时间线：思考 / 文本 / 工具调用+结果。
+
+    tool_use 与 tool_result 按 tool_use_id 配对，结果回填到发起它的那一步上，
+    和 VS Code Agents 窗口看到的是同一种结构。
+    """
+    located = _find_agent_files(agent_id)
+    if located is None:
+        return {"ok": False, "error": "not_found", "agent_id": agent_id}
+
+    transcript, meta_path = located
+    meta = _read_json(meta_path)
+    events: list[dict[str, Any]] = []
+    pending: dict[str, int] = {}
+    tokens = 0
+    model = None
+    started_at = None
+    last_at = None
+
+    try:
+        with transcript.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                ts = rec.get("timestamp")
+                if ts:
+                    started_at = started_at or ts
+                    last_at = ts
+                message = rec.get("message") or {}
+                if not isinstance(message, dict):
+                    continue
+                if message.get("model"):
+                    model = message["model"]
+                usage = message.get("usage") or {}
+                if isinstance(usage, dict):
+                    tokens += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    kind = block.get("type")
+                    if kind == "thinking":
+                        text = str(block.get("thinking") or "").strip()
+                        if text:
+                            events.append({"kind": "thinking", "text": text[:900], "at": ts})
+                    elif kind == "text":
+                        text = str(block.get("text") or "").strip()
+                        if text:
+                            events.append({"kind": "text", "text": text[:900], "at": ts})
+                    elif kind == "tool_use":
+                        pending[str(block.get("id"))] = len(events)
+                        events.append({
+                            "kind": "tool",
+                            "tool": block.get("name"),
+                            "detail": _tool_detail(block.get("input") or {}),
+                            "at": ts,
+                            "agent_id": agent_id,
+                        })
+                    elif kind == "tool_result":
+                        output = _result_text(block)
+                        ok = not block.get("is_error")
+                        idx = pending.get(str(block.get("tool_use_id")))
+                        if idx is not None and idx < len(events):
+                            events[idx]["result"] = output
+                            events[idx]["ok"] = ok
+                        else:
+                            events.append({"kind": "result", "text": output, "ok": ok, "at": ts})
+    except OSError:
+        return {"ok": False, "error": "unreadable", "agent_id": agent_id}
+
+    total = len(events)
+    trimmed = events[-limit:] if total > limit else events
+    try:
+        mtime = transcript.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    finished = bool(meta.get("finished"))
+    if finished:
+        status, status_text = "done", "已完成"
+    elif mtime and (time.time() - mtime) > STALE_SECONDS:
+        status, status_text = "stalled", "疑似停滞"
+    else:
+        status, status_text = "running", "运行中"
+
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "description": meta.get("description") or "",
+        "agent_type": meta.get("agentType") or "",
+        "status": status,
+        "status_text": status_text,
+        "started_at": started_at,
+        "last_event_at": _iso(mtime) or last_at,
+        "tokens": tokens,
+        "events_total": total,
+        "truncated": total > limit,
+        "events": trimmed,
+        "model": model,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Worktree
+# ---------------------------------------------------------------------------
+def scan_worktrees(repo: Path | None = None) -> list[dict[str, Any]]:
+    raw = _git("worktree", "list", "--porcelain", cwd=repo or _repo())
+    items: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    for line in raw.splitlines():
+        if line.startswith("worktree "):
+            if current:
+                items.append(current)
+            current = {"path": line[len("worktree "):], "head": None, "branch": None, "detached": False}
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):][:8]
+        elif line.startswith("branch "):
+            current["branch"] = line[len("branch "):].replace("refs/heads/", "")
+        elif line == "detached":
+            current["detached"] = True
+    if current:
+        items.append(current)
+
+    for item in items:
+        path = Path(item["path"])
+        role, form = ROLE_BY_DIR.get(path.name, (path.name, "worktree"))
+        item["role"] = role
+        item["form"] = form
+        item["present"] = path.exists()
+        if not item["present"]:
+            continue
+        changes = _git("status", "--porcelain", cwd=path).strip()
+        item["dirty"] = len([ln for ln in changes.splitlines() if ln.strip()])
+        item["last_commit"] = _git("log", "-1", "--format=%h %s", cwd=path).strip()
+        item["branch"] = item["branch"] or "(detached)"
+    return items
+
+
+# ---------------------------------------------------------------------------
+# 任务板 / 交付物 / 证据链
+# ---------------------------------------------------------------------------
+KNOWN_STATUSES = frozenset({"BACKLOG", "READY", "IN_PROGRESS", "REVIEW", "TESTING", "DONE", "BLOCKED", "CANCELLED"})
+
+
+def parse_task_board(repo: Path | None = None) -> list[dict[str, str]]:
+    path = (repo or _repo()) / "ai-team" / "TASK_BOARD.md"
+    if not path.is_file():
+        return []
+    tasks: list[dict[str, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 6 or not re.match(r"^TEAM-\d+$", cells[0]):
+            continue
+        # 标题里如果混入了未转义的 "|"，会把列撑开；找到第一个合法状态列再回填
+        status_at = next((i for i, c in enumerate(cells) if c in KNOWN_STATUSES), None)
+        if status_at is None or status_at < 3:
+            continue
+        title = " ".join(p for p in cells[1:status_at] if p)
+        rest = cells[status_at:]
+        tasks.append({
+            "id": cells[0],
+            "title": title,
+            "owner": rest[1] if len(rest) > 1 else "",
+            "status": rest[0],
+            "priority": rest[2] if len(rest) > 2 else "",
+            "depends": rest[3] if len(rest) > 3 else "",
+            "ref": rest[4] if len(rest) > 4 else "",
+            "qa": rest[5] if len(rest) > 5 else "",
+        })
+    return tasks
+
+
+def scan_reports(repo: Path | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    root = repo or _repo()
+    out: list[dict[str, Any]] = []
+    for folder in (root / "ai-team" / "reports", root / "docs" / "reports"):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not path.is_file() or path.name.startswith("."):
+                continue
+            stat = path.stat()
+            out.append({
+                "name": path.name,
+                "dir": folder.name,
+                "size": stat.st_size,
+                "mtime": _iso(stat.st_mtime),
+                "path": str(path.relative_to(root)),
+            })
+    out.sort(key=lambda r: r["mtime"] or "", reverse=True)
+    return out[:limit]
+
+
+def attach_links(tasks: list[dict[str, str]], reports: list[dict[str, Any]],
+                 repo: Path | None = None) -> dict[str, Any]:
+    """给每个任务挂上「提交 SHA / 交付报告」证据链，并按状态分组做 Kanban。"""
+    for task in tasks:
+        ref = task.get("ref", "")
+        shas = re.findall(r"\b[0-9a-f]{7,40}\b", ref)
+        commits = []
+        for sha in shas[:3]:
+            subject = _git("log", "-1", "--format=%s", sha).strip()
+            if subject:
+                commits.append({"sha": sha[:8], "subject": subject})
+        matched = [
+            {"name": r["name"], "path": r["path"]}
+            for r in reports
+            if task["id"].lower() in r["name"].lower() or task["id"].replace("TEAM-", "") in r["name"]
+        ][:3]
+        task["commits"] = commits
+        task["reports"] = matched
+
+    columns = [
+        ("todo", "待办", ("READY", "BACKLOG")),
+        ("doing", "进行中", ("IN_PROGRESS",)),
+        ("review", "评审 / 测试", ("REVIEW", "TESTING")),
+        ("done", "已完成", ("DONE",)),
+        ("blocked", "阻塞", ("BLOCKED", "CANCELLED")),
+    ]
+    kanban = []
+    for key, label, statuses in columns:
+        kanban.append({
+            "key": key,
+            "label": label,
+            "tasks": [t for t in tasks if t["status"] in statuses],
+        })
+    return {"kanban": kanban, "tasks": tasks}
+
+
+# ---------------------------------------------------------------------------
+# 汇总
+# ---------------------------------------------------------------------------
+def _status_from_file(status: dict[str, Any] | None) -> tuple[str, str, str] | None:
+    """自报状态 → (看板状态, 状态文案, 说明)。"""
+    if not status:
+        return None
+    state = str(status.get("state") or "")
+    note = str(status.get("note") or "")
+    task = str(status.get("task") or "")
+    suffix = f" · {task}" if task else ""
+    mapping = {
+        "running": ("running", f"自报进行中{suffix}", note),
+        "done": ("done", f"自报已完成{suffix}", note),
+        "blocked": ("stalled", f"自报阻塞{suffix}", note),
+        "idle": ("idle", "待命", note),
+    }
+    return mapping.get(state)
+
+
+def build_roster(agent_state: dict[str, Any], worktrees: list[dict[str, Any]],
+                 status_files: dict[str, dict[str, Any]],
+                 repo: Path | None = None) -> list[dict[str, Any]]:
+    roster: list[dict[str, Any]] = []
+    owner = agent_state["owner"]
+    main_wt = next((w for w in worktrees if w["path"] == str(repo or _repo())), None)
+    owner_status = status_files.get("general-owner")
+    derived = _status_from_file(owner_status)
+    roster.append({
+        "role": "General Owner",
+        "form": "主会话",
+        "status": derived[0] if derived else ("running" if owner else "idle"),
+        "status_text": derived[1] if derived else ("主会话运行中" if owner else "未见会话"),
+        "detail": (derived[2] if derived and derived[2] else (main_wt or {}).get("last_commit") or ""),
+        "meta": f"分支 {(main_wt or {}).get('branch', '-')} · 未提交 {(main_wt or {}).get('dirty', 0)}",
+        "last_event_at": owner.get("last_event_at"),
+        "reported": bool(derived),
+        "task": (owner_status or {}).get("task"),
+    })
+
+    by_role: dict[str, list[dict[str, Any]]] = {}
+    for agent in agent_state["agents"]:
+        by_role.setdefault(agent["role"], []).append(agent)
+
+    for role in ("Product Manager", "System Architect", "UX Designer"):
+        group = by_role.get(role, [])
+        active = [a for a in group if a["status"] == "running"]
+        derived = _status_from_file(status_files.get(_slug(role)))
+        roster.append({
+            "role": role,
+            "form": "Subagent（只读）",
+            "status": derived[0] if derived else ("running" if active else ("done" if group else "idle")),
+            "status_text": derived[1] if derived else ("执行中" if active else ("已完成" if group else "待命")),
+            "detail": derived[2] if derived and derived[2] else (active or group or [{}])[0].get("description", ""),
+            "meta": f"本轮 {len(group)} 次调用",
+            "last_event_at": (active or group or [{}])[0].get("last_event_at"),
+            "reported": bool(derived),
+            "task": (status_files.get(_slug(role)) or {}).get("task"),
+        })
+
+    for role in ("Frontend Engineer", "Backend Engineer", "QA & DevOps"):
+        group = by_role.get(role, [])
+        wt = next((w for w in worktrees if w["role"] == role), None)
+        active = [a for a in group if a["status"] == "running"]
+        derived = _status_from_file(status_files.get(_slug(role)))
+        roster.append({
+            "role": role,
+            "form": (wt or {}).get("form", "独立 worktree"),
+            "status": derived[0] if derived else ("running" if active else ("done" if group else "idle")),
+            "status_text": derived[1] if derived else ("执行中" if active else ("已完成" if group else "待命")),
+            "detail": (
+                derived[2] if derived and derived[2]
+                else ((active or group or [{}])[0].get("description", "") or (wt or {}).get("last_commit", ""))
+            ),
+            "meta": (
+                f"{wt['path'].split('/')[-1]} · {wt.get('branch')} · 未提交 {wt.get('dirty', 0)}"
+                if wt else "无 worktree"
+            ),
+            "last_event_at": (active or group or [{}])[0].get("last_event_at"),
+            "reported": bool(derived),
+            "task": (status_files.get(_slug(role)) or {}).get("task"),
+        })
+    return roster
+
+
+def build_state(repo: Path | None = None) -> dict[str, Any]:
+    root = repo or _repo()
+    # 必须把项目仓库传下去：不带 repo 会扫全部项目 slug，导致看板串台
+    agent_state = scan_agents(repo=root)
+    worktrees = scan_worktrees(root)
+    tasks = parse_task_board(root)
+    reports = scan_reports(root)
+    status_files = scan_status_files(root)
+    linked = attach_links(tasks, reports, root)
+    roster = build_roster(agent_state, worktrees, status_files, root)
+
+    # 抽屉按 roster 里的展示名查找，所以这里用展示名做 key
+    statuses = {
+        display: status_files[slug]
+        for slug, display in DISPLAY_BY_SLUG.items()
+        if slug in status_files
+    }
+    return {
+        "generated_at": _iso(time.time()),
+        "owner": agent_state["owner"],
+        "roster": roster,
+        "statuses": statuses,
+        "kanban": linked["kanban"],
+        "tasks": linked["tasks"],
+        "agents": agent_state["agents"],
+        "worktrees": worktrees,
+        "reports": reports,
+        "usage": scan_usage(root),
+        "stats": {
+            "agents_running": len([a for a in agent_state["agents"] if a["status"] == "running"]),
+            "agents_total": len(agent_state["agents"]),
+            "tasks_in_progress": len([t for t in tasks if t["status"] == "IN_PROGRESS"]),
+            "tasks_ready": len([t for t in tasks if t["status"] == "READY"]),
+            "tasks_done": len([t for t in tasks if t["status"] == "DONE"]),
+            "reported": len(status_files),
+        },
+    }
+
+
+def _raw_status(platform_status: str) -> str:
+    return {
+        "todo": "READY",
+        "in_progress": "IN_PROGRESS",
+        "review": "REVIEW",
+        "done": "DONE",
+        "blocked": "BLOCKED",
+    }.get(platform_status, "BACKLOG")
+
+
+def _state_from_platform_project(project: dict[str, Any]) -> dict[str, Any]:
+    """非默认项目：用平台库构造旧的 build_state 字段，保证兼容层结构一致。"""
+    stats = platform_service.project_stats_for(project["id"])
+    task_page = platform_service.list_tasks(project["id"], page=1, page_size=100)
+    tasks = [
+        {
+            "id": item["task_key"],
+            "title": item["title"],
+            "owner": item.get("owner") or "",
+            "status": _raw_status(item["status"]),
+            "priority": item.get("priority") or "",
+            "ref": "",
+            "qa": item.get("qa") or "",
+        }
+        for item in task_page["items"]
+    ]
+    kanban = []
+    for key, label, statuses in (
+        ("todo", "待办", ("READY", "BACKLOG")),
+        ("doing", "进行中", ("IN_PROGRESS",)),
+        ("review", "评审 / 测试", ("REVIEW", "TESTING")),
+        ("done", "已完成", ("DONE",)),
+        ("blocked", "阻塞", ("BLOCKED", "CANCELLED")),
+    ):
+        kanban.append({"key": key, "label": label,
+                       "tasks": [t for t in tasks if t["status"] in statuses]})
+
+    agents = project.get("agents") or []
+    roster = []
+    display_status = {"working": "running", "idle": "idle", "blocked": "stalled", "offline": "offline"}
+    last_event = None
+    for agent in agents:
+        meta = agent.get("metadata_json") or {}
+        report = meta.get("self_report") or {}
+        stamp = agent.get("last_heartbeat_at")
+        if stamp and (last_event is None or stamp > last_event):
+            last_event = stamp
+        roster.append({
+            "role": agent["display_name"],
+            "form": agent.get("execution_mode") or "",
+            "status": display_status.get(agent.get("status"), "idle"),
+            "status_text": report.get("note") or agent.get("status") or "",
+            "detail": report.get("note") or "",
+            "meta": " · ".join(filter(None, [agent.get("current_branch"), agent.get("worktree_path")])),
+            "last_event_at": agent.get("last_heartbeat_at"),
+            "reported": bool(report),
+            "task": report.get("task"),
+        })
+    owner_agent = next((a for a in agents if a.get("role_key") == "general-owner"), None)
+    owner = {
+        "title": project["name"],
+        "session_id": None,
+        "slug": None,
+        "last_event_at": (owner_agent or {}).get("last_heartbeat_at"),
+    }
+    return {
+        "generated_at": _iso(time.time()),
+        "owner": owner,
+        "roster": roster,
+        "statuses": {},
+        "kanban": kanban,
+        "tasks": tasks,
+        "agents": [],
+        "worktrees": [],
+        "reports": [],
+        "usage": {
+            "source": "token_usage_events",
+            "available": True,
+            "total_tokens": stats["token_24h"],
+            "input_tokens": None,
+            "output_tokens": None,
+            "cost_usd": None,
+            "note": "项目 transcript 明细汇总（最近 24h）",
+        },
+        "stats": {
+            "agents_running": stats["agent_active"],
+            "agents_total": stats["agent_total"],
+            "tasks_in_progress": stats["task_in_progress"],
+            "tasks_ready": stats["task_todo"],
+            "tasks_done": stats["task_done"],
+            "reported": len([a for a in agents if (a.get("metadata_json") or {}).get("self_report")]),
+        },
+    }
+
+
+_STATE_CACHE: StateCache | None = None
+_STATE_CACHE_LOCK = threading.Lock()
+
+
+def _state_cache() -> StateCache:
+    """进程级状态缓存：磁盘快照放在平台库同级 state-cache/。"""
+    global _STATE_CACHE
+    with _STATE_CACHE_LOCK:
+        if _STATE_CACHE is None:
+            db_path = Path(platform_store.default_db_path())
+            _STATE_CACHE = StateCache(
+                db_path.parent / "state-cache", build_state_for_project, ttl=5.0
+            )
+        return _STATE_CACHE
+
+
+def build_state_for_project(project_id: str) -> dict[str, Any]:
+    """旧 ``/api/state`` 结构 + 新增 ``project``；默认项目复用原扫描逻辑。"""
+    meta = platform_service.state_meta(project_id)
+    repo_root: Path | None = None
+    try:
+        candidate = Path(meta["repo_root"]).expanduser().resolve()
+        if candidate.is_dir():
+            repo_root = candidate
+    except OSError:
+        repo_root = None
+    if repo_root is not None:
+        state = build_state(repo_root)
+        # 仓库里没有 ai-team 任务板 / 自报状态时，用平台库补齐对应板块，
+        # 既不空看板也不覆盖仓库里的真实文件。
+        project = platform_service.get_project(project_id)
+        fallback = _state_from_platform_project(project)
+        if not (repo_root / "ai-team" / "TASK_BOARD.md").is_file():
+            state["tasks"] = fallback["tasks"]
+            state["kanban"] = fallback["kanban"]
+            state["stats"].update({
+                "tasks_in_progress": fallback["stats"]["tasks_in_progress"],
+                "tasks_ready": fallback["stats"]["tasks_ready"],
+                "tasks_done": fallback["stats"]["tasks_done"],
+            })
+        if not state["statuses"] and fallback["roster"]:
+            state["roster"] = fallback["roster"]
+            state["stats"]["agents_running"] = fallback["stats"]["agents_running"]
+            state["stats"]["agents_total"] = fallback["stats"]["agents_total"]
+            state["stats"]["reported"] = fallback["stats"]["reported"]
+    else:
+        project = platform_service.get_project(project_id)
+        state = _state_from_platform_project(project)
+    state["project"] = meta
+    # 旧 usage 字段保持原样；项目用量单独给出，成本为 ccusage 会话成本近似归集。
+    state["project_usage"] = platform_service.project_usage(project_id)
+    return state
+
+
+
+def _tailscale_ip() -> str | None:
+    """取本机 Tailscale IPv4（macOS 应用包路径 / Homebrew 都可能）。"""
+    candidates = [
+        "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+    ]
+    binary = next((c for c in candidates if Path(c).exists()), shutil.which("tailscale"))
+    if not binary:
+        return None
+    try:
+        out = subprocess.run([binary, "ip", "-4"], capture_output=True, text=True, timeout=8, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ip = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+    return ip or None
+
+
+
+# ---------------------------------------------------------------------------
+# 本地文件：预览 / 用默认程序打开
+# ---------------------------------------------------------------------------
+MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+}
+
+
+def safe_repo_path(raw: str | None, repo: Path | None = None) -> Path | None:
+    """把外部传入的路径限制在指定项目仓库内，防目录穿越。"""
+    if not raw:
+        return None
+    root = (repo or _repo()).resolve()
+    candidate = (root / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def safe_project_path(project: dict[str, Any], raw: str | None) -> Path | None:
+    """把外部路径限制在“当前项目 repo_root”内；不把 project 参数拼进路径。"""
+    if not raw:
+        return None
+    try:
+        root = Path(project["repo_root"]).resolve()
+    except (KeyError, OSError):
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def file_viewer_html(name: str, raw_path: str, text: str | None, error: str | None = None) -> str:
+    """独立查看页：新标签页直接可读，避免裸 text/plain 被浏览器下载或空白。"""
+    safe_name = html_lib.escape(name or "文件")
+    safe_path = html_lib.escape(raw_path or "")
+    if error:
+        body = f'<div class="err">{html_lib.escape(error)}</div>'
+        status = "无法预览"
+    else:
+        body = f'<pre class="doc">{html_lib.escape(text or "")}</pre>'
+        status = "只读预览 · 内容来自项目仓库"
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{safe_name} · 文件预览</title>
+<style>
+:root {{ color-scheme: dark; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; background: #0e1116; color: #e6e9ef;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }}
+header {{ position: sticky; top: 0; background: #141922; border-bottom: 1px solid #263041;
+  padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; z-index: 1; }}
+header strong {{ font-size: 14px; }}
+header .path {{ font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #8b97ab; word-break: break-all; }}
+header .tag {{ margin-left: auto; font-size: 11px; color: #8b97ab; }}
+.doc {{ margin: 0; padding: 20px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+  line-height: 1.6; white-space: pre-wrap; word-break: break-word; tab-size: 2; }}
+.err {{ margin: 20px; padding: 14px 16px; border: 1px solid #5a2530; border-radius: 8px;
+  background: #2a1519; color: #ffb4c0; font-size: 13px; }}
+</style></head>
+<body>
+<header><strong>{safe_name}</strong><span class="path">{safe_path}</span><span class="tag">{status}</span></header>
+{body}
+</body></html>"""
+
+
+def open_with_os(path: Path) -> bool:
+    """macOS 用默认程序打开（xdg-open 兜底）。仅本机看板使用。"""
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    if not shutil.which(opener):
+        return False
+    try:
+        subprocess.run([opener, str(path)], check=False, timeout=10)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args) -> None:
+        return
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code: int, payload: dict[str, Any]) -> None:
+        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise platform_service.PlatformError("invalid_json", 400)
+        if not isinstance(data, dict):
+            raise platform_service.PlatformError("invalid_json", 400)
+        return data
+
+    def _error(self, exc: platform_service.PlatformError) -> None:
+        self._json(exc.status, {
+            "ok": False, "error": exc.code, "message": exc.message,
+            "detail": {"code": exc.code, "message": exc.message},
+        })
+
+    def _platform(self, fn, *args, **kwargs) -> None:
+        try:
+            self._json(200, fn(*args, **kwargs))
+        except platform_service.PlatformError as exc:
+            self._error(exc)
+        except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
+            self._json(500, {"ok": False, "error": "internal_error",
+                             "detail": {"code": "internal_error", "message": "内部错误"}})
+
+    @staticmethod
+    def _public_project(project: dict[str, Any]) -> dict[str, Any]:
+        # settings_json 只服务采集 cursor，属于内部状态。
+        return {key: value for key, value in project.items() if key != "settings_json"}
+
+    def _platform_project(self, fn, *args) -> None:
+        try:
+            self._json(200, {"project": self._public_project(fn(*args))})
+        except platform_service.PlatformError as exc:
+            self._error(exc)
+        except Exception:  # noqa: BLE001
+            self._json(500, {"ok": False, "error": "internal_error",
+                             "detail": {"code": "internal_error", "message": "内部错误"}})
+
+    def _project_from_query(self, query: dict[str, list[str]], default: str | None = "ddp") -> dict[str, Any]:
+        project_id = (query.get("project") or [default])[0]
+        if not project_id:
+            raise platform_service.PlatformError("project_not_found", 404)
+        return platform_service.state_meta(project_id)
+
+    def _segments(self, path: str) -> list[str]:
+        return [unquote(part) for part in path.strip("/").split("/") if part]
+
+    def _idempotent(self, fingerprint: str, fn) -> dict[str, Any]:
+        key = (self.headers.get("Idempotency-Key") or "").strip()
+        if not key:
+            return fn()
+        if len(key) > 200:
+            raise platform_service.PlatformError("invalid_payload", 422, "Idempotency-Key 过长")
+        cached = platform_service.idempotency_lookup(key, fingerprint)
+        if cached is not None:
+            return cached
+        result = fn()
+        platform_service.idempotency_store(key, fingerprint, result)
+        return result
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        try:
+            if path == "/api/open":
+                project = self._project_from_query(query)
+                raw = (query.get("path") or [None])[0]
+                target = safe_project_path(project, raw)
+                if target is None:
+                    self._json(400, {"ok": False, "error": "invalid_path",
+                                     "detail": {"code": "invalid_path", "message": "路径不可用"}})
+                    return
+                self._json(200, {"ok": open_with_os(target), "path": str(target)})
+                return
+            if path == "/api/projects":
+                payload = self._body()
+                fingerprint = "POST /api/projects " + hashlib.sha1(
+                    json.dumps(payload, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                response = self._idempotent(
+                    fingerprint,
+                    lambda: {"project": self._public_project(platform_service.create_project(payload))},
+                )
+                self._json(200, response)
+                return
+            if path == "/api/team-templates":
+                payload = self._body()
+                self._platform(platform_service.create_template, payload)
+                return
+            segments = self._segments(path)
+            if (len(segments) == 4 and segments[:2] == ["api", "team-templates"]
+                    and segments[3] == "clone"):
+                payload = self._body()
+                self._platform(platform_service.clone_template, segments[2], payload)
+                return
+            if len(segments) >= 4 and segments[:2] == ["api", "projects"]:
+                project_id = segments[2]
+                rest = segments[3:]
+                self._project_post(project_id, rest)
+                return
+            self._json(404, {"ok": False, "error": "not_found",
+                             "detail": {"code": "not_found", "message": "接口不存在"}})
+        except platform_service.PlatformError as exc:
+            self._error(exc)
+
+    def _project_post(self, project_id: str, rest: list[str]) -> None:
+        if rest == ["archive"]:
+            fingerprint = f"POST /api/projects/{project_id}/archive"
+            response = self._idempotent(
+                fingerprint,
+                lambda: {"project": self._public_project(platform_service.archive_project(project_id))},
+            )
+            self._json(200, response)
+            return
+        if rest == ["restore"]:
+            self._platform_project(platform_service.restore_project, project_id)
+            return
+        if rest == ["backfill"]:
+            self._platform(platform_service.backfill_project, project_id)
+            return
+        if rest == ["team", "preview"]:
+            self._platform(platform_service.preview_team, project_id, self._body())
+            return
+        if rest == ["team", "apply"]:
+            self._platform(platform_service.apply_team, project_id, self._body())
+            return
+        if rest == ["tasks"]:
+            self._platform(platform_service.create_task, project_id, self._body())
+            return
+        if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "transition":
+            self._platform(platform_service.transition_task, project_id, rest[1], self._body())
+            return
+        if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "dependencies":
+            self._platform(platform_service.add_dependency, project_id, rest[1], self._body())
+            return
+        if rest == ["deliveries"]:
+            self._platform(platform_service.create_delivery, project_id, self._body())
+            return
+        if len(rest) == 3 and rest[0] == "deliveries" and rest[2] == "review":
+            self._platform(platform_service.review_delivery, project_id, rest[1], self._body())
+            return
+        if rest == ["documents"]:
+            self._platform(platform_service.create_document, project_id, self._body())
+            return
+        if rest == ["visit"]:
+            self._platform(platform_service.record_visit, project_id)
+            return
+        self._json(404, {"ok": False, "error": "not_found",
+                         "detail": {"code": "not_found", "message": "接口不存在"}})
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        try:
+            segments = self._segments(path)
+            if len(segments) == 3 and segments[:2] == ["api", "projects"]:
+                payload = self._body()
+                self._platform_project(platform_service.patch_project, segments[2], payload)
+                return
+            if len(segments) == 5 and segments[:2] == ["api", "projects"] and segments[3] == "tasks":
+                payload = self._body()
+                self._platform(platform_service.patch_task, segments[2], segments[4], payload)
+                return
+            if len(segments) == 5 and segments[:2] == ["api", "projects"] and segments[3] == "documents":
+                payload = self._body()
+                self._platform(platform_service.patch_document, segments[2], segments[4], payload)
+                return
+            self._json(404, {"ok": False, "error": "not_found",
+                             "detail": {"code": "not_found", "message": "接口不存在"}})
+        except platform_service.PlatformError as exc:
+            self._error(exc)
+
+    def do_PUT(self) -> None:
+        segments = self._segments(urlparse(self.path).path)
+        if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
+            self._platform(platform_service.set_favorite, segments[2], True)
+            return
+        self._json(404, {"ok": False, "error": "not_found",
+                         "detail": {"code": "not_found", "message": "接口不存在"}})
+
+    def do_DELETE(self) -> None:
+        segments = self._segments(urlparse(self.path).path)
+        if (len(segments) == 7 and segments[:2] == ["api", "projects"]
+                and segments[3] == "tasks" and segments[5] == "dependencies"):
+            self._platform(platform_service.delete_dependency, segments[2], segments[4], segments[6])
+            return
+        if len(segments) == 5 and segments[:2] == ["api", "projects"] and segments[3] == "documents":
+            self._platform(platform_service.delete_document, segments[2], segments[4])
+            return
+        if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
+            self._platform(platform_service.set_favorite, segments[2], False)
+            return
+        self._json(404, {"ok": False, "error": "not_found",
+                         "detail": {"code": "not_found", "message": "接口不存在"}})
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if path.startswith("/api/agent/"):
+            rest = path[len("/api/agent/"):]
+            agent_id, _, _ = rest.partition("/")
+            trace = scan_agent_trace(agent_id)
+            code = 200 if trace.get("ok") else 404
+            self._send(code, json.dumps(trace, ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+        elif path == "/api/state":
+            project_id = (query.get("project") or [platform_service.DEFAULT_PROJECT_ID])[0]
+            refresh = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+            try:
+                state, stale = _state_cache().get(project_id, force=refresh)
+            except platform_service.PlatformError as exc:
+                self._error(exc)
+                return
+            # 缓存命中也给出时间戳，前端可判断数据新鲜度；不改变既有字段语义。
+            body = dict(state)
+            # 项目元信息（名称/状态/仓库）不进缓存语义：改名/归档后必须立刻生效，
+            # 否则磁盘快照会把旧项目名回放给前端。
+            try:
+                body["project"] = platform_service.state_meta(project_id)
+            except platform_service.PlatformError:
+                pass
+            body["cache"] = {
+                "stale": stale,
+                "computed_at": state.get("generated_at"),
+            }
+            self._send(200, json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+        elif path == "/api/openapi.json":
+            self._send(200, json.dumps(openapi_service.build_openapi(), ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+        elif path == "/api/projects":
+            self._platform(
+                platform_service.list_projects,
+                q=(query.get("q") or [None])[0],
+                status=(query.get("status") or [None])[0],
+                favorite=(query.get("favorite") or [None])[0],
+            )
+        elif path == "/api/agent-platform/overview":
+            self._platform(platform_service.overview)
+        elif path == "/api/me/recent-projects":
+            self._platform(
+                platform_service.recent_projects,
+                (query.get("limit") or ["20"])[0],
+            )
+        elif path == "/api/audit-logs":
+            self._platform(
+                platform_service.list_audit_logs,
+                project=(query.get("project") or [None])[0],
+                action=(query.get("action") or [None])[0],
+                from_=(query.get("from") or [None])[0],
+                to=(query.get("to") or [None])[0],
+                page=(query.get("page") or ["1"])[0],
+                page_size=(query.get("page_size") or ["20"])[0],
+            )
+        elif path == "/api/team-templates":
+            self._platform(platform_service.list_team_templates)
+        elif path.startswith("/api/team-templates/"):
+            key = unquote(path[len("/api/team-templates/"):].strip("/"))
+            self._platform(
+                platform_service.get_team_template, key,
+                (query.get("version") or [None])[0],
+            )
+        elif path.startswith("/api/projects/"):
+            segments = self._segments(path)
+            if len(segments) < 3:
+                self._json(404, {"ok": False, "error": "not_found",
+                                 "detail": {"code": "not_found", "message": "接口不存在"}})
+                return
+            project_id = segments[2]
+            rest = segments[3:]
+            if not rest:
+                self._platform_project(platform_service.get_project, project_id)
+                return
+            if rest == ["tasks"]:
+                self._platform(
+                    platform_service.list_tasks, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                    status=(query.get("status") or [None])[0],
+                    priority=(query.get("priority") or [None])[0],
+                    assignee=(query.get("assignee") or [None])[0],
+                    q=(query.get("q") or [None])[0],
+                )
+                return
+            if len(rest) == 2 and rest[0] == "tasks":
+                self._platform(platform_service.get_task, project_id, rest[1])
+                return
+            if rest == ["deliveries"]:
+                self._platform(
+                    platform_service.list_deliveries, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                    status=(query.get("status") or [None])[0],
+                    kind=(query.get("kind") or [None])[0],
+                    task=(query.get("task") or [None])[0],
+                )
+                return
+            if rest == ["executions"]:
+                self._platform(
+                    platform_service.list_executions, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                    agent=(query.get("agent") or [None])[0],
+                    status=(query.get("status") or [None])[0],
+                    from_=(query.get("from") or [None])[0],
+                    to=(query.get("to") or [None])[0],
+                )
+                return
+            if len(rest) == 2 and rest[0] == "executions":
+                self._platform(platform_service.get_execution, project_id, rest[1])
+                return
+            if rest == ["documents"]:
+                self._platform(
+                    platform_service.list_documents, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                    q=(query.get("q") or [None])[0],
+                )
+                return
+            if rest == ["events"]:
+                self._platform(
+                    platform_service.list_events, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                )
+                return
+            self._json(404, {"ok": False, "error": "not_found",
+                             "detail": {"code": "not_found", "message": "接口不存在"}})
+        elif path == "/view":
+            # 独立查看页：新标签页直接展示内容；路径仍走 safe_project_path 白名单。
+            try:
+                project = self._project_from_query(query)
+            except platform_service.PlatformError as exc:
+                body = file_viewer_html("文件预览", "", None, f"项目不可用：{exc.code}")
+                self._send(exc.status, body.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            raw = (query.get("path") or [None])[0]
+            target = safe_project_path(project, raw)
+            if target is None:
+                body = file_viewer_html(Path(str(raw or "")).name, str(raw or ""), None,
+                                        "文件不存在、不是常规文件，或不在当前项目仓库内（已拒绝）。")
+                self._send(404, body.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            suffix = target.suffix.lower()
+            try:
+                data = target.read_bytes()
+            except OSError:
+                body = file_viewer_html(target.name, str(raw or target), None, "文件读取失败。")
+                self._send(500, body.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if suffix in (".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".pdf"):
+                # 原生可展示类型直接返回，新标签页打开即为文件本身。
+                self._send(200, data, MIME.get(suffix, "application/octet-stream"))
+                platform_service.record_file_open(project["id"], str(raw or ""))
+                return
+            text = data.decode("utf-8", "replace")
+            body = file_viewer_html(target.name, str(raw or target), text)
+            self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+            platform_service.record_file_open(project["id"], str(raw or ""))
+        elif path == "/api/file":
+            try:
+                project = self._project_from_query(query)
+            except platform_service.PlatformError as exc:
+                self._error(exc)
+                return
+            raw = (query.get("path") or [None])[0]
+            target = safe_project_path(project, raw)
+            if target is None:
+                self._json(404, {"ok": False, "error": "not_found",
+                                 "detail": {"code": "not_found", "message": "文件不存在或越界"}})
+                return
+            try:
+                self._send(200, target.read_bytes(), MIME.get(target.suffix.lower(), "application/octet-stream"))
+            except OSError:
+                self._json(500, {"ok": False, "error": "unreadable",
+                                 "detail": {"code": "unreadable", "message": "文件读取失败"}})
+                return
+            platform_service.record_file_open(project["id"], str(raw or ""))
+        elif path in ("/", "/index.html"):
+            self._send(200, load_page(), "text/html; charset=utf-8")
+        else:
+            self._send(404, b'{"error":"not found","detail":{"code":"not_found","message":"not found"}}',
+                       "application/json")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="DDP AI 团队看板（本地只读）")
+    parser.add_argument("--port", type=int, default=8099)
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址；127.0.0.1 仅本机")
+    parser.add_argument("--tailscale", action="store_true",
+                        help="绑定到 Tailscale 网卡地址，手机等同一 tailnet 设备可访问")
+    parser.add_argument("--once", action="store_true", help="只打印一次 JSON 快照")
+    parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
+    args = parser.parse_args()
+
+    # 平台库：建表 → 默认 DDP 项目 → 首次回填（只写平台独立 SQLite，不写仓库）。
+    try:
+        platform_service.bootstrap(repo_root=REPO)
+        # 每个登记项目各自回填一次：只回填默认项目会让其它项目的用量永远显示 0
+        for item in platform_service.list_projects().get("items", []):
+            try:
+                platform_service.backfill_project(item["id"])
+            except Exception as exc:  # noqa: BLE001 - 单项目回填失败不阻断启动
+                print(f"[agents-dashboard] 回填 {item['id']} 失败：{exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - 平台故障不阻断旧看板
+        print(f"[agents-dashboard] 平台初始化/回填失败：{exc}", file=sys.stderr)
+
+    if args.once:
+        print(json.dumps(build_state(), ensure_ascii=False, indent=2))
+        return 0
+
+    # 同时监听本机回环与 tailnet 地址：手机/局域网外设备用 tailnet IP，
+    # 本机浏览器用 127.0.0.1，两者都可用，且不暴露到局域网。
+    bind_hosts: list[str] = [args.host]
+    if args.tailscale:
+        detected = _tailscale_ip()
+        if detected is None:
+            print("[agents-dashboard] 未检测到 Tailscale 地址，仅监听 127.0.0.1", file=sys.stderr)
+        elif detected not in bind_hosts:
+            bind_hosts.append(detected)
+
+    servers = []
+    for host in bind_hosts:
+        try:
+            servers.append(ThreadingHTTPServer((host, args.port), Handler))
+        except OSError as exc:
+            print(f"[agents-dashboard] 绑定 {host}:{args.port} 失败：{exc}", file=sys.stderr)
+
+    if not servers:
+        print("[agents-dashboard] 没有可用的监听地址，退出", file=sys.stderr)
+        return 1
+
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    url = f"http://{bind_hosts[0]}:{args.port}"
+    print("[agents-dashboard] 已监听：" + "、".join(f"http://{h}:{args.port}" for h in bind_hosts))
+    print("                  (Ctrl-C 退出；只读，不改仓库)")
+    if args.open:
+        webbrowser.open(url)
+    try:
+        servers[0].serve_forever()
+    except KeyboardInterrupt:
+        print("\n[agents-dashboard] bye")
+    return 0
+
+
+HTML_PATH = Path(__file__).resolve().parent / "agents_dashboard.html"
+
+
+def load_page() -> bytes:
+    """每次请求重新读 HTML（按 mtime 缓存），改样式不用重启服务。"""
+    try:
+        mtime = HTML_PATH.stat().st_mtime
+    except OSError:
+        return "<h1>agents_dashboard.html 缺失</h1>".encode()
+    if _page_cache["mtime"] != mtime:
+        _page_cache["mtime"] = mtime
+        _page_cache["body"] = HTML_PATH.read_bytes()
+    return _page_cache["body"]
+
+
+_page_cache: dict[str, Any] = {"mtime": None, "body": b""}
+
+
+
+if __name__ == "__main__":
+    sys.exit(main())
