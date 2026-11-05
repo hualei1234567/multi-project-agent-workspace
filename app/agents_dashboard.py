@@ -55,6 +55,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
     from agent_platform import config as platform_config
+    from agent_platform import executor as executor_service
+    from agent_platform import executor_policy
     from agent_platform import openapi as openapi_service
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
@@ -62,6 +64,8 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
     from app.agent_platform import config as platform_config
+    from app.agent_platform import executor as executor_service
+    from app.agent_platform import executor_policy
     from app.agent_platform import openapi as openapi_service
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
@@ -1280,6 +1284,34 @@ def open_with_os(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+def _run_dispatch_item(project_id: str, item_id: str, *, dry_run: bool, owner: str) -> dict[str, Any]:
+    """校验项目归属后交给执行器。"""
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        row = conn.execute(
+            "SELECT project_id FROM dispatch_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row is None or row["project_id"] != project_id:
+            raise scheduler_service.SchedulerError("not_found", 404, "调度项不存在")
+    finally:
+        conn.close()
+    try:
+        return executor_service.run_item(item_id, owner=owner, dry_run=dry_run)
+    except executor_service.ExecutorError as exc:
+        raise scheduler_service.SchedulerError(exc.code, exc.status, exc.message) from exc
+
+
+def _executor_status() -> dict[str, Any]:
+    """执行器开关状态，供 UI 判断是否展示「执行」按钮。"""
+    return {
+        "global_enabled": executor_policy.executor_enabled(),
+        "env_switch": executor_policy.ENV_SWITCH,
+        "allowed_tools": list(executor_policy.ALLOWED_TOOLS),
+        "algorithms_note": "平台只拉起 claude，禁 push/部署/删数据",
+    }
+
+
 def _schedulable_for(project_id: str) -> dict[str, Any]:
     """某项目当前可调度与被跳过的任务（只读）。"""
     conn = platform_store.connect()
@@ -1454,6 +1486,16 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
+        # 执行单个调度项（M3-1 T3-103）。项目与全局两道开关默认关闭。
+        if len(rest) == 4 and rest[:2] == ["dispatch", "items"] and rest[3] in ("run", "dry-run"):
+            body = self._body()
+            dry = rest[3] == "dry-run"
+            self._platform(
+                _run_dispatch_item, project_id, rest[2],
+                dry_run=dry,
+                owner=str(body.get("owner") or "local"),
+            )
+            return
         # 自主调度（M3-1）：生成计划是纯计算 + 落库，不执行任何进程。
         if rest == ["dispatch", "plan"]:
             body = self._body()
@@ -1618,6 +1660,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(rest) == 3 and rest[:2] == ["dispatch", "items"]:
                 self._platform(scheduler_service.get_item, project_id, rest[2])
+                return
+            if rest == ["dispatch", "executor"]:
+                self._json(200, _executor_status())
                 return
             if rest == ["dispatch", "schedulable"]:
                 self._platform(_schedulable_for, project_id)

@@ -408,8 +408,12 @@ def backfill_agents(conn: sqlite3.Connection, project: dict[str, Any]) -> int:
         if status:
             agent_status = SELF_REPORT_STATUS_MAP.get(str(status.get("state")), agent_status)
             last_heartbeat = store.iso_utc(status.get("updated_at")) or last_heartbeat
-            if status.get("worktree"):
-                worktree_path = str(status["worktree"])
+            # status 文件里的 worktree 可能是迁移前的旧路径（2026-11-04 目录收拢到
+            # ~/agent-team/<code>-team/worktrees）。只在路径真实存在时才采信，
+            # 否则以上面 git worktree list 的实时结果为准。
+            reported = status.get("worktree")
+            if reported and Path(str(reported)).expanduser().is_dir():
+                worktree_path = str(reported)
             if status.get("task"):
                 current_task_id = _task_id_for_key(conn, project["id"], str(status["task"])) or current_task_id
             metadata["self_report"] = {
@@ -423,7 +427,9 @@ def backfill_agents(conn: sqlite3.Connection, project: dict[str, Any]) -> int:
             agent_status = "idle" if agent_status == "offline" else agent_status
         if worktree and worktree.get("branch"):
             branch = branch or worktree["branch"]
-        if worktree and worktree.get("path") and not worktree_path:
+        # 实时 worktree 路径优先：它是 git 的真实状态，status 文件与历史库里
+        # 都可能残留迁移前的旧路径。
+        if worktree and worktree.get("path") and worktree.get("present"):
             worktree_path = worktree["path"]
 
         conn.execute(

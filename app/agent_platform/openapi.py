@@ -60,6 +60,9 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/dispatch/plans/{plan_id}"),
     ("GET", "/api/projects/{project_id}/dispatch/items/{item_id}"),
     ("GET", "/api/projects/{project_id}/dispatch/schedulable"),
+    ("GET", "/api/projects/{project_id}/dispatch/executor"),
+    ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/run"),
+    ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/dry-run"),
     ("GET", "/api/agent/{agent_id}"),
 ]
 
@@ -313,6 +316,17 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/dispatch/items/{item_id}": {
             "get": project_op("get", "调度项详情（含日志与事件）", params=[_param("item_id", where="path", required=True)],
                               ok_schema={"type": "object"}, errors=(404,))[2],
+        },
+        "/api/projects/{project_id}/dispatch/executor": {
+            "get": project_op("get", "执行器开关状态")[2],
+        },
+        "/api/projects/{project_id}/dispatch/items/{item_id}/run": {
+            "post": project_op("post", "执行调度项（受双重开关约束）",
+                               params=[_param("item_id", where="path", required=True)])[2],
+        },
+        "/api/projects/{project_id}/dispatch/items/{item_id}/dry-run": {
+            "post": project_op("post", "预演调度项（只返回 argv，不起进程）",
+                               params=[_param("item_id", where="path", required=True)])[2],
         },
         "/api/projects/{project_id}/dispatch/schedulable": {
             "get": project_op("get", "当前可调度任务与被跳过原因（只读）")[2],
