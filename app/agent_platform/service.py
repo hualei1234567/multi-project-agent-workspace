@@ -275,7 +275,9 @@ def ensure_configured_projects(conn: sqlite3.Connection) -> list[str]:
             continue
         slugs = [str(s) for s in (item.get("session_slugs") or []) if s]
         now = store.now_iso()
-        with conn:
+        # 注意：连接是 autocommit（isolation_level=None），`with conn:` 并不会开事务，
+        # 旧代码在这里误以为有原子性。改用显式 write_tx，项目与角色一起成功或一起回滚。
+        with store.write_tx(conn):
             conn.execute(
                 """
                 INSERT INTO agent_projects
@@ -296,7 +298,7 @@ def ensure_configured_projects(conn: sqlite3.Connection) -> list[str]:
                     now,
                 ),
             )
-        ensure_project_agents(conn, code, templates.STANDARD_1_6)
+            ensure_project_agents(conn, code, templates.STANDARD_1_6)
         created.append(code)
     return created
 
@@ -1583,21 +1585,23 @@ def transition_task(project_id: str, task_id: str, payload: dict[str, Any]) -> d
         elif current == "done":
             updates.append("completed_at = NULL")
         params.append(task["id"])
-        conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
-        audit(
-            conn, project_id, "task.transition", "task", task["id"],
-            detail={
-                "task_key": task["task_key"],
-                "from": current,
-                "to": to_status,
-                "reason": reason or None,
-                "blocked_reason": blocked_reason or None,
-            },
-        )
-        _insert_task_event(
-            conn, project_id, task["id"], "task_transition",
-            f"{task['task_key']} {current} -> {to_status}" + (f"：{reason}" if reason else ""),
-        )
+        # 状态、审计、事件必须同生同灭：中途失败不能留下「状态改了但没留痕」
+        with store.write_tx(conn):
+            conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            audit(
+                conn, project_id, "task.transition", "task", task["id"],
+                detail={
+                    "task_key": task["task_key"],
+                    "from": current,
+                    "to": to_status,
+                    "reason": reason or None,
+                    "blocked_reason": blocked_reason or None,
+                },
+            )
+            _insert_task_event(
+                conn, project_id, task["id"], "task_transition",
+                f"{task['task_key']} {current} -> {to_status}" + (f"：{reason}" if reason else ""),
+            )
         return {"task": _task_detail(conn, project_id, task["id"])}
     finally:
         conn.close()

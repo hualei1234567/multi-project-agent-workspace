@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
   task_id            TEXT NOT NULL REFERENCES tasks(id),
   depends_on_task_id TEXT NOT NULL REFERENCES tasks(id),
   dependency_type    TEXT NOT NULL DEFAULT 'blocks',
+  -- v3（M3-2）：跨项目依赖标记。0=同项目，1=跨项目。
+  cross_project      INTEGER NOT NULL DEFAULT 0,
   created_at         TEXT NOT NULL,
   CHECK (task_id <> depends_on_task_id),
   UNIQUE (task_id, depends_on_task_id)
@@ -224,3 +226,170 @@ CREATE INDEX IF NOT EXISTS idx_executions_project_time ON executions(project_id,
 CREATE INDEX IF NOT EXISTS idx_audit_project_time ON audit_logs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_project ON project_documents(project_id);
 CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id);
+
+-- ===========================================================================
+-- schema v3（三期 M3-1~M3-3）：自主调度 / 跨项目协作 / 运行时控制
+-- 全部 IF NOT EXISTS，v2 库可原地升级；v2 既有表语义不变。
+-- ===========================================================================
+
+-- 调度批次：一次「决定谁做什么」的快照
+CREATE TABLE IF NOT EXISTS dispatch_plans (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  status      TEXT NOT NULL DEFAULT 'draft',   -- draft/approved/running/done/aborted
+  strategy    TEXT NOT NULL DEFAULT 'manual',  -- manual/priority/dependency
+  created_by  TEXT,
+  notes       TEXT,
+  created_at  TEXT NOT NULL,
+  approved_at TEXT,
+  finished_at TEXT,
+  version     INTEGER NOT NULL DEFAULT 1
+);
+
+-- 调度项：最小执行单元（任务 → 角色）
+CREATE TABLE IF NOT EXISTS dispatch_items (
+  id               TEXT PRIMARY KEY,
+  plan_id          TEXT NOT NULL REFERENCES dispatch_plans(id),
+  project_id       TEXT NOT NULL REFERENCES agent_projects(id),
+  task_id          TEXT,
+  agent_id         TEXT,
+  role_key         TEXT,
+  status           TEXT NOT NULL DEFAULT 'queued', -- queued/leased/running/succeeded/failed/cancelled/skipped
+  priority         TEXT NOT NULL DEFAULT 'P2',
+  attempt          INTEGER NOT NULL DEFAULT 0,
+  max_attempts     INTEGER NOT NULL DEFAULT 2,
+  lease_owner      TEXT,
+  lease_expires_at TEXT,
+  session_id       TEXT,
+  started_at       TEXT,
+  finished_at      TEXT,
+  exit_code        INTEGER,
+  error_code       TEXT,
+  error_summary    TEXT,
+  result_json      TEXT NOT NULL DEFAULT '{}',
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+
+-- 同一任务在同一时刻只允许一个活跃调度项（防双跑）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dispatch_items_active_task
+  ON dispatch_items(project_id, task_id)
+  WHERE status IN ('leased', 'running') AND task_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_items_plan
+  ON dispatch_items(plan_id, status);
+
+-- 执行器日志：进程 stdout/stderr 摘要（写入时截断）
+CREATE TABLE IF NOT EXISTS dispatch_logs (
+  id         TEXT PRIMARY KEY,
+  item_id    TEXT NOT NULL REFERENCES dispatch_items(id),
+  stream     TEXT NOT NULL DEFAULT 'stdout',  -- stdout/stderr/system
+  seq        INTEGER NOT NULL DEFAULT 0,
+  content    TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_logs_item ON dispatch_logs(item_id, seq);
+
+-- 调度事件：状态机流转留痕
+CREATE TABLE IF NOT EXISTS dispatch_events (
+  id          TEXT PRIMARY KEY,
+  item_id     TEXT NOT NULL REFERENCES dispatch_items(id),
+  event_type  TEXT NOT NULL,
+  from_status TEXT,
+  to_status   TEXT,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_events_item ON dispatch_events(item_id, created_at);
+
+-- 共享资源登记（M3-2）：同一时刻只能一个项目独占的资源
+CREATE TABLE IF NOT EXISTS shared_resources (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL UNIQUE,
+  kind             TEXT NOT NULL,   -- gpu/device/port/service/host
+  owner_project_id TEXT REFERENCES agent_projects(id),
+  capacity         INTEGER NOT NULL DEFAULT 1,
+  exclusive        INTEGER NOT NULL DEFAULT 1,
+  metadata_json    TEXT NOT NULL DEFAULT '{}',
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+
+-- 资源占用申请
+CREATE TABLE IF NOT EXISTS resource_claims (
+  id            TEXT PRIMARY KEY,
+  resource_id   TEXT NOT NULL REFERENCES shared_resources(id),
+  project_id    TEXT NOT NULL REFERENCES agent_projects(id),
+  task_id       TEXT,
+  amount        INTEGER NOT NULL DEFAULT 1,
+  status        TEXT NOT NULL DEFAULT 'active',  -- active/released/expired
+  expires_at    TEXT,
+  created_at    TEXT NOT NULL,
+  released_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_resource_claims_resource
+  ON resource_claims(resource_id, status);
+
+-- 运行时服务登记（M3-3）：本机/远端可观测的服务
+CREATE TABLE IF NOT EXISTS runtime_services (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT REFERENCES agent_projects(id),
+  name              TEXT NOT NULL,
+  kind              TEXT NOT NULL DEFAULT 'port',  -- process/docker/systemd/launchd/port
+  target            TEXT NOT NULL,
+  health_check_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json     TEXT NOT NULL DEFAULT '{}',
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+
+-- 运行时健康检查历史
+CREATE TABLE IF NOT EXISTS runtime_checks (
+  id         TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES runtime_services(id),
+  status     TEXT NOT NULL,   -- healthy/degraded/down/unknown
+  latency_ms INTEGER,
+  detail     TEXT,
+  checked_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_checks_service
+  ON runtime_checks(service_id, checked_at DESC);
+
+-- 运行时操作动作库（M3-3）：一键操作的元数据；命令模板仍由代码白名单校验
+CREATE TABLE IF NOT EXISTS runtime_actions (
+  id                TEXT PRIMARY KEY,
+  service_id        TEXT NOT NULL REFERENCES runtime_services(id),
+  action_key        TEXT NOT NULL,
+  label             TEXT NOT NULL,
+  command_template  TEXT NOT NULL,
+  rollback_template TEXT,
+  requires_confirm  INTEGER NOT NULL DEFAULT 1,
+  timeout_s         INTEGER NOT NULL DEFAULT 300,
+  created_at        TEXT NOT NULL,
+  UNIQUE(service_id, action_key)
+);
+
+-- 运行时操作执行记录
+CREATE TABLE IF NOT EXISTS runtime_action_runs (
+  id               TEXT PRIMARY KEY,
+  action_id        TEXT NOT NULL REFERENCES runtime_actions(id),
+  project_id       TEXT,
+  status           TEXT NOT NULL DEFAULT 'pending', -- pending/preflight/running/succeeded/failed/aborted
+  preflight_output TEXT,
+  preflight_token  TEXT,
+  dry_run          INTEGER NOT NULL DEFAULT 1,
+  output           TEXT,
+  exit_code        INTEGER,
+  started_at       TEXT,
+  finished_at      TEXT,
+  created_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_action_runs_action
+  ON runtime_action_runs(action_id, created_at DESC);

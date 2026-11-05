@@ -13,11 +13,12 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
@@ -66,6 +67,49 @@ def stable_id(*parts: Any) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _conn_key(conn: sqlite3.Connection) -> str:
+    """连接对应的库文件绝对路径（用作进程级迁移标记的 key）。"""
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if row[1] == "main" and row[2]:
+                return str(Path(row[2]).resolve())
+    except sqlite3.DatabaseError:
+        pass
+    return ""
+
+
+def write_tx(conn: sqlite3.Connection):
+    """显式写事务上下文：BEGIN IMMEDIATE / COMMIT / 异常 ROLLBACK。
+
+    连接是 ``isolation_level=None``（autocommit），多语句写必须自己开事务，
+    否则中途失败会留下半成品。用法::
+
+        with store.write_tx(conn):
+            conn.execute(...)
+            conn.execute(...)
+    """
+    return _WriteTx(conn)
+
+
+class _WriteTx:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def __enter__(self) -> sqlite3.Connection:
+        self.conn.execute("BEGIN IMMEDIATE")
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if exc_type is None:
+                self.conn.execute("COMMIT")
+            else:
+                self.conn.execute("ROLLBACK")
+        except sqlite3.DatabaseError:
+            pass
+        return False
+
+
 def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
     path = Path(db_path).expanduser() if db_path else default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,11 +124,22 @@ def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def init_db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
+#: 本进程已确认迁移完成的库路径集合。
+#:
+#: 旧实现每个 HTTP 请求都跑一次 ``migrate.apply``（``session()`` 里调 ``init_db``），
+#: 多线程并发首个请求会各自 ``BEGIN IMMEDIATE`` 互相阻塞到 timeout。迁移只需在
+#: 每进程首次访问某库时做一次，之后只做轻量的版本检查。
+_MIGRATED: set[str] = set()
+_MIGRATED_LOCK = threading.Lock()
+
+
+def init_db(conn: sqlite3.Connection | None = None, *, force: bool = False) -> sqlite3.Connection:
     """建表 + 迁移到当前 schema 版本；可重复执行。
 
     8099 重启即自动升级：迁移逻辑统一在 ``migrate.apply``，升级时会先备份
     并在 stderr 打印版本与备份路径。返回连接（自建连接时由调用方关闭）。
+
+    进程内只真正迁移一次（见 ``_MIGRATED``）；``force=True`` 用于测试强制重跑。
     """
     own = conn is None
     conn = conn or connect()
@@ -92,7 +147,17 @@ def init_db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
         # 延迟导入避免 store <-> migrate 循环依赖。
         from . import migrate
 
-        migrate.apply(conn, backup=True, verbose=True)
+        key = _conn_key(conn)
+        if not force and key in _MIGRATED:
+            # 已迁移过：只确认版本没退（其他进程降级过就重新迁移）
+            try:
+                if migrate.current_version(conn) >= migrate.TARGET_VERSION:
+                    return conn
+            except sqlite3.DatabaseError:
+                pass
+        with _MIGRATED_LOCK:
+            migrate.apply(conn, backup=True, verbose=True)
+            _MIGRATED.add(key)
         return conn
     finally:
         if own:

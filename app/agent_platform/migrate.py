@@ -1,24 +1,28 @@
-"""平台 SQLite schema v1 -> v2 迁移（独立于 DDP 业务库）。
+"""平台 SQLite schema 版本链迁移（独立于 DDP 业务库）。
 
 用法::
 
-    python3 scripts/agent_platform/migrate.py --dry-run
-    python3 scripts/agent_platform/migrate.py
-    python3 scripts/agent_platform/migrate.py --downgrade
+    python3 -m agent_platform.migrate --dry-run
+    python3 -m agent_platform.migrate
+    python3 -m agent_platform.migrate --to 2        # 只升到指定版本
+    python3 -m agent_platform.migrate --downgrade --to 2
 
-设计（docs/112 §4）：
+设计（docs/112 §4，三期 M3-0 重构）：
+* **版本链**：``MIGRATIONS`` 是按版本升序的步骤表，从当前版本逐级执行到目标版本。
+  新增一版 schema 只需加一个 ``MigrationStep``，不改执行逻辑。
 * 只做 expand：``schema.sql`` 幂等建表 + ``PRAGMA table_info`` 判断后
   ``ALTER TABLE ADD COLUMN``；不改历史列语义。
-* 迁移前把当前 DB 复制为 ``platform.db.bak-<UTC>``，最多保留 3 份。
+* **绝不倒写版本号**：当前版本 ≥ 目标版本时直接跳过（v2 旧实现无条件下写 2，
+  会让已升级到 v3 的库在下次缺列迁移时被打回 v2）。
+* 迁移前用 ``sqlite3.Connection.backup()`` 备份（WAL 安全；旧的 ``shutil.copy2``
+  只复制主文件、漏掉 ``-wal`` 里的最近提交），最多保留 3 份。
 * 迁移前后各表 ``COUNT(*)`` 对账，已有表行数不一致则回滚并报错。
-* ``schema_version`` 只保留一行：迁移写 2；``--downgrade`` 删 v2 新表并回落 1，
-  新增列保留（SQLite 删列会丢数据），输出提示。
+* ``schema_version`` 只保留一行，值为当前版本。
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -31,7 +35,6 @@ if __package__ in (None, ""):  # 直接 `python3 scripts/agent_platform/migrate.
 else:
     from . import store
 
-TARGET_VERSION = 2
 BACKUP_KEEP = 3
 
 V2_TABLES = (
@@ -80,6 +83,95 @@ COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 
+#: v3 新增表（三期 M3-1~M3-3）。建表语句在 schema.sql，这里只登记回滚清单。
+V3_TABLES = (
+    "dispatch_plans",
+    "dispatch_items",
+    "dispatch_logs",
+    "dispatch_events",
+    "shared_resources",
+    "resource_claims",
+    "runtime_services",
+    "runtime_checks",
+    "runtime_actions",
+    "runtime_action_runs",
+)
+
+#: v2 新增列（v1 -> v2 的 expand 清单）。
+V2_COLUMN_UPGRADES = COLUMN_UPGRADES
+
+#: v3 新增列。
+V3_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("task_dependencies", (
+        # 跨项目依赖（M3-2）：0=同项目，1=跨项目。默认 0 保持既有语义。
+        ("cross_project", "INTEGER NOT NULL DEFAULT 0"),
+    )),
+)
+
+
+# ---------------------------------------------------------------------------
+# 版本链
+# ---------------------------------------------------------------------------
+class MigrationStep:
+    """一步 schema 变更：目标版本 + 新增表 + 新增列 + 可选数据回填。"""
+
+    def __init__(
+        self,
+        version: int,
+        *,
+        tables: tuple[str, ...] = (),
+        columns: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (),
+        backfill: Any = None,
+        description: str = "",
+    ) -> None:
+        self.version = version
+        self.tables = tables
+        self.columns = columns
+        self.backfill = backfill
+        self.description = description
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    _backfill_mirror_source(conn)
+
+
+#: 版本链：按 version 升序。新增一版只追加一项。
+MIGRATIONS: tuple[MigrationStep, ...] = (
+    MigrationStep(
+        2,
+        tables=V2_TABLES,
+        columns=V2_COLUMN_UPGRADES,
+        backfill=_migrate_v1_to_v2,
+        description="二期：任务依赖/执行/文档/收藏/审计/幂等 + 多处扩展列",
+    ),
+    MigrationStep(
+        3,
+        tables=V3_TABLES,
+        columns=V3_COLUMN_UPGRADES,
+        backfill=None,
+        description="三期：调度、共享资源、运行时控制 + 跨项目依赖列",
+    ),
+)
+
+TARGET_VERSION = MIGRATIONS[-1].version
+
+
+def _step(version: int) -> MigrationStep | None:
+    for item in MIGRATIONS:
+        if item.version == version:
+            return item
+    return None
+
+
+def _tables_upto(version: int) -> tuple[str, ...]:
+    """某个版本为止引入的全部表（用于降级时按版本回滚）。"""
+    names: list[str] = []
+    for item in MIGRATIONS:
+        if item.version <= version:
+            names.extend(item.tables)
+    return tuple(names)
+
+
 # ---------------------------------------------------------------------------
 # 基础工具
 # ---------------------------------------------------------------------------
@@ -87,9 +179,19 @@ def _log(message: str) -> None:
     print(f"[agent-platform] {message}", file=sys.stderr)
 
 
-def schema_statements() -> list[str]:
-    """读取 schema.sql，去掉 ``--`` 注释行后按分号拆分。"""
+#: schema.sql 里标记 v3 段的注释锚点；定向升到 v2 时裁掉这一段。
+_V3_MARKER = "schema v3（三期"
+
+
+def schema_statements(target_version: int | None = None) -> list[str]:
+    """读取 schema.sql，去掉 ``--`` 注释行后按分号拆分。
+
+    ``target_version`` 低于 v3 时裁掉 v3 段：schema.sql 描述的是**最新**形态，
+    但定向升级（如测试里的 ``--to 2``）不应顺手建出更高版本的表。
+    """
     text = store.SCHEMA_PATH.read_text(encoding="utf-8")
+    if target_version is not None and target_version < 3 and _V3_MARKER in text:
+        text = text.split(_V3_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):
@@ -133,19 +235,27 @@ def _row_counts(conn: sqlite3.Connection, tables: set[str]) -> dict[str, int]:
     return counts
 
 
-def plan_changes(conn: sqlite3.Connection) -> dict[str, Any]:
+def plan_changes(
+    conn: sqlite3.Connection, *, target_version: int | None = None
+) -> dict[str, Any]:
+    """对比当前库与目标版本的差距（只算，不写）。"""
+    target = target_version or TARGET_VERSION
     tables = _tables(conn)
-    missing_tables = [name for name in V2_TABLES if name not in tables]
+    missing_tables: list[str] = []
     missing_columns: list[tuple[str, str, str]] = []
-    for table, columns in COLUMN_UPGRADES:
-        if table not in tables:
+    for step in MIGRATIONS:
+        if step.version > target:
             continue
-        present = _columns(conn, table)
-        for column, ddl in columns:
-            if column not in present:
-                missing_columns.append((table, column, ddl))
+        missing_tables.extend(name for name in step.tables if name not in tables)
+        for table, columns in step.columns:
+            if table not in tables:
+                continue
+            present = _columns(conn, table)
+            for column, ddl in columns:
+                if column not in present:
+                    missing_columns.append((table, column, ddl))
     schema_tables = set()
-    for statement in schema_statements():
+    for statement in schema_statements(target):
         upper = statement.upper()
         marker = "CREATE TABLE IF NOT EXISTS "
         if upper.startswith(marker):
@@ -156,6 +266,7 @@ def plan_changes(conn: sqlite3.Connection) -> dict[str, Any]:
         "missing_tables": missing_tables,
         "missing_columns": missing_columns,
         "missing_schema_tables": missing_schema_tables,
+        "target_version": target,
     }
 
 
@@ -171,11 +282,25 @@ def _db_path(conn: sqlite3.Connection) -> Path | None:
 
 
 def backup_database(path: Path) -> Path | None:
+    """用 sqlite3 的在线备份 API 复制库。
+
+    旧实现用 ``shutil.copy2``，在 WAL 模式下只复制主文件，``-wal`` 里未 checkpoint
+    的提交会丢失（可能得到一个缺最近事务的快照）。``Connection.backup()`` 走 SQLite
+    自己的备份协议，跨 WAL 一致。
+    """
     if not path.exists() or path.stat().st_size == 0:
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")  # noqa: UP017
     target = path.with_name(f"{path.name}.bak-{stamp}")
-    shutil.copy2(path, target)
+    source_conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        dest_conn = sqlite3.connect(str(target))
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        source_conn.close()
     backups = sorted(path.parent.glob(f"{path.name}.bak-*"))
     for old in backups[:-BACKUP_KEEP]:
         try:
@@ -213,20 +338,38 @@ def apply(
     backup: bool = True,
     no_backup: bool = False,
     verbose: bool = False,
+    target_version: int | None = None,
 ) -> dict[str, Any]:
-    """幂等升级到 v2。返回 {version, backup, changed}；失败整体回滚。"""
+    """从当前版本逐级升到目标版本。返回 {version, backup, changed, steps}；失败整体回滚。
+
+    与 v2 旧实现的区别：
+    * 当前版本 ≥ 目标时**直接跳过**，绝不倒写版本号（旧代码无条件下写 2，
+      会把已升到 v3 的库打回 v2）。
+    * 未登记的版本（比如库是未来版本、代码是旧版）拒绝迁移而不是覆盖。
+    """
+    target = target_version or TARGET_VERSION
     before_version = current_version(conn)
-    plan = plan_changes(conn)
+
+    if before_version > target:
+        raise RuntimeError(
+            f"数据库版本 v{before_version} 高于目标 v{target}："
+            "这通常意味着代码比库旧。拒绝迁移以免覆盖更高版本的数据。"
+        )
+    if target not in {0, *[item.version for item in MIGRATIONS]} and target != before_version:
+        raise RuntimeError(f"目标版本 v{target} 未在 MIGRATIONS 中登记")
+
+    pending = [item for item in MIGRATIONS if before_version < item.version <= target]
+    plan = plan_changes(conn, target_version=target)
     needs_work = bool(
-        plan["missing_schema_tables"]
+        pending
+        or plan["missing_schema_tables"]
         or plan["missing_tables"]
         or plan["missing_columns"]
-        or before_version < TARGET_VERSION
     )
     if not needs_work:
         if verbose:
             _log(f"schema v{before_version} 已是最新，无需迁移")
-        return {"version": before_version, "backup": None, "changed": False}
+        return {"version": before_version, "backup": None, "changed": False, "steps": []}
 
     path = _db_path(conn)
     backup_path: Path | None = None
@@ -235,18 +378,23 @@ def apply(
 
     tables_before = plan["tables"] or _tables(conn)
     counts_before = _row_counts(conn, tables_before)
-    statements = schema_statements()
+    statements = schema_statements(target)
+    executed: list[int] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # schema.sql 是目标形态的全量幂等建表，逐级步骤只补各自的数据回填/列。
         for statement in statements:
             conn.execute(statement)
         for table, column, ddl in plan["missing_columns"]:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-        _backfill_mirror_source(conn)
+        for step in pending:
+            if step.backfill is not None:
+                step.backfill(conn)
+            executed.append(step.version)
         conn.execute("DELETE FROM schema_version")
         conn.execute(
             "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
-            (TARGET_VERSION, store.now_iso()),
+            (target, store.now_iso()),
         )
         counts_after = _row_counts(conn, tables_before)
         mismatched = {
@@ -265,9 +413,10 @@ def apply(
         raise
 
     suffix = f"，备份：{backup_path}" if backup_path else ""
-    _log(f"schema v{before_version} -> v{TARGET_VERSION} 完成{suffix}")
-    return {"version": TARGET_VERSION, "backup": str(backup_path) if backup_path else None,
-            "changed": True, "columns_added": plan["missing_columns"]}
+    _log(f"schema v{before_version} -> v{target} 完成{suffix}")
+    return {"version": target, "backup": str(backup_path) if backup_path else None,
+            "changed": True, "columns_added": plan["missing_columns"],
+            "steps": executed}
 
 
 def downgrade(
@@ -275,8 +424,19 @@ def downgrade(
     *,
     backup: bool = True,
     no_backup: bool = False,
+    target_version: int = 1,
 ) -> dict[str, Any]:
-    """删除 v2 新表并回落 schema_version=1；新增列保留（输出提示）。"""
+    """回落到目标版本：删除该版本之后引入的表；新增列保留（SQLite 删列会丢数据）。"""
+    before_version = current_version(conn)
+    if target_version >= before_version:
+        _log(f"schema v{before_version} 不低于目标 v{target_version}，无需降级")
+        return {"version": before_version, "dropped": [], "backup": None}
+
+    drop_tables: list[str] = []
+    for step in MIGRATIONS:
+        if target_version < step.version <= before_version:
+            drop_tables.extend(step.tables)
+
     path = _db_path(conn)
     backup_path: Path | None = None
     if backup and not no_backup and path is not None and path.exists() and path.stat().st_size:
@@ -284,7 +444,7 @@ def downgrade(
     dropped: list[str] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
-        for table in V2_TABLES:
+        for table in drop_tables:
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
             ).fetchone()
@@ -293,7 +453,8 @@ def downgrade(
                 dropped.append(table)
         conn.execute("DELETE FROM schema_version")
         conn.execute(
-            "INSERT INTO schema_version(version, applied_at) VALUES (1, ?)", (store.now_iso(),)
+            "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+            (target_version, store.now_iso()),
         )
         conn.execute("COMMIT")
     except Exception:
@@ -303,12 +464,12 @@ def downgrade(
             pass
         raise
     _log(
-        "已回落到 schema v1：删除表 "
+        f"已回落到 schema v{target_version}：删除表 "
         + (", ".join(dropped) if dropped else "（无）")
         + "；新增列保留（SQLite 删列会丢数据）"
         + (f"；备份：{backup_path}" if backup_path else "")
     )
-    return {"version": 1, "dropped": dropped,
+    return {"version": target_version, "dropped": dropped,
             "backup": str(backup_path) if backup_path else None}
 
 
@@ -327,9 +488,13 @@ def _readonly_connect(path: Path) -> sqlite3.Connection | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="多项目 Agent 平台 SQLite schema 迁移（v1 <-> v2）")
+    parser = argparse.ArgumentParser(
+        description=f"多项目 Agent 平台 SQLite schema 版本链迁移（当前目标 v{TARGET_VERSION}）"
+    )
     parser.add_argument("--dry-run", action="store_true", help="只打印计划，不写库")
-    parser.add_argument("--downgrade", action="store_true", help="回落到 v1（删 v2 新表，新增列保留）")
+    parser.add_argument("--downgrade", action="store_true", help="回退到 --to 指定版本（默认 v1）")
+    parser.add_argument("--to", type=int, default=None,
+                        help="目标版本号；升级默认取最新，降级默认 1")
     parser.add_argument("--no-backup", action="store_true", help="跳过备份（仅测试用）")
     parser.add_argument("--db", help="覆盖数据库路径（默认 DDP_AGENT_PLATFORM_DB）")
     args = parser.parse_args(argv)
@@ -339,18 +504,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         conn = _readonly_connect(db_path)
+        target = args.to if args.to is not None else TARGET_VERSION
         if conn is None:
             print("当前版本：0（库不存在或为空）")
-            print(f"目标版本：{TARGET_VERSION}")
-            print("将执行：完整 schema.sql（v2 全部表/索引）+ schema_version=2")
+            print(f"目标版本：{target}")
+            print(f"将执行：完整 schema.sql + schema_version={target}")
             print("行数：（无现有表）")
             return 0
         try:
-            plan = plan_changes(conn)
+            plan = plan_changes(conn, target_version=target)
             version = current_version(conn)
             counts = _row_counts(conn, plan["tables"])
             print(f"当前版本：{version}")
-            print(f"目标版本：{TARGET_VERSION}")
+            print(f"目标版本：{target}")
+            pending = [item.version for item in MIGRATIONS if version < item.version <= target]
+            print(f"将执行的步骤：{[f'v{v}' for v in pending] or '（无）'}")
             print(f"缺失表：{plan['missing_schema_tables'] or '（无）'}")
             print(
                 "缺失列："
@@ -363,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
             print("行数：")
             for table in sorted(counts):
                 print(f"  {table}: {counts[table]}")
-            print("将执行：schema.sql 幂等建表 + 上述 ALTER + schema_version=2")
+            print(f"将执行：schema.sql 幂等建表 + 上述 ALTER + schema_version={target}")
         finally:
             conn.close()
         return 0
@@ -371,10 +539,16 @@ def main(argv: list[str] | None = None) -> int:
     conn = store.connect(db_path)
     try:
         if args.downgrade:
-            result = downgrade(conn, no_backup=args.no_backup)
+            result = downgrade(
+                conn, no_backup=args.no_backup,
+                target_version=args.to if args.to is not None else 1,
+            )
             print(f"结果：{result}")
             return 0
-        result = apply(conn, no_backup=args.no_backup, verbose=True)
+        result = apply(
+            conn, no_backup=args.no_backup, verbose=True,
+            target_version=args.to if args.to is not None else TARGET_VERSION,
+        )
         print(f"结果：{result}")
         return 0
     finally:
