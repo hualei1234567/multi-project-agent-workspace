@@ -1310,6 +1310,17 @@ class Handler(BaseHTTPRequestHandler):
             raise platform_service.PlatformError("invalid_json", 400)
         return data
 
+    def _fail(self, code: int, error: str, message: str) -> None:
+        """统一错误体：``{ok:false, error, message, detail:{code,message}}``。
+
+        与 ``_error()`` 同形，避免各处手工拼出字段缺失的变体。
+        """
+        self._json(code, {"ok": False, "error": error, "message": message,
+                          "detail": {"code": error, "message": message}})
+
+    def _not_found_route(self) -> None:
+        self._fail(404, "not_found", "接口不存在")
+
     def _error(self, exc: platform_service.PlatformError) -> None:
         self._json(exc.status, {
             "ok": False, "error": exc.code, "message": exc.message,
@@ -1371,8 +1382,7 @@ class Handler(BaseHTTPRequestHandler):
                 raw = (query.get("path") or [None])[0]
                 target = safe_project_path(project, raw)
                 if target is None:
-                    self._json(400, {"ok": False, "error": "invalid_path",
-                                     "detail": {"code": "invalid_path", "message": "路径不可用"}})
+                    self._fail(400, "invalid_path", "路径不可用")
                     return
                 self._json(200, {"ok": open_with_os(target), "path": str(target)})
                 return
@@ -1402,8 +1412,7 @@ class Handler(BaseHTTPRequestHandler):
                 rest = segments[3:]
                 self._project_post(project_id, rest)
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         except platform_service.PlatformError as exc:
             self._error(exc)
 
@@ -1449,8 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["visit"]:
             self._platform(platform_service.record_visit, project_id)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
@@ -1469,8 +1477,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self._body()
                 self._platform(platform_service.patch_document, segments[2], segments[4], payload)
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         except platform_service.PlatformError as exc:
             self._error(exc)
 
@@ -1479,8 +1486,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], True)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_DELETE(self) -> None:
         segments = self._segments(urlparse(self.path).path)
@@ -1494,8 +1500,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], False)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1568,8 +1573,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/projects/"):
             segments = self._segments(path)
             if len(segments) < 3:
-                self._json(404, {"ok": False, "error": "not_found",
-                                 "detail": {"code": "not_found", "message": "接口不存在"}})
+                self._not_found_route()
                 return
             project_id = segments[2]
             rest = segments[3:]
@@ -1629,8 +1633,7 @@ class Handler(BaseHTTPRequestHandler):
                     page_size=(query.get("page_size") or ["20"])[0],
                 )
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         elif path == "/view":
             # 独立查看页：新标签页直接展示内容；路径仍走 safe_project_path 白名单。
             try:
@@ -1671,21 +1674,18 @@ class Handler(BaseHTTPRequestHandler):
             raw = (query.get("path") or [None])[0]
             target = safe_project_path(project, raw)
             if target is None:
-                self._json(404, {"ok": False, "error": "not_found",
-                                 "detail": {"code": "not_found", "message": "文件不存在或越界"}})
+                self._fail(404, "not_found", "文件不存在或越界")
                 return
             try:
                 self._send(200, target.read_bytes(), MIME.get(target.suffix.lower(), "application/octet-stream"))
             except OSError:
-                self._json(500, {"ok": False, "error": "unreadable",
-                                 "detail": {"code": "unreadable", "message": "文件读取失败"}})
+                self._fail(500, "unreadable", "文件读取失败")
                 return
             platform_service.record_file_open(project["id"], str(raw or ""))
         elif path in ("/", "/index.html"):
             self._send(200, load_page(), "text/html; charset=utf-8")
         else:
-            self._send(404, b'{"error":"not found","detail":{"code":"not_found","message":"not found"}}',
-                       "application/json")
+            self._not_found_route()
 
 
 def main() -> int:
