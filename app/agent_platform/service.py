@@ -249,12 +249,65 @@ def ensure_default_project(
     return get_project_with(conn, DEFAULT_PROJECT_ID)
 
 
+def ensure_configured_projects(conn: sqlite3.Connection) -> list[str]:
+    """按 ``config/projects.json`` 登记尚未入库的项目。
+
+    幂等：已存在的项目**一律不动**（名称、模板、角色以库为准，配置只负责首次登记）。
+    仓库路径不存在的条目跳过，避免把配置里的笔误带进库。
+    """
+    from . import config
+
+    templates.ensure_templates(conn)
+    created: list[str] = []
+    for item in config.load_projects_config().get("projects", []):
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or item.get("id") or "").strip()
+        raw_repo = str(item.get("repo_root") or "").strip()
+        if not code or not raw_repo:
+            continue
+        if not PROJECT_CODE_RE.match(code):
+            continue
+        repo = Path(raw_repo).expanduser()
+        if not repo.is_dir():
+            continue
+        if conn.execute("SELECT 1 FROM agent_projects WHERE id = ?", (code,)).fetchone():
+            continue
+        slugs = [str(s) for s in (item.get("session_slugs") or []) if s]
+        now = store.now_iso()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO agent_projects
+                    (id, code, name, description, status, repo_root, session_slugs,
+                     team_template_key, team_template_version, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, 1, '{}', ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    code,
+                    str(item.get("code") or code),
+                    str(item.get("name") or code),
+                    item.get("description"),
+                    str(repo.resolve()),
+                    store.dumps_json(slugs),
+                    templates.STANDARD_1_6,
+                    now,
+                    now,
+                ),
+            )
+        ensure_project_agents(conn, code, templates.STANDARD_1_6)
+        created.append(code)
+    return created
+
+
 def bootstrap(conn: sqlite3.Connection | None = None, repo_root: Path | None = None) -> str:
     own = conn is None
     conn = conn or store.connect()
     try:
         store.init_db(conn)
         ensure_default_project(conn, repo_root)
+        ensure_configured_projects(conn)
         return DEFAULT_PROJECT_ID
     finally:
         if own:

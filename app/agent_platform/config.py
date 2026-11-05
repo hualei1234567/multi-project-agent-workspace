@@ -36,6 +36,10 @@ def data_dir() -> Path:
 
 
 def config_path() -> Path:
+    """纳管清单路径；``DDP_AGENT_PLATFORM_CONFIG`` 可覆盖（测试/多实例用）。"""
+    override = os.environ.get("DDP_AGENT_PLATFORM_CONFIG")
+    if override:
+        return Path(override).expanduser()
     return workspace_root() / "config" / "projects.json"
 
 

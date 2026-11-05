@@ -19,7 +19,7 @@
 
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,7 +41,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
 })());
 
 const BASE = (process.env.AGWS_URL || "http://127.0.0.1:8098").replace(/\/$/, "");
-const DB_PATH = process.env.AGWS_DB || "/tmp/agws_integration2.db";
+// 清理测试项目要写**被测实例**的库：优先 AGWS_DB，其次实例启动用的 DDP_AGENT_PLATFORM_DB，
+// 最后回落到工作区默认库。以前默认写死一个 /tmp 路径，清理悄悄落在别的库上，
+// 侧栏看起来「没恢复」，实际是脏数据留在被测库里。
+const DB_PATH = process.env.AGWS_DB
+  || process.env.DDP_AGENT_PLATFORM_DB
+  || join(HERE, "..", "..", "data", "platform.db");
 const SHOT_DIR = join("/tmp", "agws-smoke");
 const results = [];
 
@@ -126,6 +131,10 @@ async function activePid(page) {
 }
 
 function cleanupProject(code) {
+  if (!existsSync(DB_PATH)) {
+    console.log(`[WARN] 清理跳过：库不存在 ${DB_PATH}（用 AGWS_DB 指向被测实例的库）`);
+    return;
+  }
   const sql = [
     "BEGIN;",
     `DELETE FROM token_usage_events WHERE project_id='${code}';`,
@@ -168,8 +177,13 @@ async function main() {
 
   // 夹具自带：demo-b 必须存在且名为「演示项目 B」。以前靠人工往库里塞，
   // 换个机器跑就会因夹具缺失/改名而误报；这里缺了就用 API 建出来，收尾再删。
+  // 基线项目数按实际配置算（ddp + material + …），不写死：新增纳管项目不该让冒烟失败
+  const baselineIds = projects.items.map((p) => p.id).filter((id) => id !== "demo-b");
+  const baselineCount = baselineIds.length;
   let fixtureCreated = false;
   if (!projects.items.some((p) => p.id === "demo-b")) {
+    // 平台拒绝不存在的仓库路径，夹具目录自己建（收尾一并清理）
+    mkdirSync("/tmp/projects/demo-b", { recursive: true });
     const r = await fetch(`${BASE}/api/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -212,7 +226,11 @@ async function main() {
       navLabels.join(" / "),
     );
     const sidebarCount = await page.locator("#sb-projects .sb-proj").count();
-    check(sidebarCount === 2, "左侧显示 2 个项目", `实际 ${sidebarCount}`);
+    check(
+      sidebarCount === baselineCount + 1,
+      `左侧显示 ${baselineCount + 1} 个项目（基线 ${baselineCount} + demo-b 夹具）`,
+      `实际 ${sidebarCount}`,
+    );
     const pids = await page.locator("#sb-projects .sb-proj").evaluateAll((els) => els.map((e) => e.dataset.pid));
     check(pids.includes("ddp") && pids.includes("demo-b"), "侧栏包含 ddp 与 demo-b", pids.join(","));
 
@@ -258,8 +276,13 @@ async function main() {
     await page.waitForFunction(() => location.hash === "#/p/ddp/overview", null, { timeout: 5000 });
     await waitOverviewReady(page);
     const ddpToken = await kpiValue(page, "今日 Token");
+    // 两条口径：UI 读 /api/state 的实时 transcript 扫描，/api/projects 的 stats 读回填进库的
+    // token_usage_events。不先回填，活跃会话持续增长就会让两者越拉越远（不是 bug，是没对齐）。
+    // 比较前触发一次回填并重取 API，让两条口径落在同一时刻。
+    await fetch(`${BASE}/api/projects/ddp/backfill`, { method: "POST" });
+    projects = (await api("/api/projects")).body;
     const ddpTokenApi = projects.items.find((p) => p.id === "ddp").stats.token_24h;
-    check(withinTolerance(ddpToken, ddpTokenApi), "切回 ddp 今日 Token 与 API 一致（±2%）", `UI ${ddpToken} / API ${fmtNum(ddpTokenApi)}`);
+    check(withinTolerance(ddpToken, ddpTokenApi), "回填后 ddp 今日 Token 与 API 一致（±2%）", `UI ${ddpToken} / API ${fmtNum(ddpTokenApi)}`);
     check((await activePid(page)) === "ddp", "侧栏高亮 ddp", String(await activePid(page)));
 
     // ------------------------------------------------------------ 3) 竞态
@@ -374,8 +397,14 @@ async function main() {
     await page.reload({ waitUntil: "domcontentloaded" });
     await settle(page, 1000);
     const afterCount = await page.locator("#sb-projects .sb-proj").count();
-    const expectCount = fixtureCreated ? 1 : 2;
+    const expectCount = fixtureCreated ? baselineCount : baselineCount + 1;
     check(afterCount === expectCount, `清理后侧栏恢复 ${expectCount} 个项目`, `实际 ${afterCount}`);
+    const afterIds = await page.locator("#sb-projects .sb-proj").evaluateAll((els) => els.map((e) => e.dataset.pid));
+    check(
+      afterIds.every((id) => baselineIds.includes(id)),
+      "清理后只剩基线项目",
+      afterIds.join(","),
+    );
   } finally {
     await context.close();
     await browser.close();

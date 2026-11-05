@@ -150,6 +150,10 @@ def env(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _build_repo(repo)
     monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db_path))
+    # 临时配置：测试库不读真实 config/projects.json，避免自动登记真实项目
+    config_file = tmp_path / "projects.json"
+    config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(config_file))
     monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(projects_root))
     monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
     service.bootstrap(repo_root=repo)
@@ -629,3 +633,40 @@ def test_agent_scan_is_scoped_to_project_slugs(env, monkeypatch):
 
     # 未在配置里登记的项目退回「只认自身 slug」，不借用默认项目的旧 slug
     assert dash._prefixes_for(repo_b) == (slug_b,)
+
+
+# ---------------------------------------------------------------------------
+# 配置驱动登记：config/projects.json 是纳管清单的唯一事实源
+# ---------------------------------------------------------------------------
+def test_bootstrap_registers_configured_projects_once(env, monkeypatch, tmp_path):
+    extra_repo = tmp_path / "repo-c"
+    _build_repo(extra_repo, title="C 任务")
+    cfg = tmp_path / "projects.json"
+    cfg.write_text(json.dumps({
+        "default_project_id": "ddp",
+        "projects": [
+            {"id": "proj-c", "code": "proj-c", "name": "Project C",
+             "repo_root": str(extra_repo), "session_slugs": ["c-slug"]},
+            {"id": "ghost", "code": "ghost", "name": "Ghost",
+             "repo_root": str(tmp_path / "not-there")},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(cfg))
+
+    service.bootstrap(repo_root=env.repo)
+    project = service.get_project("proj-c")
+    assert project["name"] == "Project C"
+    assert project["repo_root"] == str(extra_repo.resolve())
+    assert project["session_slugs"] == ["c-slug"]
+    assert len(project["agents"]) == 7
+
+    # 仓库路径不存在的条目不登记，避免配置笔误落库
+    with pytest.raises(service.PlatformError) as exc:
+        service.get_project("ghost")
+    assert exc.value.code == "project_not_found"
+
+    # 幂等且不覆盖：库里改过的名字不会被配置重置
+    with store.session() as conn:
+        conn.execute("UPDATE agent_projects SET name = '改过的名字' WHERE id = 'proj-c'")
+    service.bootstrap(repo_root=env.repo)
+    assert service.get_project("proj-c")["name"] == "改过的名字"
