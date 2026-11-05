@@ -135,6 +135,49 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     _backfill_mirror_source(conn)
 
 
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v3 数据修正。
+
+    runtime_action_runs.action_id 早期定义带外键指向 runtime_actions，
+    但实际可执行动作目录在代码里（ACTION_CATALOG），表可能为空，
+    会让执行记录写不进去。SQLite 改不了约束，只能重建表。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='runtime_action_runs'"
+    ).fetchone()
+    if row is None or "REFERENCES runtime_actions" not in (row["sql"] or ""):
+        return
+    conn.execute("ALTER TABLE runtime_action_runs RENAME TO runtime_action_runs_old")
+    conn.execute(
+        """
+        CREATE TABLE runtime_action_runs (
+          id               TEXT PRIMARY KEY,
+          action_id        TEXT NOT NULL,
+          project_id       TEXT,
+          status           TEXT NOT NULL DEFAULT 'pending',
+          preflight_output TEXT,
+          preflight_token  TEXT,
+          dry_run          INTEGER NOT NULL DEFAULT 1,
+          output           TEXT,
+          exit_code        INTEGER,
+          started_at       TEXT,
+          finished_at      TEXT,
+          created_at       TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO runtime_action_runs SELECT id, action_id, project_id, status,"
+        " preflight_output, preflight_token, dry_run, output, exit_code, started_at,"
+        " finished_at, created_at FROM runtime_action_runs_old"
+    )
+    conn.execute("DROP TABLE runtime_action_runs_old")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runtime_action_runs_action"
+        " ON runtime_action_runs(action_id, created_at DESC)"
+    )
+
+
 #: 版本链：按 version 升序。新增一版只追加一项。
 MIGRATIONS: tuple[MigrationStep, ...] = (
     MigrationStep(
@@ -148,7 +191,7 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         3,
         tables=V3_TABLES,
         columns=V3_COLUMN_UPGRADES,
-        backfill=None,
+        backfill=_migrate_v2_to_v3,
         description="三期：调度、共享资源、运行时控制 + 跨项目依赖列",
     ),
 )
@@ -339,6 +382,7 @@ def apply(
     no_backup: bool = False,
     verbose: bool = False,
     target_version: int | None = None,
+    repair: bool = False,
 ) -> dict[str, Any]:
     """从当前版本逐级升到目标版本。返回 {version, backup, changed, steps}；失败整体回滚。
 
@@ -359,6 +403,9 @@ def apply(
         raise RuntimeError(f"目标版本 v{target} 未在 MIGRATIONS 中登记")
 
     pending = [item for item in MIGRATIONS if before_version < item.version <= target]
+    if repair:
+        # 版本号已是最新、但需要重跑数据修正（例如表结构约束变更）时用。
+        pending = [item for item in MIGRATIONS if item.version <= target]
     plan = plan_changes(conn, target_version=target)
     needs_work = bool(
         pending
@@ -496,6 +543,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", type=int, default=None,
                         help="目标版本号；升级默认取最新，降级默认 1")
     parser.add_argument("--no-backup", action="store_true", help="跳过备份（仅测试用）")
+    parser.add_argument("--repair", action="store_true",
+                        help="版本已是最新时也重跑各版本的数据修正步骤")
     parser.add_argument("--db", help="覆盖数据库路径（默认 DDP_AGENT_PLATFORM_DB）")
     args = parser.parse_args(argv)
 
@@ -548,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         result = apply(
             conn, no_backup=args.no_backup, verbose=True,
             target_version=args.to if args.to is not None else TARGET_VERSION,
+            repair=args.repair,
         )
         print(f"结果：{result}")
         return 0

@@ -63,6 +63,12 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/dispatch/executor"),
     ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/run"),
     ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/dry-run"),
+    ("GET", "/api/runtime/services"),
+    ("POST", "/api/runtime/services"),
+    ("POST", "/api/runtime/collect"),
+    ("GET", "/api/runtime/actions"),
+    ("POST", "/api/runtime/actions/{action_key}/preflight"),
+    ("POST", "/api/runtime/actions/{action_key}/run"),
     ("GET", "/api/agent-platform/cross-project"),
     ("GET", "/api/shared-resources"),
     ("POST", "/api/shared-resources"),
@@ -112,7 +118,8 @@ def _operation(
     if body is not None:
         op["requestBody"] = {"required": True, "content": _json(body)}
     names = {400: "参数错误", 403: "无权限或项目已归档", 404: "资源不存在",
-             409: "冲突（版本/状态/只读/幂等）", 422: "业务校验失败"}
+             409: "冲突（版本/状态/只读/幂等）", 412: "缺少预检令牌或确认",
+             422: "业务校验失败"}
     for code in errors:
         op["responses"][str(code)] = _ok(_ref("Error"), names[code])
     return op
@@ -309,6 +316,31 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/backfill": {"post": project_op("post", "回填采集数据")[2]},
         "/api/projects/{project_id}/team/preview": {"post": project_op("post", "预览应用团队模板")[2]},
         "/api/projects/{project_id}/team/apply": {"post": project_op("post", "应用团队模板（保留旧实例）")[2]},
+        "/api/runtime/services": {
+            "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],
+                              ok_schema={"type": "object"}),
+            "post": _operation("登记运行时服务", tags=["runtime"], body={"type": "object"},
+                               ok_schema={"type": "object"}),
+        },
+        "/api/runtime/collect": {
+            "post": _operation("立即探测全部服务", tags=["runtime"],
+                               ok_schema={"type": "object"}),
+        },
+        "/api/runtime/actions": {
+            "get": _operation("操作执行记录", tags=["runtime"], params=[_param("limit", typ="integer")],
+                              ok_schema={"type": "object"}),
+        },
+        "/api/runtime/actions/{action_key}/preflight": {
+            "post": _operation("操作预检（返回命令并签发令牌）", tags=["runtime"],
+                               params=[_param("action_key", where="path", required=True)],
+                               ok_schema={"type": "object"}, errors=(404,)),
+        },
+        "/api/runtime/actions/{action_key}/run": {
+            "post": _operation("执行操作（需令牌 + 确认）", tags=["runtime"],
+                               params=[_param("action_key", where="path", required=True)],
+                               body={"type": "object"}, ok_schema={"type": "object"},
+                               errors=(404, 412)),
+        },
         "/api/agent-platform/cross-project": {
             "get": _operation("跨项目协作图（项目节点 + 依赖边 + 阻塞统计）",
                               tags=["platform"], ok_schema={"type": "object"}),

@@ -59,6 +59,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import executor_policy
     from agent_platform import openapi as openapi_service
     from agent_platform import resources as resource_service
+    from agent_platform import runtime as runtime_service
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
@@ -69,6 +70,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import executor_policy
     from app.agent_platform import openapi as openapi_service
     from app.agent_platform import resources as resource_service
+    from app.agent_platform import runtime as runtime_service
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
@@ -1379,7 +1381,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._json(200, fn(*args, **kwargs))
         except (platform_service.PlatformError, scheduler_service.SchedulerError,
-                resource_service.ResourceError) as exc:
+                resource_service.ResourceError, runtime_service.RuntimeError_) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -1435,6 +1437,29 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json(200, {"ok": open_with_os(target), "path": str(target)})
                 return
+            # 运行时控制（M3-3）
+            if path == "/api/runtime/services":
+                self._platform(runtime_service.register_service, self._body())
+                return
+            if path == "/api/runtime/collect":
+                self._platform(runtime_service.collect_once)
+                return
+            if path.startswith("/api/runtime/actions/") and path.endswith("/preflight"):
+                segments = self._segments(path)
+                if len(segments) == 5:
+                    self._platform(runtime_service.preflight, segments[3])
+                    return
+            if path.startswith("/api/runtime/actions/") and path.endswith("/run"):
+                segments = self._segments(path)
+                if len(segments) == 5:
+                    body = self._body()
+                    self._platform(
+                        runtime_service.run_action, segments[3],
+                        preflight_token=body.get("preflight_token"),
+                        confirm=bool(body.get("confirm")),
+                        dry_run=bool(body.get("dry_run")),
+                    )
+                    return
             # 跨项目协作（M3-2）：共享资源是平台级，不挂在项目下
             if path == "/api/shared-resources":
                 self._platform(resource_service.create_resource, self._body())
@@ -1630,6 +1655,11 @@ class Handler(BaseHTTPRequestHandler):
                 status=(query.get("status") or [None])[0],
                 favorite=(query.get("favorite") or [None])[0],
             )
+        elif path == "/api/runtime/services":
+            self._platform(runtime_service.list_services)
+        elif path == "/api/runtime/actions":
+            self._platform(runtime_service.list_action_runs,
+                           limit=int((query.get("limit") or ["20"])[0]))
         elif path == "/api/agent-platform/cross-project":
             self._platform(platform_service.cross_project_graph)
         elif path == "/api/shared-resources":

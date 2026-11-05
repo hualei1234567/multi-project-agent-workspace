@@ -175,3 +175,38 @@ def test_cross_project_column_added(fresh_db):
     migrate.apply(conn, no_backup=True)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(task_dependencies)")}
     assert "cross_project" in cols
+
+
+def test_repair_reruns_steps_when_version_current(fresh_db):
+    """版本已最新但需要重跑数据修正时，--repair 必须执行步骤。"""
+    conn, _ = fresh_db
+    migrate.apply(conn, no_backup=True)
+    assert migrate.apply(conn, no_backup=True)["changed"] is False
+    repaired = migrate.apply(conn, no_backup=True, repair=True)
+    assert repaired["changed"] is True
+    assert repaired["steps"] == [item.version for item in migrate.MIGRATIONS]
+
+
+def test_v3_repair_removes_runtime_action_runs_fk(fresh_db):
+    """runtime_action_runs 早期定义带外键；修复后应可写入动作目录外的 action_id。"""
+    conn, _ = fresh_db
+    # 先造出带外键的旧表形态，模拟已升级过的库
+    migrate.apply(conn, no_backup=True)
+    conn.execute("DROP TABLE runtime_action_runs")
+    conn.execute(
+        "CREATE TABLE runtime_action_runs ("
+        " id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES runtime_actions(id),"
+        " project_id TEXT, status TEXT NOT NULL DEFAULT 'pending', preflight_output TEXT,"
+        " preflight_token TEXT, dry_run INTEGER NOT NULL DEFAULT 1, output TEXT,"
+        " exit_code INTEGER, started_at TEXT, finished_at TEXT, created_at TEXT NOT NULL)"
+    )
+    migrate.apply(conn, no_backup=True, repair=True)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='runtime_action_runs'"
+    ).fetchone()[0]
+    assert "REFERENCES runtime_actions" not in sql
+    # 现在可以写代码目录里的动作名
+    conn.execute(
+        "INSERT INTO runtime_action_runs (id, action_id, status, created_at)"
+        " VALUES ('r1', 'docker_ps_material', 'succeeded', 't')"
+    )

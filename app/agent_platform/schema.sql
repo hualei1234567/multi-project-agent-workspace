@@ -361,7 +361,9 @@ CREATE TABLE IF NOT EXISTS runtime_checks (
 CREATE INDEX IF NOT EXISTS idx_runtime_checks_service
   ON runtime_checks(service_id, checked_at DESC);
 
--- 运行时操作动作库（M3-3）：一键操作的元数据；命令模板仍由代码白名单校验
+-- 运行时操作动作库（M3-3）。
+-- 注：实际可执行动作以代码里的 ACTION_CATALOG 为准（命令必须硬编码，不能由库注入）；
+-- 本表只用于「某个服务允许哪些动作」的可选扩展，平台不依赖它执行。
 CREATE TABLE IF NOT EXISTS runtime_actions (
   id                TEXT PRIMARY KEY,
   service_id        TEXT NOT NULL REFERENCES runtime_services(id),
@@ -375,10 +377,12 @@ CREATE TABLE IF NOT EXISTS runtime_actions (
   UNIQUE(service_id, action_key)
 );
 
--- 运行时操作执行记录
+-- 运行时操作执行记录。
+-- action_key 刻意不加外键：动作目录在代码里，库表可能为空，且历史记录
+-- 不应因动作下线而失去追溯能力。
 CREATE TABLE IF NOT EXISTS runtime_action_runs (
   id               TEXT PRIMARY KEY,
-  action_id        TEXT NOT NULL REFERENCES runtime_actions(id),
+  action_id        TEXT NOT NULL,
   project_id       TEXT,
   status           TEXT NOT NULL DEFAULT 'pending', -- pending/preflight/running/succeeded/failed/aborted
   preflight_output TEXT,
