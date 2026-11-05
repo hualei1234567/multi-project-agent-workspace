@@ -56,12 +56,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
     from agent_platform import config as platform_config
     from agent_platform import openapi as openapi_service
+    from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
     from app.agent_platform import config as platform_config
     from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
     from app.agent_platform.state_cache import StateCache
@@ -1278,6 +1280,17 @@ def open_with_os(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+def _schedulable_for(project_id: str) -> dict[str, Any]:
+    """某项目当前可调度与被跳过的任务（只读）。"""
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        ready, skipped = scheduler_service.schedulable(conn, project_id)
+        return {"ready": ready, "skipped": skipped}
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args) -> None:
         return
@@ -1321,7 +1334,8 @@ class Handler(BaseHTTPRequestHandler):
     def _not_found_route(self) -> None:
         self._fail(404, "not_found", "接口不存在")
 
-    def _error(self, exc: platform_service.PlatformError) -> None:
+    def _error(self, exc) -> None:
+        """统一错误响应。接受 PlatformError 与同形的 SchedulerError。"""
         self._json(exc.status, {
             "ok": False, "error": exc.code, "message": exc.message,
             "detail": {"code": exc.code, "message": exc.message},
@@ -1330,7 +1344,7 @@ class Handler(BaseHTTPRequestHandler):
     def _platform(self, fn, *args, **kwargs) -> None:
         try:
             self._json(200, fn(*args, **kwargs))
-        except platform_service.PlatformError as exc:
+        except (platform_service.PlatformError, scheduler_service.SchedulerError) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -1439,6 +1453,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
+            return
+        # 自主调度（M3-1）：生成计划是纯计算 + 落库，不执行任何进程。
+        if rest == ["dispatch", "plan"]:
+            body = self._body()
+            self._platform(
+                scheduler_service.create_plan, project_id,
+                strategy=str(body.get("strategy") or "priority"),
+                created_by=str(body.get("created_by") or "local"),
+                max_items=body.get("max_items"),
+                notes=body.get("notes"),
+            )
             return
         if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "transition":
             self._platform(platform_service.transition_task, project_id, rest[1], self._body())
@@ -1579,6 +1604,23 @@ class Handler(BaseHTTPRequestHandler):
             rest = segments[3:]
             if not rest:
                 self._platform_project(platform_service.get_project, project_id)
+                return
+            # 自主调度只读（M3-1）
+            if rest == ["dispatch", "plans"]:
+                self._platform(
+                    scheduler_service.list_plans, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                )
+                return
+            if len(rest) == 3 and rest[:2] == ["dispatch", "plans"]:
+                self._platform(scheduler_service.get_plan, project_id, rest[2])
+                return
+            if len(rest) == 3 and rest[:2] == ["dispatch", "items"]:
+                self._platform(scheduler_service.get_item, project_id, rest[2])
+                return
+            if rest == ["dispatch", "schedulable"]:
+                self._platform(_schedulable_for, project_id)
                 return
             if rest == ["tasks"]:
                 self._platform(

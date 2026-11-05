@@ -55,6 +55,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/team-templates/{template_key}"),
     ("POST", "/api/team-templates/{template_key}/clone"),
     ("GET", "/api/agent-platform/overview"),
+    ("POST", "/api/projects/{project_id}/dispatch/plan"),
+    ("GET", "/api/projects/{project_id}/dispatch/plans"),
+    ("GET", "/api/projects/{project_id}/dispatch/plans/{plan_id}"),
+    ("GET", "/api/projects/{project_id}/dispatch/items/{item_id}"),
+    ("GET", "/api/projects/{project_id}/dispatch/schedulable"),
     ("GET", "/api/agent/{agent_id}"),
 ]
 
@@ -294,6 +299,24 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/backfill": {"post": project_op("post", "回填采集数据")[2]},
         "/api/projects/{project_id}/team/preview": {"post": project_op("post", "预览应用团队模板")[2]},
         "/api/projects/{project_id}/team/apply": {"post": project_op("post", "应用团队模板（保留旧实例）")[2]},
+        "/api/projects/{project_id}/dispatch/plan": {
+            "post": project_op("post", "生成调度计划（纯计算，不执行）")[2],
+        },
+        "/api/projects/{project_id}/dispatch/plans": {
+            "get": project_op("get", "调度计划列表（分页）", params=PAGE_PARAMS,
+                              ok_schema=_ref("Page"))[2],
+        },
+        "/api/projects/{project_id}/dispatch/plans/{plan_id}": {
+            "get": project_op("get", "调度计划详情（含调度项）", params=[_param("plan_id", where="path", required=True)],
+                              ok_schema={"type": "object"}, errors=(404,))[2],
+        },
+        "/api/projects/{project_id}/dispatch/items/{item_id}": {
+            "get": project_op("get", "调度项详情（含日志与事件）", params=[_param("item_id", where="path", required=True)],
+                              ok_schema={"type": "object"}, errors=(404,))[2],
+        },
+        "/api/projects/{project_id}/dispatch/schedulable": {
+            "get": project_op("get", "当前可调度任务与被跳过原因（只读）")[2],
+        },
         "/api/projects/{project_id}/tasks": {
             "get": project_op("get", "任务列表（分页）", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2],
             "post": project_op("post", "创建任务")[2],
