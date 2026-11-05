@@ -86,7 +86,7 @@ async function projectCostText(page) {
   return m ? m[1] : null;
 }
 
-const TAB_LABELS = ["概览", "Agent 看板", "任务看板", "执行记录", "交付记录", "文档配置", "项目设置"];
+const TAB_LABELS = ["概览", "Agent 看板", "任务看板", "调度", "执行记录", "交付记录", "文档配置", "项目设置"];
 
 /** 解析 UI 格式化数字：488.91M / 9.5k / 123 / $8.29。 */
 function parseUiNumber(text) {
@@ -262,8 +262,8 @@ async function main() {
     check((await activePid(page)) === "demo-b", "侧栏高亮 demo-b", String(await activePid(page)));
     const tabLabels = await page.locator("#view .tabs .tab").evaluateAll((els) => els.map((e) => e.textContent.trim()));
     check(
-      tabLabels.length === 7 && TAB_LABELS.every((t) => tabLabels.includes(t)),
-      "项目头 7 个 Tab 齐全（含执行记录）",
+      tabLabels.length === TAB_LABELS.length && TAB_LABELS.every((t) => tabLabels.includes(t)),
+      `项目头 ${TAB_LABELS.length} 个 Tab 齐全（含调度与执行记录）`,
       tabLabels.join(" / "),
     );
     const ovText = await page.locator("#view").innerText();
@@ -321,6 +321,7 @@ async function main() {
     const tabs = [
       ["agents", "角色花名册"],
       ["tasks", "任务看板"],
+      ["dispatch", "调度"],
       ["executions", "执行记录"],
       ["deliveries", "交付记录"],
       ["docs", "文档与规范"],
