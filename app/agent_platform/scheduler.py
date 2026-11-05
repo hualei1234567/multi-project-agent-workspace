@@ -63,14 +63,36 @@ def _task_rows(conn: sqlite3.Connection, project_id: str) -> list[dict[str, Any]
 
 
 def _dependency_map(conn: sqlite3.Connection, project_id: str) -> dict[str, set[str]]:
-    """task_id -> 依赖的 task_id 集合。"""
+    """task_id -> 依赖的 task_id 集合。
+
+    三期 M3-2：跨项目依赖的 `task_dependencies.project_id` 记录的是**源**项目，
+    依赖目标可能在别的项目里，所以这里按 task_id 取全部依赖，再连表确认目标存在。
+    """
     deps: dict[str, set[str]] = {}
-    for row in conn.execute(
-        "SELECT task_id, depends_on_task_id FROM task_dependencies WHERE project_id = ?",
+    rows = conn.execute(
+        "SELECT d.task_id, d.depends_on_task_id"
+        "  FROM task_dependencies d"
+        "  JOIN tasks src ON src.id = d.task_id"
+        "  JOIN tasks dst ON dst.id = d.depends_on_task_id"
+        " WHERE src.project_id = ?",
         (project_id,),
-    ):
+    )
+    for row in rows:
         deps.setdefault(row["task_id"], set()).add(row["depends_on_task_id"])
     return deps
+
+
+def _dep_tasks(conn: sqlite3.Connection, task_ids: set[str]) -> dict[str, dict[str, Any]]:
+    """跨项目依赖的目标任务可能在别的项目里，需要单独取（含状态与 key）。"""
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" * len(task_ids))
+    rows = conn.execute(
+        f"SELECT id, task_key, title, status, source, priority FROM tasks"
+        f" WHERE id IN ({placeholders})",
+        tuple(task_ids),
+    )
+    return {row["id"]: dict(row) for row in rows}
 
 
 def _active_task_ids(conn: sqlite3.Connection, project_id: str) -> set[str]:
@@ -110,6 +132,9 @@ def schedulable(
     """返回 (可执行任务, 被跳过的任务及原因)。纯读，不写库。"""
     tasks = {task["id"]: task for task in _task_rows(conn, project_id)}
     deps = _dependency_map(conn, project_id)
+    # 依赖目标可能跨项目：单独查，但不并入候选集合（否则会被当成可调度任务）
+    dep_ids = set().union(*deps.values()) if deps else set()
+    dep_tasks = _dep_tasks(conn, dep_ids)
     active = _active_task_ids(conn, project_id)
     agents = _agent_modes(conn, project_id)
     memo: dict[str, int] = {}
@@ -117,7 +142,7 @@ def schedulable(
     ready: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for task in tasks.values():
-        reason = _skip_reason(task, tasks, deps, active, agents)
+        reason = _skip_reason(task, tasks, dep_tasks, deps, active, agents)
         if reason:
             skipped.append({
                 "task_id": task["id"],
@@ -145,13 +170,14 @@ def schedulable(
 def _skip_reason(
     task: dict[str, Any],
     tasks: dict[str, dict[str, Any]],
+    dep_tasks: dict[str, dict[str, Any]],
     deps: dict[str, set[str]],
     active: set[str],
     agents: dict[str, dict[str, Any]],
 ) -> str | None:
     if task["status"] not in SCHEDULABLE_STATUSES:
         return f"状态 {task['status']} 不可调度"
-    if task["source"] == "board":
+    if task.get("source") == "board":
         return "镜像任务只读"
     if not task.get("assignee_agent_id"):
         return "未指派执行角色"
@@ -163,7 +189,7 @@ def _skip_reason(
     if task["id"] in active:
         return "已有在途调度项"
     for dep_id in deps.get(task["id"], ()):  # type: ignore[union-attr]
-        dep = tasks.get(dep_id)
+        dep = dep_tasks.get(dep_id) or tasks.get(dep_id)
         if dep is None:
             return "依赖任务不存在"
         if dep["status"] != "done":

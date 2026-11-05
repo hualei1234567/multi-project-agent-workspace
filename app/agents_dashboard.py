@@ -58,6 +58,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
     from agent_platform import openapi as openapi_service
+    from agent_platform import resources as resource_service
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
@@ -67,6 +68,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
     from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import resources as resource_service
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
@@ -1376,7 +1378,8 @@ class Handler(BaseHTTPRequestHandler):
     def _platform(self, fn, *args, **kwargs) -> None:
         try:
             self._json(200, fn(*args, **kwargs))
-        except (platform_service.PlatformError, scheduler_service.SchedulerError) as exc:
+        except (platform_service.PlatformError, scheduler_service.SchedulerError,
+                resource_service.ResourceError) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -1432,6 +1435,16 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json(200, {"ok": open_with_os(target), "path": str(target)})
                 return
+            # 跨项目协作（M3-2）：共享资源是平台级，不挂在项目下
+            if path == "/api/shared-resources":
+                self._platform(resource_service.create_resource, self._body())
+                return
+            if (path.startswith("/api/shared-resources/")
+                    and path.rstrip("/").endswith("/claims")):
+                segments = self._segments(path)
+                if len(segments) == 4:
+                    self._platform(resource_service.claim_resource, segments[2], self._body())
+                    return
             if path == "/api/projects":
                 payload = self._body()
                 fingerprint = "POST /api/projects " + hashlib.sha1(
@@ -1557,6 +1570,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         segments = self._segments(urlparse(self.path).path)
+        # DELETE /api/shared-resources/{id}/claims/{claim_id}
+        if (len(segments) == 5 and segments[:2] == ["api", "shared-resources"]
+                and segments[3] == "claims"):
+            self._platform(resource_service.release_claim, segments[2], segments[4])
+            return
         if (len(segments) == 7 and segments[:2] == ["api", "projects"]
                 and segments[3] == "tasks" and segments[5] == "dependencies"):
             self._platform(platform_service.delete_dependency, segments[2], segments[4], segments[6])
@@ -1612,6 +1630,16 @@ class Handler(BaseHTTPRequestHandler):
                 status=(query.get("status") or [None])[0],
                 favorite=(query.get("favorite") or [None])[0],
             )
+        elif path == "/api/agent-platform/cross-project":
+            self._platform(platform_service.cross_project_graph)
+        elif path == "/api/shared-resources":
+            self._platform(resource_service.list_resources)
+        elif path.startswith("/api/shared-resources/"):
+            rid = unquote(path[len("/api/shared-resources/"):].strip("/"))
+            if rid:
+                self._platform(resource_service.get_resource, rid)
+            else:
+                self._not_found_route()
         elif path == "/api/agent-platform/overview":
             self._platform(platform_service.overview)
         elif path == "/api/me/recent-projects":
@@ -1680,6 +1708,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(rest) == 2 and rest[0] == "tasks":
                 self._platform(platform_service.get_task, project_id, rest[1])
+                return
+            if len(rest) == 3 and rest[:2] == ["tasks", rest[1]] and rest[2] == "cross-dependencies":
+                self._platform(platform_service.task_cross_dependencies, project_id, rest[1])
                 return
             if rest == ["deliveries"]:
                 self._platform(

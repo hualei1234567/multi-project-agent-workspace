@@ -63,6 +63,13 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/dispatch/executor"),
     ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/run"),
     ("POST", "/api/projects/{project_id}/dispatch/items/{item_id}/dry-run"),
+    ("GET", "/api/agent-platform/cross-project"),
+    ("GET", "/api/shared-resources"),
+    ("POST", "/api/shared-resources"),
+    ("GET", "/api/shared-resources/{resource_id}"),
+    ("POST", "/api/shared-resources/{resource_id}/claims"),
+    ("DELETE", "/api/shared-resources/{resource_id}/claims/{claim_id}"),
+    ("GET", "/api/projects/{project_id}/tasks/{task_id}/cross-dependencies"),
     ("GET", "/api/agent/{agent_id}"),
 ]
 
@@ -302,6 +309,36 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/backfill": {"post": project_op("post", "回填采集数据")[2]},
         "/api/projects/{project_id}/team/preview": {"post": project_op("post", "预览应用团队模板")[2]},
         "/api/projects/{project_id}/team/apply": {"post": project_op("post", "应用团队模板（保留旧实例）")[2]},
+        "/api/agent-platform/cross-project": {
+            "get": _operation("跨项目协作图（项目节点 + 依赖边 + 阻塞统计）",
+                              tags=["platform"], ok_schema={"type": "object"}),
+        },
+        "/api/shared-resources": {
+            "get": _operation("共享资源列表", tags=["platform"], ok_schema=_ref("Page")),
+            "post": _operation("登记共享资源", tags=["platform"], body={"type": "object"},
+                               ok_schema={"type": "object"}),
+        },
+        "/api/shared-resources/{resource_id}": {
+            "get": _operation("共享资源详情（含活跃占用）", tags=["platform"],
+                              params=[_param("resource_id", where="path", required=True)],
+                              ok_schema={"type": "object"}, errors=(404,)),
+        },
+        "/api/shared-resources/{resource_id}/claims": {
+            "post": _operation("申请占用资源", tags=["platform"],
+                               params=[_param("resource_id", where="path", required=True)],
+                               body={"type": "object"}, ok_schema={"type": "object"},
+                               errors=(404, 409, 422)),
+        },
+        "/api/shared-resources/{resource_id}/claims/{claim_id}": {
+            "delete": _operation("释放资源占用", tags=["platform"],
+                                 params=[_param("resource_id", where="path", required=True),
+                                         _param("claim_id", where="path", required=True)],
+                                 ok_schema={"type": "object"}, errors=(404,)),
+        },
+        "/api/projects/{project_id}/tasks/{task_id}/cross-dependencies": {
+            "get": project_op("get", "任务的跨项目依赖（进/出双向）",
+                              params=[_param("task_id", where="path", required=True)])[2],
+        },
         "/api/projects/{project_id}/dispatch/plan": {
             "post": project_op("post", "生成调度计划（纯计算，不执行）")[2],
         },
