@@ -28,6 +28,16 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/backfill"),
     ("POST", "/api/projects/{project_id}/team/preview"),
     ("POST", "/api/projects/{project_id}/team/apply"),
+    ("POST", "/api/projects/{project_id}/eval/suites"),
+    ("GET", "/api/projects/{project_id}/eval/suites"),
+    ("POST", "/api/projects/{project_id}/eval/datasets"),
+    ("GET", "/api/projects/{project_id}/eval/datasets"),
+    ("POST", "/api/projects/{project_id}/eval/datasets/{dataset_id}/versions"),
+    ("POST", "/api/projects/{project_id}/eval/evaluators"),
+    ("GET", "/api/projects/{project_id}/eval/evaluators"),
+    ("POST", "/api/projects/{project_id}/eval/runs"),
+    ("GET", "/api/projects/{project_id}/eval/runs"),
+    ("GET", "/api/projects/{project_id}/eval/runs/{run_id}"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -316,6 +326,39 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/backfill": {"post": project_op("post", "回填采集数据")[2]},
         "/api/projects/{project_id}/team/preview": {"post": project_op("post", "预览应用团队模板")[2]},
         "/api/projects/{project_id}/team/apply": {"post": project_op("post", "应用团队模板（保留旧实例）")[2]},
+        "/api/projects/{project_id}/eval/suites": {
+            "post": project_op("post", "创建评估套件（P4-M1）", body={"type": "object"})[2],
+            "get": project_op("get", "评估套件列表（P4-M1）")[2],
+        },
+        "/api/projects/{project_id}/eval/datasets": {
+            "post": project_op("post", "创建数据集（P4-M1）", body={"type": "object"})[2],
+            "get": project_op("get", "数据集列表（P4-M1）")[2],
+        },
+        "/api/projects/{project_id}/eval/datasets/{dataset_id}/versions": {
+            "post": project_op(
+                "post", "冻结数据集版本（不可变，P4-M1）",
+                params=[_param("dataset_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/eval/evaluators": {
+            "post": project_op("post", "创建评估器与规则版本（P4-M1）", body={"type": "object"})[2],
+            "get": project_op("get", "评估器列表（P4-M1）")[2],
+        },
+        "/api/projects/{project_id}/eval/runs": {
+            "post": project_op(
+                "post", "执行评估（安全项失败即整轮 fail，P4-M1）",
+                body={"type": "object"},
+            )[2],
+            "get": project_op("get", "评估运行列表（P4-M1）")[2],
+        },
+        "/api/projects/{project_id}/eval/runs/{run_id}": {
+            "get": project_op(
+                "get", "评估运行详情与逐样本结果（P4-M1）",
+                params=[_param("run_id", where="path", required=True)],
+                errors=(404,),
+            )[2],
+        },
         "/api/runtime/services": {
             "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],
                               ok_schema={"type": "object"}),

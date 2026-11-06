@@ -64,6 +64,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
+    from agent_platform.p4 import evaluation as evaluation_service
     from agent_platform.p4 import governance as p4_governance
     from agent_platform.p4 import killswitch as p4_killswitch
     from agent_platform.p4 import policy as p4_policy
@@ -79,6 +80,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
+    from app.agent_platform.p4 import evaluation as evaluation_service
     from app.agent_platform.p4 import governance as p4_governance
     from app.agent_platform.p4 import killswitch as p4_killswitch
     from app.agent_platform.p4 import policy as p4_policy
@@ -1436,6 +1438,68 @@ class Handler(BaseHTTPRequestHandler):
         })
         return False
 
+    def _eval_platform(self, fn, *args, **kwargs) -> None:
+        """评估域统一出口：自带连接的 _platform 变体。"""
+        conn = platform_store.connect()
+        try:
+            self._json(200, fn(conn, *args, **kwargs))
+        except evaluation_service.EvaluationError as exc:
+            self._error(exc)
+        except Exception:  # noqa: BLE001
+            self._json(500, {"ok": False, "error": "internal_error",
+                             "detail": {"code": "internal_error", "message": "内部错误"}})
+        finally:
+            conn.close()
+
+    def _handle_eval(self, project_id: str, rest: list[str], method: str) -> bool:
+        """评估域路由。已处理返回 True。"""
+        if not rest or rest[0] != "eval":
+            return False
+        body = self._body() if method == "POST" else {}
+
+        if method == "POST" and rest == ["eval", "suites"]:
+            if not self._policy_guard(project_id, "evaluation_suite", "create"):
+                return True
+            self._eval_platform(evaluation_service.create_suite, project_id, body)
+            return True
+        if method == "GET" and rest == ["eval", "suites"]:
+            self._eval_platform(evaluation_service.list_suites, project_id)
+            return True
+        if method == "POST" and rest == ["eval", "datasets"]:
+            if not self._policy_guard(project_id, "evaluation_dataset", "create"):
+                return True
+            self._eval_platform(evaluation_service.create_dataset, project_id, body)
+            return True
+        if method == "GET" and rest == ["eval", "datasets"]:
+            self._eval_platform(evaluation_service.list_datasets, project_id)
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["eval", "datasets"] and rest[3] == "versions"):
+            if not self._policy_guard(project_id, "evaluation_dataset", "update"):
+                return True
+            self._eval_platform(evaluation_service.freeze_version, rest[2], body)
+            return True
+        if method == "POST" and rest == ["eval", "evaluators"]:
+            if not self._policy_guard(project_id, "evaluator", "create"):
+                return True
+            self._eval_platform(evaluation_service.create_evaluator, project_id, body)
+            return True
+        if method == "GET" and rest == ["eval", "evaluators"]:
+            self._eval_platform(evaluation_service.list_evaluators, project_id)
+            return True
+        if method == "POST" and rest == ["eval", "runs"]:
+            if not self._policy_guard(project_id, "evaluation_run", "create", risk="R2"):
+                return True
+            self._eval_platform(evaluation_service.run_evaluation, project_id, body)
+            return True
+        if method == "GET" and rest == ["eval", "runs"]:
+            self._eval_platform(evaluation_service.list_runs, project_id)
+            return True
+        if method == "GET" and len(rest) == 3 and rest[:2] == ["eval", "runs"]:
+            self._eval_platform(evaluation_service.get_run, rest[2])
+            return True
+        return False
+
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -1632,6 +1696,9 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["team", "apply"]:
             self._platform(platform_service.apply_team, project_id, self._body())
             return
+        # 四期评估域（P4-M1）
+        if self._handle_eval(project_id, rest, "POST"):
+            return
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
@@ -1768,6 +1835,15 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._send(200, json.dumps(body, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
+        if path == "/healthz":
+            # 健康探针：公开路径，不带令牌也能访问，只暴露存活与版本。
+            self._json(200, {
+                "ok": True,
+                "service": "agents-dashboard",
+                "schema_version": platform_store.SCHEMA_VERSION,
+                "ts": platform_store.now_iso(),
+            })
+            return
         elif path == "/api/openapi.json":
             self._send(200, json.dumps(openapi_service.build_openapi(), ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
@@ -1827,6 +1903,9 @@ class Handler(BaseHTTPRequestHandler):
             rest = segments[3:]
             if not rest:
                 self._platform_project(platform_service.get_project, project_id)
+                return
+            # 四期评估域（P4-M1）
+            if self._handle_eval(project_id, rest, "GET"):
                 return
             # 自主调度只读（M3-1）
             if rest == ["dispatch", "plans"]:
@@ -2005,6 +2084,21 @@ def main() -> int:
     if not servers:
         print("[agents-dashboard] 没有可用的监听地址，退出", file=sys.stderr)
         return 1
+
+    def _runtime_collector() -> None:
+        """常驻采集：每 60 秒探测一次已登记服务。
+
+        没有这个线程时 ``runtime_checks`` 只在手动调用时更新，UI 会显示
+        陈旧状态——这正是 P4-R22 记录的缺陷。
+        """
+        while True:
+            try:
+                runtime_service.collect_once()
+            except Exception as exc:  # noqa: BLE001 - 采集失败不能让线程退出
+                print(f"[agents-dashboard] 运行时采集失败：{exc}", file=sys.stderr)
+            time.sleep(60)
+
+    threading.Thread(target=_runtime_collector, daemon=True).start()
 
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()

@@ -51,9 +51,9 @@ def test_v4_schema_present(conn: sqlite3.Connection) -> None:
         assert table in names
 
 
-def test_schema_version_is_4(conn: sqlite3.Connection) -> None:
+def test_schema_version_is_latest(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
-    assert row[0] == 4
+    assert row[0] == store.SCHEMA_VERSION
 
 
 def test_local_owner_bootstrapped_and_is_platform_owner(conn: sqlite3.Connection) -> None:

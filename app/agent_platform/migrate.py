@@ -119,6 +119,18 @@ V4_TABLES = (
     "event_inbox",
 )
 
+#: v5（四期 M1）：评估域。
+V5_TABLES = (
+    "eval_suites",
+    "eval_datasets",
+    "eval_dataset_versions",
+    "eval_cases",
+    "eval_evaluators",
+    "eval_evaluator_versions",
+    "eval_runs",
+    "eval_results",
+)
+
 V4_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     # 全链路关联标识：审计与事件必须能串起同一次业务链路。
     ("audit_logs", (
@@ -259,6 +271,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         backfill=_migrate_v3_to_v4,
         description="四期 M1 地基：身份授权、Policy、Kill Switch、审批、事件平面",
     ),
+    MigrationStep(
+        5,
+        tables=V5_TABLES,
+        description="四期 M1 评估域：Suite / Dataset / Case / Evaluator / Run / Result",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version
@@ -290,6 +307,7 @@ def _log(message: str) -> None:
 #: schema.sql 里标记 v3 段的注释锚点；定向升到 v2 时裁掉这一段。
 _V3_MARKER = "schema v3（三期"
 _V4_MARKER = "schema v4（四期"
+_V5_MARKER = "schema v5（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -303,6 +321,8 @@ def schema_statements(target_version: int | None = None) -> list[str]:
         text = text.split(_V3_MARKER)[0]
     if target_version is not None and target_version < 4 and _V4_MARKER in text:
         text = text.split(_V4_MARKER)[0]
+    if target_version is not None and target_version < 5 and _V5_MARKER in text:
+        text = text.split(_V5_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

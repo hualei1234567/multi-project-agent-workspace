@@ -102,3 +102,44 @@ def test_release_restores_service(server, env):
     finally:
         conn.close()
     assert _request(server, "/api/projects")[0] == 200
+
+
+def test_evaluation_flow_over_http(server):
+    code, project = _request(server, "/api/projects", "POST",
+                             {"code": "evalp", "name": "评估项目", "session_slugs": []})
+    assert code == 200
+    pid = project["project"]["id"]
+
+    code, suite = _request(server, f"/api/projects/{pid}/eval/suites", "POST",
+                           {"name": "回归套件"})
+    assert code == 200, suite
+    sid = suite["id"]
+
+    code, dataset = _request(server, f"/api/projects/{pid}/eval/datasets", "POST",
+                             {"name": "核心集", "suite_id": sid, "split": "regression"})
+    assert code == 200, dataset
+
+    code, version = _request(
+        server, f"/api/projects/{pid}/eval/datasets/{dataset['id']}/versions", "POST",
+        {"cases": [{"case_key": "c1", "expected": {"answer": "ok"}}]},
+    )
+    assert code == 200, version
+    assert version["status"] == "frozen"
+
+    code, evaluator = _request(server, f"/api/projects/{pid}/eval/evaluators", "POST", {
+        "name": "基础规则",
+        "rules": {"checks": [{"type": "contains", "field": "answer"}]},
+    })
+    assert code == 200, evaluator
+
+    code, run = _request(server, f"/api/projects/{pid}/eval/runs", "POST", {
+        "dataset_version_id": version["id"],
+        "evaluator_version_id": evaluator["version_id"],
+        "candidate_outputs": {"c1": "everything ok"},
+    })
+    assert code == 200, run
+    assert run["decision"] == "pass"
+
+    code, fetched = _request(server, f"/api/projects/{pid}/eval/runs/{run['id']}")
+    assert code == 200
+    assert len(fetched["results"]) == 1

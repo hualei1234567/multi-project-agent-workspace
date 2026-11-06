@@ -337,6 +337,7 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,
             (item_id,),
         ).fetchone()
         if row is not None:
+            _record_execution(conn, item_id, row, status, exit_code)
             _safe_audit(
                 conn, row["project_id"], "dispatch.item.finish", "dispatch_item", item_id,
                 {
@@ -349,6 +350,50 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,
                 },
                 result="ok" if status == "succeeded" else "failed",
             )
+
+
+def _record_execution(conn, item_id: str, row, status: str, exit_code: int | None) -> None:
+    """把调度执行写入 executions（source='dispatcher'）。
+
+    第三期原有 executions 只有 source='transcript'；不补这条记录，执行事实就
+    分散在两套表里，评估与成本归因都接不上（P4-R23）。
+    """
+    try:
+        item = conn.execute(
+            "SELECT id, project_id, task_id, session_id, started_at, finished_at,"
+            " role_key, correlation_id FROM dispatch_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if item is None or not item["started_at"]:
+            return
+        session_id = item["session_id"] or f"dispatch:{item_id}"
+        started = store.iso_utc(item["started_at"])
+        finished = store.iso_utc(item["finished_at"])
+        duration_ms = None
+        if started and finished:
+            from datetime import datetime
+
+            try:
+                duration_ms = int(
+                    (datetime.fromisoformat(finished) - datetime.fromisoformat(started))
+                    .total_seconds() * 1000
+                )
+            except ValueError:
+                duration_ms = None
+        conn.execute(
+            "INSERT OR IGNORE INTO executions (id, project_id, agent_id, task_id,"
+            " session_id, status, started_at, finished_at, duration_ms, summary,"
+            " total_tokens, source, correlation_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'dispatcher', ?)",
+            (
+                store.stable_id("dispatch", item_id), item["project_id"], item["role_key"],
+                item["task_id"], session_id,
+                "succeeded" if status == "succeeded" else status,
+                started, finished, duration_ms, f"dispatch_item={item_id}",
+                item["correlation_id"],
+            ),
+        )
+    except Exception:  # noqa: BLE001,S110 - 执行记录失败不应回滚调度结果
+        pass
 
 
 def _fail(conn, item_id: str, error_code: str, message: str) -> None:

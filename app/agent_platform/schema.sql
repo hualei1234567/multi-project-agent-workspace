@@ -519,3 +519,112 @@ CREATE TABLE IF NOT EXISTS event_inbox (
   processed_at TEXT NOT NULL,
   PRIMARY KEY (event_id, consumer)
 );
+
+-- ============================================================
+-- schema v5（四期 M1）：Evaluation & Benchmark
+-- 运行状态与决策状态分开存（V6.0 §9.3）：status 表示跑没跑完，
+-- decision 表示评没评过。样本没执行不得计入通过数。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS eval_suites (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  name        TEXT NOT NULL,
+  description TEXT,
+  status      TEXT NOT NULL DEFAULT 'active',
+  created_by  TEXT NOT NULL DEFAULT 'local',
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS eval_datasets (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL REFERENCES agent_projects(id),
+  suite_id     TEXT NOT NULL REFERENCES eval_suites(id),
+  name         TEXT NOT NULL,
+  split        TEXT NOT NULL DEFAULT 'regression',  -- holdout / regression / safety / train
+  status       TEXT NOT NULL DEFAULT 'active',
+  created_at   TEXT NOT NULL,
+  UNIQUE(suite_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS eval_dataset_versions (
+  id             TEXT PRIMARY KEY,
+  dataset_id     TEXT NOT NULL REFERENCES eval_datasets(id),
+  version        INTEGER NOT NULL,
+  case_count     INTEGER NOT NULL DEFAULT 0,
+  content_digest TEXT NOT NULL DEFAULT '',
+  status         TEXT NOT NULL DEFAULT 'frozen',    -- draft / frozen / active / revoked
+  created_at     TEXT NOT NULL,
+  frozen_at      TEXT,
+  UNIQUE(dataset_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS eval_cases (
+  id           TEXT PRIMARY KEY,
+  version_id   TEXT NOT NULL REFERENCES eval_dataset_versions(id),
+  case_key     TEXT NOT NULL,
+  input_json   TEXT NOT NULL DEFAULT '{}',
+  expected_json TEXT NOT NULL DEFAULT '{}',
+  tags_json    TEXT NOT NULL DEFAULT '[]',
+  weight       REAL NOT NULL DEFAULT 1.0,
+  created_at   TEXT NOT NULL,
+  UNIQUE(version_id, case_key)
+);
+
+CREATE TABLE IF NOT EXISTS eval_evaluators (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  name        TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'deterministic', -- deterministic / model / human
+  created_at  TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS eval_evaluator_versions (
+  id           TEXT PRIMARY KEY,
+  evaluator_id TEXT NOT NULL REFERENCES eval_evaluators(id),
+  version      INTEGER NOT NULL,
+  rules_json   TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL,
+  UNIQUE(evaluator_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+  id                     TEXT PRIMARY KEY,
+  project_id             TEXT NOT NULL REFERENCES agent_projects(id),
+  suite_id               TEXT NOT NULL,
+  dataset_version_id     TEXT NOT NULL,
+  evaluator_version_id   TEXT NOT NULL,
+  release_ref            TEXT,
+  status                 TEXT NOT NULL DEFAULT 'queued',
+  decision               TEXT,
+  total_cases            INTEGER NOT NULL DEFAULT 0,
+  executed_cases         INTEGER NOT NULL DEFAULT 0,
+  passed_cases           INTEGER NOT NULL DEFAULT 0,
+  failed_cases           INTEGER NOT NULL DEFAULT 0,
+  skipped_cases          INTEGER NOT NULL DEFAULT 0,
+  safety_violations      INTEGER NOT NULL DEFAULT 0,
+  score                  REAL,
+  error_summary          TEXT,
+  correlation_id         TEXT,
+  started_at             TEXT,
+  finished_at            TEXT,
+  created_at             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_runs_project
+  ON eval_runs(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_results (
+  id         TEXT PRIMARY KEY,
+  run_id     TEXT NOT NULL REFERENCES eval_runs(id),
+  case_id    TEXT NOT NULL,
+  case_key   TEXT NOT NULL,
+  status     TEXT NOT NULL,               -- pass / fail / skipped / error
+  score      REAL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE(run_id, case_id)
+);
