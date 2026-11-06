@@ -382,6 +382,7 @@ section { display: grid; gap: 16px; min-width: 0; }
 .links { display: inline-flex; gap: 6px; }
 .links span, .links a { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; text-decoration: none;
   color: var(--primary); background: var(--primary-weak); border-radius: 5px; padding: 0 5px; }
+.muted { color: var(--muted); }
 .empty { color: var(--muted); font-size: 12px; padding: 10px 4px; text-align: center; }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); overflow: hidden; }
@@ -1018,8 +1019,8 @@ const ago = (iso) => {
 const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
-const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "docs", "settings"];
-const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", docs: "文档配置", settings: "项目设置" };
+const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "docs", "settings"];
+const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", docs: "文档配置", settings: "项目设置" };
 const PLATFORM_KINDS = ["platform", "projects", "favorites", "recent"];
 const FAV_KEY = "agws-favorites";
 const RECENT_KEY = "agws-recent";
@@ -1694,6 +1695,247 @@ function syncFavoriteButton() {
   b.textContent = fav ? "★ 已收藏" : "☆ 收藏";
 }
 
+/* ---------- 第四期：智能层（评估 / 知识 / 工作流 / 发布 / 改进 / 价值 / 自主 / 目录） ---------- */
+const P4_TABS = [
+  ["eval", "评估"], ["knowledge", "知识"], ["workflow", "工作流"], ["release", "发布"],
+  ["improvement", "改进"], ["outcome", "价值"], ["autonomy", "自主化"], ["catalog", "目录"],
+];
+
+function p4Base() {
+  const p = APP.currentProject;
+  return p ? `/api/projects/${encodeURIComponent(p.id)}` : null;
+}
+
+function p4Empty(text) {
+  return `<div class="empty">${esc(text)}</div>`;
+}
+
+function p4Table(headers, rows) {
+  if (!rows.length) return p4Empty("暂无数据");
+  return `<div class="table-wrap"><table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>`
+    + `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function p4Badge(status) {
+  return `<span class="chip" data-status="${esc(status || "")}">${esc(status || "-")}</span>`;
+}
+
+function renderP4Page(el) {
+  const base = p4Base();
+  if (!base) { el.innerHTML = errorBox(new Error("未选择项目")); return; }
+  if (!APP.p4Tab) APP.p4Tab = "eval";
+
+  const nav = P4_TABS.map(([key, label]) =>
+    `<a class="tab ${APP.p4Tab === key ? "active" : ""}" href="javascript:void 0" data-p4="${key}">${esc(label)}</a>`
+  ).join("");
+
+  el.innerHTML = `<div class="p4-wrap">
+    <div class="tabs p4-tabs" role="tablist">${nav}</div>
+    <div id="p4-body">${skeletonBox(160)}</div>
+  </div>`;
+
+  el.querySelectorAll("[data-p4]").forEach(node => {
+    node.onclick = () => { APP.p4Tab = node.dataset.p4; renderP4Page(el); };
+  });
+  loadP4Panel(base);
+}
+
+async function loadP4Panel(base) {
+  const body = $("#p4-body");
+  if (!body) return;
+  const kind = APP.p4Tab;
+  const safe = (p) => p.catch(() => ({ items: [], total: 0 }));
+  try {
+    if (kind === "eval") {
+      const [suites, datasets, runs] = await Promise.all([
+        safe(fetchJSON(`${base}/eval/suites`)),
+        safe(fetchJSON(`${base}/eval/datasets`)),
+        safe(fetchJSON(`${base}/eval/runs`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>评估运行</h3></div><div class="panel-body">
+        ${p4Table(["运行", "状态", "决策", "样本", "安全违规", "分数"], (runs.items || []).map(r => [
+          `<code>${esc(r.id)}</code>`, p4Badge(r.status), p4Badge(r.decision),
+          `${r.passed_cases}/${r.executed_cases}（跳过 ${r.skipped_cases}）`,
+          String(r.safety_violations), r.score == null ? "—" : Number(r.score).toFixed(3),
+        ]))}</div></div>
+        <div class="two-col">
+          <div class="panel"><div class="panel-head"><h3>套件 ${suites.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["名称", "创建"], (suites.items || []).map(r => [esc(r.name), esc(r.created_at)]))}</div></div>
+          <div class="panel"><div class="panel-head"><h3>数据集 ${datasets.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["名称", "划分", "最新版本"], (datasets.items || []).map(r => [
+            esc(r.name), p4Badge(r.split), String(r.latest_version ?? "—")]))}</div></div>
+        </div>`;
+    } else if (kind === "knowledge") {
+      const [sources, items] = await Promise.all([
+        safe(fetchJSON(`${base}/knowledge/sources`)),
+        safe(fetchJSON(`${base}/knowledge/items`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>新建知识（保存即发布）</h3></div><div class="panel-body">
+          <input id="p4-kn-title" placeholder="标题，例如：上线检查清单" style="width:100%;margin-bottom:8px" />
+          <textarea id="p4-kn-content" placeholder="内容（命中 Secret 会被拒绝入库）" rows="4" style="width:100%;margin-bottom:8px"></textarea>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <select id="p4-kn-class">
+              <option value="Internal">Internal</option>
+              <option value="Public">Public</option>
+              <option value="Confidential">Confidential（需先登记许可）</option>
+            </select>
+            <select id="p4-kn-license">
+              <option value="">无许可</option>
+              <option value="internal-only">internal-only</option>
+            </select>
+            <button class="btn" id="p4-kn-save">保存并发布</button>
+            <span id="p4-kn-msg" class="muted"></span>
+          </div>
+        </div></div>
+        <div class="panel"><div class="panel-head"><h3>检索（项目内）</h3></div><div class="panel-body">
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input id="p4-kn-q" placeholder="输入关键词，例如 pytest" style="flex:1" />
+            <button class="btn" id="p4-kn-go">检索</button>
+          </div>
+          <div id="p4-kn-result" class="muted">未检索</div>
+        </div></div>
+        <div class="two-col">
+          <div class="panel"><div class="panel-head"><h3>来源 ${sources.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["标题", "类型", "密级"], (sources.items || []).map(r => [
+            esc(r.title), esc(r.kind), p4Badge(r.classification)]))}</div></div>
+          <div class="panel"><div class="panel-head"><h3>条目 ${items.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["标题", "状态"], (items.items || []).map(r => [esc(r.title), p4Badge(r.status)]))}</div></div>
+        </div>`;
+      $("#p4-kn-save").onclick = async () => {
+        const msg = $("#p4-kn-msg");
+        const title = ($("#p4-kn-title").value || "").trim();
+        const content = ($("#p4-kn-content").value || "").trim();
+        const classification = $("#p4-kn-class").value;
+        const license = $("#p4-kn-license").value || null;
+        if (!title || !content) { msg.textContent = "标题和内容都要填"; return; }
+        msg.textContent = "保存中…";
+        try {
+          const src = await fetchJSON(`${base}/knowledge/sources`, {
+            method: "POST",
+            body: JSON.stringify({ title, kind: "note", classification, license }),
+          });
+          const item = await fetchJSON(`${base}/knowledge/items`, {
+            method: "POST",
+            body: JSON.stringify({ title, content, source_id: src.id, classification }),
+          });
+          const versionId = item.versions[0].id;
+          await fetchJSON(`${base}/knowledge/versions/${encodeURIComponent(versionId)}/publish`, {
+            method: "POST",
+            body: JSON.stringify({ reviewed_by: "local" }),
+          });
+          msg.textContent = "已发布，可在下方检索";
+          $("#p4-kn-title").value = "";
+          $("#p4-kn-content").value = "";
+          loadP4Panel(base);
+        } catch (e) {
+          msg.textContent = "失败：" + (e.message || e);
+        }
+      };
+      $("#p4-kn-go").onclick = async () => {
+        const q = ($("#p4-kn-q").value || "").trim();
+        const out = $("#p4-kn-result");
+        if (!q) { out.textContent = "请输入关键词"; return; }
+        out.textContent = "检索中…";
+        try {
+          const d = await fetchJSON(`${base}/knowledge/search?q=${encodeURIComponent(q)}`);
+          out.innerHTML = d.total
+            ? d.hits.map(h => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+                <strong>${esc(h.title)}</strong> <span class="muted">v${h.version} · ${esc(h.classification)}</span>
+                <div class="muted" style="margin-top:4px">${esc(h.snippet)}</div></div>`).join("")
+            : p4Empty("无命中");
+        } catch (e) { out.innerHTML = errorBox(e); }
+      };
+    } else if (kind === "workflow") {
+      const [defs, binds] = await Promise.all([
+        safe(fetchJSON(`${base}/workflows`)),
+        safe(fetchJSON(`${base}/workflow-bindings`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>Workflow 定义 ${defs.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["Key", "名称", "状态", "最新版本"], (defs.items || []).map(r => [
+          `<code>${esc(r.def_key)}</code>`, esc(r.name), p4Badge(r.status),
+          String(r.latest_version ?? "—")]))}</div></div>
+        <div class="panel"><div class="panel-head"><h3>项目绑定 ${binds.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["Workflow", "版本", "状态", "已物化任务"], (binds.items || []).map(r => [
+          `<code>${esc(r.def_key)}</code>`, `v${r.version}`, p4Badge(r.status),
+          String(r.materialized)]))}</div></div>`;
+    } else if (kind === "release") {
+      const [rels, canaries, rollbacks] = await Promise.all([
+        safe(fetchJSON(`${base}/releases`)),
+        safe(fetchJSON(`${base}/canaries`)),
+        safe(fetchJSON(`${base}/rollbacks`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>Release ${rels.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["Key", "名称", "状态", "Manifest 摘要"], (rels.items || []).map(r => [
+          `<code>${esc(r.release_key)}</code>`, esc(r.name), p4Badge(r.status),
+          `<code>${esc(String(r.manifest_digest || "").slice(0, 12))}</code>`]))}</div></div>
+        <div class="two-col">
+          <div class="panel"><div class="panel-head"><h3>Canary ${canaries.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["部署", "流量", "状态"], (canaries.items || []).map(r => [
+            `<code>${esc(String(r.id).slice(0, 14))}</code>`, `${r.traffic_pct}%`, p4Badge(r.status)]))}</div></div>
+          <div class="panel"><div class="panel-head"><h3>回滚 ${rollbacks.total || 0}</h3></div><div class="panel-body">
+          ${p4Table(["原因", "时间"], (rollbacks.items || []).map(r => [esc(r.reason), esc(r.created_at)]))}</div></div>
+        </div>`;
+    } else if (kind === "improvement") {
+      const [patterns, cases] = await Promise.all([
+        safe(fetchJSON(`${base}/improvements/failures`)),
+        safe(fetchJSON(`${base}/improvements/cases`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>失败模式 ${patterns.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["模式", "摘要", "出现次数"], (patterns.items || []).map(r => [
+          `<code>${esc(r.pattern_key)}</code>`, esc(r.summary), String(r.occurrences)]))}</div></div>
+        <div class="panel"><div class="panel-head"><h3>改进 Case ${cases.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["标题", "来源", "状态", "根因"], (cases.items || []).map(r => [
+          esc(r.title), p4Badge(r.source_type), p4Badge(r.status), esc(r.root_cause || "—")]))}</div></div>`;
+    } else if (kind === "outcome") {
+      const [metrics, cost] = await Promise.all([
+        safe(fetchJSON(`${base}/outcome/metrics`)),
+        safe(fetchJSON(`${base}/outcome/cost`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>成本口径</h3></div><div class="panel-body">
+          <div class="kv"><span class="k">Usage 事件</span><span class="v">${cost.events ?? "—"}</span></div>
+          <div class="kv"><span class="k">Token 总量</span><span class="v">${cost.tokens ?? "—"}</span></div>
+          <div class="kv"><span class="k">已知成本(USD)</span><span class="v">${cost.known_cost_usd == null ? "未知（不显示 0）" : "$" + cost.known_cost_usd}</span></div>
+          <div class="kv"><span class="k">数据质量</span><span class="v">${p4Badge(cost.quality)}</span></div>
+        </div></div>
+        <div class="panel"><div class="panel-head"><h3>指标字典 ${metrics.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["指标", "名称", "公式", "单位"], (metrics.items || []).map(r => [
+          `<code>${esc(r.metric_key)}</code>`, esc(r.name), esc(r.formula), esc(r.unit || "—")]))}</div></div>`;
+    } else if (kind === "autonomy") {
+      const data = await safe(fetchJSON(`${base}/autonomy/eligibilities`));
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>自动化资格 ${data.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["任务类型", "环境", "等级", "状态", "过期"], (data.items || []).map(r => [
+          `<code>${esc(r.task_type)}</code>`, esc(r.environment), p4Badge(r.level),
+          p4Badge(r.status), esc(r.expires_at || "—")]))}
+        <div class="muted" style="margin-top:8px">资格不等于授权：实际执行仍由 Policy 判定；P0 生产环境上限 A2。</div>
+        </div></div>`;
+    } else {
+      const [listings, grants] = await Promise.all([
+        safe(fetchJSON(`${base}/catalog/listings`)),
+        safe(fetchJSON(`${base}/catalog/grants`)),
+      ]);
+      body.innerHTML = `
+        <div class="panel"><div class="panel-head"><h3>可用能力 ${listings.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["名称", "类型", "来源", "动作"], (listings.items || []).map(r => [
+          esc(r.name), p4Badge(r.capability_type),
+          r.from_own_project ? "本项目" : "已授权",
+          esc((r.actions || []).join(", ") || "—")]))}</div></div>
+        <div class="panel"><div class="panel-head"><h3>授权记录 ${grants.total || 0}</h3></div><div class="panel-body">
+        ${p4Table(["能力", "目标项目", "用途", "撤销时间"], (grants.items || []).map(r => [
+          esc(r.name), `<code>${esc(r.target_project_id)}</code>`, esc(r.purpose || "—"),
+          esc(r.revoked_at || "有效")]))}</div></div>`;
+    }
+  } catch (e) {
+    body.innerHTML = errorBox(e);
+  }
+}
+
 function renderProjectContent() {
   const el = $("#tab-content");
   if (!el) return;
@@ -1707,6 +1949,7 @@ function renderProjectContent() {
     case "dispatch": renderDispatchPage(el); break;
     case "executions": renderExecutionsPage(el); break;
     case "deliveries": renderDeliveriesPage(el); break;
+    case "p4": renderP4Page(el); break;
     case "docs": renderDocsPage(el); break;
     case "settings": renderSettingsPage(el); break;
     default: renderOverviewPage(el);
@@ -4153,7 +4396,10 @@ async function pollPlatform() {
     }
     renderSidebar();
     if (APP.currentProject) {
-      if (!(ROUTE.tab === "settings" && APP.settingsDirty)) renderProject();
+      // 轮询重绘会清空正在输入的内容：设置页与智能层的输入框都要保护。
+      const focusTag = document.activeElement && document.activeElement.tagName;
+      const typing = ROUTE.tab === "p4" && ["INPUT", "TEXTAREA", "SELECT"].includes(focusTag);
+      if (!(ROUTE.tab === "settings" && APP.settingsDirty) && !typing) renderProject();
     }
     updateSidebar();
   } else {
