@@ -45,6 +45,13 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/knowledge/versions/{version_id}/publish"),
     ("POST", "/api/projects/{project_id}/knowledge/versions/{version_id}/revoke"),
     ("GET", "/api/projects/{project_id}/knowledge/search"),
+    ("POST", "/api/projects/{project_id}/workflows"),
+    ("GET", "/api/projects/{project_id}/workflows"),
+    ("POST", "/api/projects/{project_id}/workflows/{definition_id}/versions"),
+    ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/test"),
+    ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/publish"),
+    ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/bind"),
+    ("GET", "/api/projects/{project_id}/workflow-bindings"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -394,6 +401,40 @@ def _paths() -> dict[str, Any]:
                 "get", "项目内知识检索（权限前置过滤，P4-M2）",
                 params=[_param("q", required=True), _param("limit", typ="integer")],
             )[2],
+        },
+        "/api/projects/{project_id}/workflows": {
+            "post": project_op("post", "创建 Workflow 定义（P4-M3）", body={"type": "object"})[2],
+            "get": project_op("get", "Workflow 定义列表（P4-M3）")[2],
+        },
+        "/api/projects/{project_id}/workflows/{definition_id}/versions": {
+            "post": project_op(
+                "post", "创建 Workflow 版本（静态校验，P4-M3）",
+                params=[_param("definition_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/workflow-versions/{version_id}/test": {
+            "post": project_op(
+                "post", "沙箱测试（只校验不建任务，P4-M3）",
+                params=[_param("version_id", where="path", required=True)],
+            )[2],
+        },
+        "/api/projects/{project_id}/workflow-versions/{version_id}/publish": {
+            "post": project_op(
+                "post", "发布 Workflow 版本（P4-M3）",
+                params=[_param("version_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/workflow-versions/{version_id}/bind": {
+            "post": project_op(
+                "post", "绑定到项目并物化为第三期任务（P4-M3）",
+                params=[_param("version_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/workflow-bindings": {
+            "get": project_op("get", "项目 Workflow 绑定列表（P4-M3）")[2],
         },
         "/api/runtime/services": {
             "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],

@@ -119,6 +119,14 @@ V4_TABLES = (
     "event_inbox",
 )
 
+#: v7（四期 M3）：Workflow 域。
+V7_TABLES = (
+    "workflow_definitions",
+    "workflow_versions",
+    "workflow_test_runs",
+    "workflow_bindings",
+)
+
 #: v6（四期 M2）：知识域。
 V6_TABLES = (
     "knowledge_sources",
@@ -291,6 +299,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V6_TABLES,
         description="四期 M2 知识域：来源 / 条目 / 版本 / 分块 / 全文索引 / 检索追踪",
     ),
+    MigrationStep(
+        7,
+        tables=V7_TABLES,
+        description="四期 M3 Workflow 域：定义 / 版本 / 测试运行 / 项目绑定",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version
@@ -324,6 +337,7 @@ _V3_MARKER = "schema v3（三期"
 _V4_MARKER = "schema v4（四期"
 _V5_MARKER = "schema v5（四期"
 _V6_MARKER = "schema v6（四期"
+_V7_MARKER = "schema v7（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -341,6 +355,8 @@ def schema_statements(target_version: int | None = None) -> list[str]:
         text = text.split(_V5_MARKER)[0]
     if target_version is not None and target_version < 6 and _V6_MARKER in text:
         text = text.split(_V6_MARKER)[0]
+    if target_version is not None and target_version < 7 and _V7_MARKER in text:
+        text = text.split(_V7_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

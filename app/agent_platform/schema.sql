@@ -705,3 +705,51 @@ CREATE TABLE IF NOT EXISTS retrieval_traces (
   correlation_id TEXT,
   created_at     TEXT NOT NULL
 );
+
+-- ============================================================
+-- schema v7（四期 M3）：Workflow / Playbook Factory
+-- 执行事实仍归第三期 tasks / scheduler，这里只存"定义与绑定"，
+-- 不建第二套执行状态机（V6.0 §9.5）。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  def_key     TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT,
+  status      TEXT NOT NULL DEFAULT 'draft',
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE(project_id, def_key)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_versions (
+  id            TEXT PRIMARY KEY,
+  definition_id TEXT NOT NULL REFERENCES workflow_definitions(id),
+  version       INTEGER NOT NULL,
+  dsl_json      TEXT NOT NULL,
+  digest        TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'draft',
+  created_at    TEXT NOT NULL,
+  published_at  TEXT,
+  UNIQUE(definition_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_test_runs (
+  id         TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+  status     TEXT NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_bindings (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL REFERENCES agent_projects(id),
+  version_id   TEXT NOT NULL REFERENCES workflow_versions(id),
+  status       TEXT NOT NULL DEFAULT 'enabled',
+  materialized INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  UNIQUE(project_id, version_id)
+);
