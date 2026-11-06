@@ -119,6 +119,16 @@ V4_TABLES = (
     "event_inbox",
 )
 
+#: v6（四期 M2）：知识域。
+V6_TABLES = (
+    "knowledge_sources",
+    "knowledge_items",
+    "knowledge_versions",
+    "knowledge_chunks",
+    "knowledge_fts",
+    "retrieval_traces",
+)
+
 #: v5（四期 M1）：评估域。
 V5_TABLES = (
     "eval_suites",
@@ -276,6 +286,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V5_TABLES,
         description="四期 M1 评估域：Suite / Dataset / Case / Evaluator / Run / Result",
     ),
+    MigrationStep(
+        6,
+        tables=V6_TABLES,
+        description="四期 M2 知识域：来源 / 条目 / 版本 / 分块 / 全文索引 / 检索追踪",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version
@@ -308,6 +323,7 @@ def _log(message: str) -> None:
 _V3_MARKER = "schema v3（三期"
 _V4_MARKER = "schema v4（四期"
 _V5_MARKER = "schema v5（四期"
+_V6_MARKER = "schema v6（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -323,6 +339,8 @@ def schema_statements(target_version: int | None = None) -> list[str]:
         text = text.split(_V4_MARKER)[0]
     if target_version is not None and target_version < 5 and _V5_MARKER in text:
         text = text.split(_V5_MARKER)[0]
+    if target_version is not None and target_version < 6 and _V6_MARKER in text:
+        text = text.split(_V6_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

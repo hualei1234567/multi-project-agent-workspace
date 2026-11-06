@@ -23,6 +23,7 @@ V2_ONLY = {"task_dependencies", "executions", "audit_logs", "idempotency_keys"}
 V3_ONLY = set(migrate.V3_TABLES)
 V4_ONLY = set(migrate.V4_TABLES)
 V5_ONLY = set(migrate.V5_TABLES)
+V6_ONLY = set(migrate.V6_TABLES)
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
@@ -102,8 +103,8 @@ def test_downgrade_removes_only_later_tables(fresh_db):
     assert V3_ONLY <= _tables(conn)
     result = migrate.downgrade(conn, no_backup=True, target_version=2)
     assert result["version"] == 2
-    # 降级到 v2 会同时丢掉 v3 / v4 / v5 引入的表
-    assert set(result["dropped"]) == V3_ONLY | V4_ONLY | V5_ONLY
+    # 降级到 v2 会同时丢掉 v3 / v4 / v5 / v6 引入的表
+    assert set(result["dropped"]) == V3_ONLY | V4_ONLY | V5_ONLY | V6_ONLY
     tables = _tables(conn)
     assert not (V3_ONLY & tables)
     assert V2_ONLY <= tables

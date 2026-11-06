@@ -67,6 +67,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform.p4 import evaluation as evaluation_service
     from agent_platform.p4 import governance as p4_governance
     from agent_platform.p4 import killswitch as p4_killswitch
+    from agent_platform.p4 import knowledge as knowledge_service
     from agent_platform.p4 import policy as p4_policy
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
@@ -83,6 +84,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform.p4 import evaluation as evaluation_service
     from app.agent_platform.p4 import governance as p4_governance
     from app.agent_platform.p4 import killswitch as p4_killswitch
+    from app.agent_platform.p4 import knowledge as knowledge_service
     from app.agent_platform.p4 import policy as p4_policy
     from app.agent_platform.state_cache import StateCache
 
@@ -1451,6 +1453,74 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _knowledge_platform(self, fn, *args, **kwargs) -> None:
+        conn = platform_store.connect()
+        try:
+            self._json(200, fn(conn, *args, **kwargs))
+        except knowledge_service.KnowledgeError as exc:
+            self._error(exc)
+        except Exception:  # noqa: BLE001
+            self._json(500, {"ok": False, "error": "internal_error",
+                             "detail": {"code": "internal_error", "message": "内部错误"}})
+        finally:
+            conn.close()
+
+    def _handle_knowledge(self, project_id: str, rest: list[str], method: str,
+                          query: dict[str, list[str]]) -> bool:
+        """知识域路由。已处理返回 True。"""
+        if not rest or rest[0] != "knowledge":
+            return False
+        body = self._body() if method == "POST" else {}
+
+        if method == "POST" and rest == ["knowledge", "sources"]:
+            if not self._policy_guard(project_id, "knowledge_source", "create"):
+                return True
+            self._knowledge_platform(knowledge_service.create_source, project_id, body)
+            return True
+        if method == "GET" and rest == ["knowledge", "sources"]:
+            if not self._policy_guard(project_id, "knowledge_source", "read"):
+                return True
+            self._knowledge_platform(knowledge_service.list_sources, project_id)
+            return True
+        if method == "POST" and rest == ["knowledge", "items"]:
+            if not self._policy_guard(project_id, "knowledge_item", "create"):
+                return True
+            self._knowledge_platform(knowledge_service.create_item, project_id, body)
+            return True
+        if method == "GET" and rest == ["knowledge", "items"]:
+            self._knowledge_platform(knowledge_service.list_items, project_id)
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["knowledge", "versions"] and rest[3] == "publish"):
+            if not self._policy_guard(project_id, "knowledge_item", "publish", risk="R3"):
+                return True
+            self._knowledge_platform(
+                knowledge_service.publish_version, rest[2],
+                reviewed_by=str(body.get("reviewed_by") or "local"),
+            )
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["knowledge", "versions"] and rest[3] == "revoke"):
+            if not self._policy_guard(project_id, "knowledge_item", "revoke", risk="R3"):
+                return True
+            self._knowledge_platform(
+                knowledge_service.revoke_version, rest[2],
+                reason=str(body.get("reason") or "未说明"),
+                revoked_by=str(body.get("revoked_by") or "local"),
+            )
+            return True
+        if method == "GET" and rest == ["knowledge", "search"]:
+            principal = getattr(self, "principal", None)
+            self._knowledge_platform(
+                knowledge_service.search, project_id,
+                (query.get("q") or [""])[0],
+                limit=int((query.get("limit") or ["10"])[0]),
+                principal_id=principal["id"] if principal else None,
+                correlation_id=(query.get("correlation_id") or [None])[0],
+            )
+            return True
+        return False
+
     def _handle_eval(self, project_id: str, rest: list[str], method: str) -> bool:
         """评估域路由。已处理返回 True。"""
         if not rest or rest[0] != "eval":
@@ -1699,6 +1769,9 @@ class Handler(BaseHTTPRequestHandler):
         # 四期评估域（P4-M1）
         if self._handle_eval(project_id, rest, "POST"):
             return
+        # 四期知识域（P4-M2）
+        if self._handle_knowledge(project_id, rest, "POST", {}):
+            return
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
@@ -1906,6 +1979,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # 四期评估域（P4-M1）
             if self._handle_eval(project_id, rest, "GET"):
+                return
+            # 四期知识域（P4-M2）
+            if self._handle_knowledge(project_id, rest, "GET", query):
                 return
             # 自主调度只读（M3-1）
             if rest == ["dispatch", "plans"]:

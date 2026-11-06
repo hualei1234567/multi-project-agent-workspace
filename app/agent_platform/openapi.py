@@ -38,6 +38,13 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/eval/runs"),
     ("GET", "/api/projects/{project_id}/eval/runs"),
     ("GET", "/api/projects/{project_id}/eval/runs/{run_id}"),
+    ("POST", "/api/projects/{project_id}/knowledge/sources"),
+    ("GET", "/api/projects/{project_id}/knowledge/sources"),
+    ("POST", "/api/projects/{project_id}/knowledge/items"),
+    ("GET", "/api/projects/{project_id}/knowledge/items"),
+    ("POST", "/api/projects/{project_id}/knowledge/versions/{version_id}/publish"),
+    ("POST", "/api/projects/{project_id}/knowledge/versions/{version_id}/revoke"),
+    ("GET", "/api/projects/{project_id}/knowledge/search"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -357,6 +364,35 @@ def _paths() -> dict[str, Any]:
                 "get", "评估运行详情与逐样本结果（P4-M1）",
                 params=[_param("run_id", where="path", required=True)],
                 errors=(404,),
+            )[2],
+        },
+        "/api/projects/{project_id}/knowledge/sources": {
+            "post": project_op("post", "登记知识来源（P4-M2）", body={"type": "object"})[2],
+            "get": project_op("get", "知识来源列表（P4-M2）")[2],
+        },
+        "/api/projects/{project_id}/knowledge/items": {
+            "post": project_op("post", "创建知识条目与候选版本（Secret 阻断，P4-M2）",
+                               body={"type": "object"})[2],
+            "get": project_op("get", "知识条目列表（P4-M2）")[2],
+        },
+        "/api/projects/{project_id}/knowledge/versions/{version_id}/publish": {
+            "post": project_op(
+                "post", "审核发布并建索引（P4-M2）",
+                params=[_param("version_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/knowledge/versions/{version_id}/revoke": {
+            "post": project_op(
+                "post", "撤销版本并同步删除索引（P4-M2）",
+                params=[_param("version_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
+        },
+        "/api/projects/{project_id}/knowledge/search": {
+            "get": project_op(
+                "get", "项目内知识检索（权限前置过滤，P4-M2）",
+                params=[_param("q", required=True), _param("limit", typ="integer")],
             )[2],
         },
         "/api/runtime/services": {

@@ -143,3 +143,52 @@ def test_evaluation_flow_over_http(server):
     code, fetched = _request(server, f"/api/projects/{pid}/eval/runs/{run['id']}")
     assert code == 200
     assert len(fetched["results"]) == 1
+
+
+def test_knowledge_flow_over_http(server):
+    code, project = _request(server, "/api/projects", "POST",
+                             {"code": "knwp", "name": "知识项目", "session_slugs": []})
+    pid = project["project"]["id"]
+
+    code, source = _request(server, f"/api/projects/{pid}/knowledge/sources", "POST",
+                            {"title": "工程手册", "kind": "note"})
+    assert code == 200, source
+
+    code, item = _request(server, f"/api/projects/{pid}/knowledge/items", "POST", {
+        "title": "上线流程", "source_id": source["id"],
+        "content": "第一步跑 pytest。\n\n第二步部署到局域网。",
+    })
+    assert code == 200, item
+    version_id = item["versions"][0]["id"]
+
+    code, _ = _request(
+        server, f"/api/projects/{pid}/knowledge/versions/{version_id}/publish", "POST",
+        {"reviewed_by": "qa"},
+    )
+    assert code == 200
+
+    code, hits = _request(server, f"/api/projects/{pid}/knowledge/search?q=pytest")
+    assert code == 200
+    assert hits["total"] == 1
+
+    code, _ = _request(
+        server, f"/api/projects/{pid}/knowledge/versions/{version_id}/revoke", "POST",
+        {"reason": "过期"},
+    )
+    assert code == 200
+    code, hits_after = _request(server, f"/api/projects/{pid}/knowledge/search?q=pytest")
+    assert hits_after["total"] == 0
+
+
+def test_knowledge_secret_blocked_over_http(server):
+    code, project = _request(server, "/api/projects", "POST",
+                             {"code": "secp", "name": "安全项目", "session_slugs": []})
+    pid = project["project"]["id"]
+    code, source = _request(server, f"/api/projects/{pid}/knowledge/sources", "POST",
+                            {"title": "来源"})
+    code, err = _request(server, f"/api/projects/{pid}/knowledge/items", "POST", {
+        "title": "泄露", "source_id": source["id"],
+        "content": "token: Bearer abcdefghijklmnopqrstuvwxyz123456",
+    })
+    assert code == 422
+    assert err["error"] == "secret_detected"

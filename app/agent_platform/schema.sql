@@ -628,3 +628,80 @@ CREATE TABLE IF NOT EXISTS eval_results (
   created_at TEXT NOT NULL,
   UNIQUE(run_id, case_id)
 );
+
+-- ============================================================
+-- schema v6（四期 M2）：Knowledge Fabric
+-- 版本不可变；发布才建索引；撤销与索引删除同事务（V6.0 §13.8）。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES agent_projects(id),
+  kind          TEXT NOT NULL DEFAULT 'note',   -- note / file / url / transcript
+  uri           TEXT,
+  title         TEXT NOT NULL,
+  classification TEXT NOT NULL DEFAULT 'Internal',
+  license       TEXT,
+  status        TEXT NOT NULL DEFAULT 'active',
+  created_by    TEXT NOT NULL DEFAULT 'local',
+  created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL REFERENCES agent_projects(id),
+  source_id          TEXT NOT NULL REFERENCES knowledge_sources(id),
+  title              TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'draft',
+  current_version_id TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_project
+  ON knowledge_items(project_id, status);
+
+CREATE TABLE IF NOT EXISTS knowledge_versions (
+  id            TEXT PRIMARY KEY,
+  item_id       TEXT NOT NULL REFERENCES knowledge_items(id),
+  version       INTEGER NOT NULL,
+  content       TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  classification TEXT NOT NULL DEFAULT 'Internal',
+  status        TEXT NOT NULL DEFAULT 'candidate',
+  reviewed_by   TEXT,
+  created_at    TEXT NOT NULL,
+  published_at  TEXT,
+  revoked_at    TEXT,
+  revoke_reason TEXT,
+  UNIQUE(item_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id         TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL REFERENCES knowledge_versions(id),
+  seq        INTEGER NOT NULL,
+  content    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_version
+  ON knowledge_chunks(version_id);
+
+-- 全文索引：project_id / version_id 不参与分词，只用于过滤，保证检索在
+-- 候选范围内执行（禁止先全局召回再由调用方过滤，V6.0 §13.5）。
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+  chunk_id UNINDEXED,
+  project_id UNINDEXED,
+  version_id UNINDEXED,
+  content
+);
+
+CREATE TABLE IF NOT EXISTS retrieval_traces (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  principal_id   TEXT,
+  query          TEXT NOT NULL,
+  hits_json      TEXT NOT NULL DEFAULT '[]',
+  correlation_id TEXT,
+  created_at     TEXT NOT NULL
+);
