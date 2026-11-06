@@ -1,0 +1,62 @@
+{
+  "host": "203.0.113.7",
+  "remote_like_loopback": true,
+  "cases": [
+    {
+      "case": "无令牌访问 API",
+      "pass": true,
+      "detail": "HTTP 401 missing_token（来源 203.0.113.7）"
+    },
+    {
+      "case": "错误令牌",
+      "pass": true,
+      "detail": "HTTP 401 invalid_token"
+    },
+    {
+      "case": "远端主体无成员关系",
+      "pass": true,
+      "detail": "HTTP 403 not_a_project_member"
+    },
+    {
+      "case": "授权项目可读",
+      "pass": true,
+      "detail": "HTTP 200"
+    },
+    {
+      "case": "未授权项目被拒",
+      "pass": true,
+      "detail": "HTTP 403 not_a_project_member"
+    },
+    {
+      "case": "viewer 不能写入",
+      "pass": true,
+      "detail": "HTTP 403 role_viewer_cannot_update_*"
+    },
+    {
+      "case": "跨项目知识检索被拒",
+      "pass": true,
+      "detail": "HTTP 403 not_a_project_member"
+    },
+    {
+      "case": "越权创建资源被拒",
+      "pass": true,
+      "detail": "HTTP 403 not_a_project_member"
+    },
+    {
+      "case": "回环仍免令牌可用",
+      "pass": true,
+      "detail": "HTTP 200"
+    },
+    {
+      "case": "Kill Switch 全局拦截",
+      "pass": true,
+      "detail": "HTTP 503 kill_switch"
+    },
+    {
+      "case": "解除后恢复",
+      "pass": true,
+      "detail": "HTTP 200"
+    }
+  ],
+  "failed": 0
+}

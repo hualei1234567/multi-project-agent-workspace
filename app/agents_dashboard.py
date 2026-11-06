@@ -65,6 +65,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
     from agent_platform.p4 import autonomy as autonomy_service
+    from agent_platform.p4 import catalog as catalog_service
     from agent_platform.p4 import evaluation as evaluation_service
     from agent_platform.p4 import governance as p4_governance
     from agent_platform.p4 import improvement as improvement_service
@@ -87,6 +88,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
     from app.agent_platform.p4 import autonomy as autonomy_service
+    from app.agent_platform.p4 import catalog as catalog_service
     from app.agent_platform.p4 import evaluation as evaluation_service
     from app.agent_platform.p4 import governance as p4_governance
     from app.agent_platform.p4 import improvement as improvement_service
@@ -165,7 +167,7 @@ def _prefixes_for(repo: Path | None = None) -> tuple[str, ...]:
     return _configured_slugs_for(repo)
 
 ROLE_BY_DIR = {
-    "DenseAIDataPlatform": ("General Owner", "主会话 / 主仓库"),
+    "内部平台": ("General Owner", "主会话 / 主仓库"),
     "ddp-fe": ("Frontend Engineer", "独立 worktree"),
     "ddp-be": ("Backend Engineer", "独立 worktree"),
     "ddp-qa-review": ("QA & DevOps", "独立 worktree / 只读审查"),
@@ -1450,6 +1452,14 @@ class Handler(BaseHTTPRequestHandler):
         })
         return False
 
+    def _gate_project(self, project_id: str, action: str = "read") -> bool:
+        """项目级粗粒度闸门：所有项目路由都必须先过这一关。
+
+        细粒度权限（谁能发布、谁能审批）在各自路由上用 ``_policy_guard`` 再判；
+        这里是"连这个项目都不该看见"的底线，按 HTTP 语义区分读写。
+        """
+        return self._policy_guard(project_id, "*", action, risk="R1")
+
     def _eval_platform(self, fn, *args, **kwargs) -> None:
         """评估域统一出口：自带连接的 _platform 变体。"""
         conn = platform_store.connect()
@@ -1514,7 +1524,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_p4_misc(self, project_id: str, rest: list[str], method: str,
                         query: dict[str, list[str]]) -> bool:
         """M5 改进 / M6 价值 / M7 自主化 三个域的路由。"""
-        if not rest or rest[0] not in {"improvements", "outcome", "autonomy"}:
+        if not rest or rest[0] not in {"improvements", "outcome", "autonomy", "catalog"}:
             return False
         # 必须先确认是本域请求再读 body：否则会把别的 POST 请求体吃掉。
         body = self._body() if method == "POST" else {}
@@ -1582,6 +1592,34 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if method == "GET" and rest == ["outcome", "cost"]:
             self._p4_call(outcome_service.cost_summary, out, project_id)
+            return True
+
+        # ---- M8 能力目录（P1）----
+        cat = (catalog_service.CatalogError,)
+        if method == "POST" and rest == ["catalog", "listings"]:
+            self._p4_call(catalog_service.publish_listing, cat, project_id, body)
+            return True
+        if method == "GET" and rest == ["catalog", "listings"]:
+            self._p4_call(catalog_service.available_for_project, cat, project_id)
+            return True
+        if method == "POST" and rest == ["catalog", "grants"]:
+            if not self._policy_guard(project_id, "capability_grant", "create", risk="R3"):
+                return True
+            self._p4_call(
+                catalog_service.grant, cat, str(body.get("listing_id") or ""), body,
+                granted_by=str(body.get("granted_by") or "local"),
+            )
+            return True
+        if method == "GET" and rest == ["catalog", "grants"]:
+            self._p4_call(catalog_service.list_grants, cat, project_id)
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["catalog", "grants"] and rest[3] == "revoke"):
+            if not self._policy_guard(project_id, "capability_grant", "revoke", risk="R3"):
+                return True
+            self._p4_call(catalog_service.revoke_grant, cat, rest[2],
+                          reason=str(body.get("reason") or "未说明"),
+                          revoked_by=str(body.get("revoked_by") or "local"))
             return True
 
         # ---- M7 自主化 ----
@@ -2040,6 +2078,8 @@ class Handler(BaseHTTPRequestHandler):
             self._error(exc)
 
     def _project_post(self, project_id: str, rest: list[str]) -> None:
+        if not self._gate_project(project_id, "update"):
+            return
         if rest == ["archive"]:
             fingerprint = f"POST /api/projects/{project_id}/archive"
             response = self._idempotent(
@@ -2128,6 +2168,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             segments = self._segments(path)
+            if (len(segments) >= 3 and segments[:2] == ["api", "projects"]
+                    and not self._gate_project(segments[2], "update")):
+                return
             if len(segments) == 3 and segments[:2] == ["api", "projects"]:
                 payload = self._body()
                 self._platform_project(platform_service.patch_project, segments[2], payload)
@@ -2149,6 +2192,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized(parsed.path, parse_qs(parsed.query)):
             return
         segments = self._segments(parsed.path)
+        if (len(segments) >= 3 and segments[:2] == ["api", "projects"]
+                and not self._gate_project(segments[2], "update")):
+            return
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], True)
             return
@@ -2159,6 +2205,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized(parsed.path, parse_qs(parsed.query)):
             return
         segments = self._segments(parsed.path)
+        if (len(segments) >= 3 and segments[:2] == ["api", "projects"]
+                and not self._gate_project(segments[2], "update")):
+            return
         # DELETE /api/shared-resources/{id}/claims/{claim_id}
         if (len(segments) == 5 and segments[:2] == ["api", "shared-resources"]
                 and segments[3] == "claims"):
@@ -2276,6 +2325,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._not_found_route()
                 return
             project_id = segments[2]
+            if not self._gate_project(project_id, "read"):
+                return
             rest = segments[3:]
             if not rest:
                 self._platform_project(platform_service.get_project, project_id)

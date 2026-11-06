@@ -85,6 +85,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/evidence"),
     ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/approve"),
     ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/suspend"),
+    ("POST", "/api/projects/{project_id}/catalog/listings"),
+    ("GET", "/api/projects/{project_id}/catalog/listings"),
+    ("POST", "/api/projects/{project_id}/catalog/grants"),
+    ("GET", "/api/projects/{project_id}/catalog/grants"),
+    ("POST", "/api/projects/{project_id}/catalog/grants/{grant_id}/revoke"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -564,6 +569,22 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/suspend": {
             "post": project_op("post", "暂停资格（回落到 A0，P4-M7）", params=[_param("eligibility_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/catalog/listings": {
+            "post": project_op("post", "上架能力（只存引用，P4-M8 P1）", body={"type": "object"})[2],
+            "get": project_op("get", "本项目可用能力（自有 + 已授权，P4-M8 P1）")[2],
+        },
+        "/api/projects/{project_id}/catalog/grants": {
+            "post": project_op("post", "授权能力给目标项目（需用途，P4-M8 P1）",
+                               body={"type": "object"})[2],
+            "get": project_op("get", "本项目的授权记录（P4-M8 P1）")[2],
+        },
+        "/api/projects/{project_id}/catalog/grants/{grant_id}/revoke": {
+            "post": project_op(
+                "post", "撤销能力授权（立即不可见，P4-M8 P1）",
+                params=[_param("grant_id", where="path", required=True)],
+                body={"type": "object"},
+            )[2],
         },
         "/api/runtime/services": {
             "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],

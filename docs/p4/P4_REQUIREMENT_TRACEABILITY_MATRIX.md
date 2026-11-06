@@ -195,7 +195,7 @@
 | P4-M5 Improvement | **IMPLEMENTED + TESTED** | `p4/improvement.py` | `test_p4_improvement.py` 6 项 |
 | P4-M6 Outcome | **IMPLEMENTED + TESTED** | `p4/outcome.py` | `test_p4_outcome_autonomy.py` 5 项 |
 | P4-M7 Autonomy | **IMPLEMENTED + TESTED** | `p4/autonomy.py` | `test_p4_outcome_autonomy.py` 4 项 |
-| P4-M8 Catalog | **DEFERRED（P1 范围）** | — | — |
+| P4-M8 Catalog（P1） | **IMPLEMENTED + TESTED（V1）** | `p4/catalog.py` | `test_p4_catalog.py` 5 项 |
 
 **规模**：schema v11 / 68 张表 / 94 条 API 路径（117 个操作）/ 17,512 行 Python / 265 项测试全绿 / ruff 全清。
 
@@ -203,11 +203,11 @@
 
 | 门禁 | 现状 |
 |---|---|
-| 两隔离项目的越权测试 | 单测覆盖了授权矩阵，**未做真实双项目端到端渗透测试** |
-| 备份恢复演练（P4-OPS-004） | 未执行，仅定义了 RPO/RTO |
-| Runbook 与运维交接（P4-OPS-006） | 未编写 |
-| 真实业务数据下的评估集 | 目前只有合成样本，业务 Owner 尚未提供真实集 |
-| GitLab / CI | 无 remote，仍为本地测试门禁 |
-| Catalog（P4-M8 P1） | 未启动 |
+| 两隔离项目的越权测试 | ✅ **已做**：`scripts/p4_security_drill.py` 11/11 通过（`docs/p4/reports/P4-M8-SECURITY-DRILL.md`）；演练发现并修复了"普通读写路由无项目级授权"的 P0 缺陷 |
+| 备份恢复演练（P4-OPS-004） | ⚠️ **已演练 9/9 通过**，但 RTO 未计时、每日自动备份未接入、撤销重放未用真实撤销数据验证（`P4-M8-BACKUP-DRILL.md` §3） |
+| Runbook 与运维交接（P4-OPS-006） | ✅ 已编写 `docs/p4/RUNBOOK.md`（204 行） |
+| 真实业务数据下的评估集 | ❌ 仍只有合成样本，业务 Owner 尚未提供真实集 |
+| GitLab / CI | ❌ 无 remote，仍为本地测试门禁 |
+| Catalog（P4-M8 P1） | ⚠️ **V1 已实现**（schema v12，5 条 API，5 项测试），但未接入真实资产 |
 
 以上是 P4-M8 最终验收前必须补齐的部分，不得用"功能都实现了"掩盖。

@@ -6,7 +6,7 @@
  */
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { chromium } = require("<HOME>/vscodeworkspace/DenseAIDataPlatform/web/node_modules/playwright");
+const { chromium } = require("/web/node_modules/playwright");
 const BASE = process.env.AGWS_URL || "http://127.0.0.1:8098";
 const browser = await chromium.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const results = [];

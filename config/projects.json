@@ -3,22 +3,15 @@
   "default_project_id": "ddp",
   "projects": [
     {
-      "id": "ddp",
-      "code": "ddp",
-      "name": "DDP 具身智能数据闭环平台",
-      "repo_root": "<HOME>/vscodeworkspace/DenseAIDataPlatform",
-      "team_dir": "<HOME>/agent-team/ddp-team",
-      "default_branch": "main",
-      "session_slugs": ["-Users-hualei-vscodeworkspace-DenseAIDataPlatform"]
-    },
-    {
       "id": "material",
       "code": "material",
       "name": "MaterialDev 材料开发平台",
       "repo_root": "<HOME>/vscodeworkspace/MaterialDev",
       "team_dir": "<HOME>/agent-team/material-team",
       "default_branch": "main",
-      "session_slugs": ["-Users-hualei-vscodeworkspace-MaterialDev"]
+      "session_slugs": [
+        "-Users-hualei-vscodeworkspace-MaterialDev"
+      ]
     }
   ]
 }

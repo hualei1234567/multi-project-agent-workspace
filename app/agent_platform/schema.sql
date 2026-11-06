@@ -943,3 +943,38 @@ CREATE TABLE IF NOT EXISTS autonomy_changes (
   approved_by    TEXT,
   created_at     TEXT NOT NULL
 );
+
+-- ============================================================
+-- schema v12（四期 M8 / P1）：Capability Catalog
+-- 目录只做"引用与授权"，不复制 Registry 权威数据，也不扩大项目数据权限。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS capability_listings (
+  id              TEXT PRIMARY KEY,
+  source_project_id TEXT NOT NULL REFERENCES agent_projects(id),
+  capability_type TEXT NOT NULL,   -- agent / skill / workflow / domain_pack
+  ref_id          TEXT NOT NULL,
+  ref_version     TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  summary         TEXT,
+  status          TEXT NOT NULL DEFAULT 'draft',
+  owner           TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  UNIQUE(source_project_id, capability_type, ref_id, ref_version)
+);
+
+CREATE TABLE IF NOT EXISTS capability_grants (
+  id                TEXT PRIMARY KEY,
+  listing_id        TEXT NOT NULL REFERENCES capability_listings(id),
+  target_project_id TEXT NOT NULL REFERENCES agent_projects(id),
+  actions_json      TEXT NOT NULL DEFAULT '[]',
+  purpose           TEXT,
+  granted_by        TEXT NOT NULL,
+  expires_at        TEXT,
+  revoked_at        TEXT,
+  created_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_capability_grants_target
+  ON capability_grants(target_project_id, revoked_at);

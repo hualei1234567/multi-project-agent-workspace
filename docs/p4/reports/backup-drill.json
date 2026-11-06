@@ -1,0 +1,54 @@
+{
+  "source_db": "<HOME>/Multi-Project-Agent-Workspace/data/platform.db",
+  "backup": "<HOME>/Multi-Project-Agent-Workspace/data/platform.db.bak-20261106T151106914059Z",
+  "restored": "/var/folders/th/450x4cd168s5qlxh9pfwvd580000gn/T/p4-restore-gaam9kcc/restored.db",
+  "schema_version": 11,
+  "cases": [
+    {
+      "case": "热备生成",
+      "pass": true,
+      "detail": "<HOME>/Multi-Project-Agent-Workspace/data/platform.db.bak-20261106T151106914059Z"
+    },
+    {
+      "case": "备份完整性",
+      "pass": true,
+      "detail": "integrity_check=ok"
+    },
+    {
+      "case": "备份版本一致",
+      "pass": true,
+      "detail": "v11 vs v11"
+    },
+    {
+      "case": "逐表行数一致",
+      "pass": true,
+      "detail": "不一致表：无"
+    },
+    {
+      "case": "恢复库完整性",
+      "pass": true,
+      "detail": "integrity_check=ok"
+    },
+    {
+      "case": "恢复后行数一致",
+      "pass": true,
+      "detail": "不一致表：无"
+    },
+    {
+      "case": "恢复后业务表可读",
+      "pass": true,
+      "detail": "agent_projects=2"
+    },
+    {
+      "case": "恢复后全文索引可用",
+      "pass": true,
+      "detail": "knowledge_fts 可查询"
+    },
+    {
+      "case": "撤销状态与索引一致",
+      "pass": true,
+      "detail": "已撤销版本 0 个，残留索引块 0 个"
+    }
+  ],
+  "failed": 0
+}

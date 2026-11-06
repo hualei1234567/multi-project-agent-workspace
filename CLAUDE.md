@@ -8,7 +8,6 @@
 
 | 项目 | 仓库 | team 目录 | 面板 |
 |---|---|---|---|
-| `ddp` | `~/vscodeworkspace/DenseAIDataPlatform` | `~/agent-team/ddp-team` | http://127.0.0.1:8099 |
 | `material` | `~/vscodeworkspace/MaterialDev` | `~/agent-team/material-team` | 同上，`?project=material` |
 
 新增项目：改 `config/projects.json`（或 `POST /api/projects`），team 目录按 `~/agent-team/<id>-team` 推导。

@@ -119,6 +119,12 @@ V4_TABLES = (
     "event_inbox",
 )
 
+#: v12（四期 M8 / P1）：能力目录域。
+V12_TABLES = (
+    "capability_listings",
+    "capability_grants",
+)
+
 #: v10（四期 M6）：业务价值域。
 V10_TABLES = (
     "outcome_metric_definitions",
@@ -358,6 +364,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V11_TABLES,
         description="四期 M7 自主化域：资格与等级变更",
     ),
+    MigrationStep(
+        12,
+        tables=V12_TABLES,
+        description="四期 M8 P1 能力目录：上架与授权",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version
@@ -396,6 +407,7 @@ _V8_MARKER = "schema v8（四期"
 _V9_MARKER = "schema v9（四期"
 _V10_MARKER = "schema v10（四期"
 _V11_MARKER = "schema v11（四期"
+_V12_MARKER = "schema v12（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -423,6 +435,8 @@ def schema_statements(target_version: int | None = None) -> list[str]:
         text = text.split(_V10_MARKER)[0]
     if target_version is not None and target_version < 11 and _V11_MARKER in text:
         text = text.split(_V11_MARKER)[0]
+    if target_version is not None and target_version < 12 and _V12_MARKER in text:
+        text = text.split(_V12_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

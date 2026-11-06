@@ -31,7 +31,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
     "playwright",
     join(HERE, "node_modules", "playwright"),
     join(HERE, "..", "node_modules", "playwright"),
-    "<HOME>/vscodeworkspace/DenseAIDataPlatform/web/node_modules/playwright",
+    "/web/node_modules/playwright",
   ];
   for (const c of candidates) {
     try { return require.resolve(c); } catch { /* 继续找 */ }
