@@ -31,6 +31,11 @@ ENV_SWITCH = "DDP_AGENT_PLATFORM_EXECUTOR"
 #: 唯一允许的可执行文件。
 ALLOWED_BINARY = "claude"
 
+#: 目标仓库没有定义该角色时的回退 agent。
+#: 平台角色（project_agents.role_key）是平台概念，Claude Code 的 agent 定义是
+#: 仓库概念；两者不一定对齐（例如 MaterialDev 没有 .claude/agents/）。
+FALLBACK_AGENT = "general-purpose"
+
 #: 允许的工具（--allowedTools）。
 ALLOWED_TOOLS: tuple[str, ...] = (
     "Read", "Glob", "Grep", "Edit", "Write", "TodoWrite", "Skill",
@@ -111,14 +116,17 @@ class ExecutionSpec:
     max_turns: int = DEFAULT_MAX_TURNS
     timeout_s: int = DEFAULT_TIMEOUT_S
     allowed_tools: list[str] = field(default_factory=lambda: list(ALLOWED_TOOLS))
+    #: 实际传给 --agent 的值（可能与 role_key 不同）
+    agent_arg: str = ""
 
     def argv(self) -> list[str]:
         """拼装 argv（shell=False，不接受任意字符串）。"""
         return [
             ALLOWED_BINARY,
             "-p", self.prompt,
-            "--agent", self.role_key,
+            "--agent", self.agent_arg or self.role_key,
             "--output-format", "stream-json",
+            "--verbose",  # stream-json 在 --print 模式下必须配 --verbose
             "--max-turns", str(self.max_turns),
             "--allowedTools", *self.allowed_tools,
             "--disallowedTools", "Bash",
@@ -154,6 +162,17 @@ def check_bash_allowed(command: str) -> tuple[bool, str]:
     if not any(first.startswith(prefix) for prefix in ALLOWED_BASH_PREFIXES):
         return False, "不在 Bash 命令白名单内"
     return True, ""
+
+
+def resolve_agent_arg(cwd: Path | str, role_key: str) -> str:
+    """目标仓库若定义了该角色的 agent 文件则用角色名，否则回退。
+
+    Claude Code 的 ``--agent`` 只认仓库内 ``.claude/agents/<name>.md`` 或内置 agent。
+    平台角色（如 frontend-engineer）在没有该定义的仓库里传进去会直接报
+    ``--agent 'x' not found`` 并退出，因此必须在启动前决定。
+    """
+    agent_file = Path(cwd).expanduser().resolve() / ".claude" / "agents" / f"{role_key}.md"
+    return role_key if agent_file.is_file() else FALLBACK_AGENT
 
 
 def validate_cwd(project_code: str, repo_root: Path | str, cwd: Path | str) -> Path:
@@ -209,6 +228,7 @@ def build_spec(
         role_key=role_key,
         prompt=text,
         cwd=workdir,
+        agent_arg=resolve_agent_arg(workdir, role_key),
         max_turns=max(1, min(200, int(max_turns or DEFAULT_MAX_TURNS))),
         timeout_s=max(60, min(7200, int(timeout_s or DEFAULT_TIMEOUT_S))),
     )

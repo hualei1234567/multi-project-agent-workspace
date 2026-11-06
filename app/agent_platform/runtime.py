@@ -329,6 +329,11 @@ def run_action(
     conn = store.connect()
     try:
         store.init_db(conn)
+        _safe_audit(conn, None, "runtime.action.run", "runtime_action", spec.key, {
+            "status": status,
+            "exit_code": exit_code,
+            "command": " ".join(_quote(p) for p in spec.argv),
+        }, result="ok" if status == "succeeded" else "failed")
         with store.write_tx(conn):
             conn.execute(
                 "INSERT INTO runtime_action_runs (id, action_id, project_id, status,"
@@ -350,6 +355,20 @@ def run_action(
         "started_at": started,
         "finished_at": finished,
     }
+
+
+def _safe_audit(
+    conn, project_id: str | None, action: str, resource_type: str,
+    resource_id: str | None, detail: dict[str, Any], *, result: str = "ok",
+) -> None:
+    """写统一审计；失败不阻断操作。"""
+    try:
+        from . import service
+
+        service.audit(conn, project_id, action, resource_type, resource_id,
+                      detail=detail, result=result)
+    except Exception:  # noqa: BLE001,S110 - 审计失败不影响运行时操作
+        pass
 
 
 def list_action_runs(*, limit: int = 20) -> dict[str, Any]:

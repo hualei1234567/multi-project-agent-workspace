@@ -145,6 +145,7 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
         ).fetchone() if item["task_id"] else None
         prompt = _build_prompt(project, agent, task)
 
+        settings = store.loads_json(project["settings_json"], {}) or {}
         try:
             spec = policy.build_spec(
                 project_code=project["code"],
@@ -153,6 +154,9 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
                 execution_mode=agent["execution_mode"],
                 prompt=prompt,
                 cwd=agent["worktree_path"] or project["repo_root"],
+                # 项目可通过 settings 缩短单次执行，验收/试跑时很有用
+                max_turns=settings.get("dispatch_max_turns"),
+                timeout_s=settings.get("dispatch_timeout_s"),
             )
         except policy.ExecutorError as exc:
             _fail(conn, item_id, exc.code, exc.message)
@@ -207,20 +211,28 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
 
     def _reader(stream, name: str) -> None:
         nonlocal seq, total
+        # 每个读线程用自己的连接：主线程的 sqlite 连接不能跨线程使用
+        # （check_same_thread 默认 True），否则日志会被静默丢弃。
+        log_conn = store.connect()
         try:
+            store.init_db(log_conn)
             for line in iter(stream.readline, ""):
                 chunk = line[: policy.MAX_LOG_CHUNK]
                 if total >= policy.MAX_LOG_TOTAL:
                     continue
                 total += len(chunk)
                 seq += 1
-                _append_log(conn, item_id, name, seq, chunk)
+                _append_log(log_conn, item_id, name, seq, chunk)
                 tail.append(chunk.rstrip())
                 del tail[:-20]
         finally:
             try:
                 stream.close()
             except Exception:  # noqa: BLE001,S110 - 关闭失败的流无需处理
+                pass
+            try:
+                log_conn.close()
+            except Exception:  # noqa: BLE001,S110
                 pass
 
     threads = [
@@ -320,10 +332,41 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,
             "exit_code": exit_code, "error_code": error_code,
         })
         _refresh_plan_status(conn, item_id)
+        row = conn.execute(
+            "SELECT project_id, task_id, role_key, attempt FROM dispatch_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is not None:
+            _safe_audit(
+                conn, row["project_id"], "dispatch.item.finish", "dispatch_item", item_id,
+                {
+                    "task_id": row["task_id"],
+                    "role_key": row["role_key"],
+                    "attempt": row["attempt"],
+                    "status": status,
+                    "exit_code": exit_code,
+                    "error_code": error_code,
+                },
+                result="ok" if status == "succeeded" else "failed",
+            )
 
 
 def _fail(conn, item_id: str, error_code: str, message: str) -> None:
     _finish(conn, item_id, "failed", None, error_code, message, None)
+
+
+def _safe_audit(
+    conn, project_id: str | None, action: str, resource_type: str,
+    resource_id: str | None, detail: dict[str, Any], *, result: str = "ok",
+) -> None:
+    """写统一审计；失败不阻断执行。"""
+    try:
+        from . import service
+
+        service.audit(conn, project_id, action, resource_type, resource_id,
+                      detail=detail, result=result)
+    except Exception:  # noqa: BLE001,S110 - 审计失败不影响执行
+        pass
 
 
 def _refresh_plan_status(conn, item_id: str) -> None:

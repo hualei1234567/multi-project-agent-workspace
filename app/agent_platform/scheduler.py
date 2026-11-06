@@ -251,9 +251,35 @@ def create_plan(
                         now,
                     ),
                 )
+        _safe_audit(conn, project_id, "dispatch.plan.create", "dispatch_plan", plan_id, {
+            "strategy": strategy,
+            "items": len(ready),
+            "skipped": len(_skipped),
+            "created_by": created_by,
+        })
         return get_plan(project_id, plan_id, conn=conn)
     finally:
         conn.close()
+
+
+def _safe_audit(
+    conn: sqlite3.Connection,
+    project_id: str | None,
+    action: str,
+    resource_type: str,
+    resource_id: str | None,
+    detail: dict[str, Any],
+    *,
+    result: str = "ok",
+) -> None:
+    """写统一审计；失败不阻断业务（审计尽力而为）。"""
+    try:
+        from . import service
+
+        service.audit(conn, project_id, action, resource_type, resource_id,
+                      detail=detail, result=result)
+    except Exception:  # noqa: BLE001,S110 - 审计失败不能影响主流程
+        pass
 
 
 def _max_attempts(conn: sqlite3.Connection, project_id: str) -> int:

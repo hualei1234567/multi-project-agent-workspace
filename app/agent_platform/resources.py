@@ -175,6 +175,10 @@ def claim_resource(
             )
 
         claim_id = uuid.uuid4().hex
+        _safe_audit(conn, project_id, "resource.claim", "shared_resource", resource_id, {
+            "claim_id": claim_id, "amount": amount, "task_id": payload.get("task_id"),
+            "ttl_seconds": ttl,
+        })
         with store.write_tx(conn):
             conn.execute(
                 "INSERT INTO resource_claims"
@@ -205,9 +209,25 @@ def release_claim(resource_id: str, claim_id: str) -> dict[str, Any]:
                 "UPDATE resource_claims SET status='released', released_at=? WHERE id=?",
                 (_now(), claim_id),
             )
+        _safe_audit(conn, row["project_id"], "resource.release", "shared_resource",
+                    resource_id, {"claim_id": claim_id})
         return {"claim_id": claim_id, "status": "released", "changed": True}
     finally:
         conn.close()
+
+
+def _safe_audit(
+    conn, project_id: str | None, action: str, resource_type: str,
+    resource_id: str | None, detail: dict[str, Any], *, result: str = "ok",
+) -> None:
+    """写统一审计；失败不阻断资源操作。"""
+    try:
+        from . import service
+
+        service.audit(conn, project_id, action, resource_type, resource_id,
+                      detail=detail, result=result)
+    except Exception:  # noqa: BLE001,S110 - 审计失败不影响资源操作
+        pass
 
 
 def expire_stale_claims(conn: sqlite3.Connection | None = None) -> int:

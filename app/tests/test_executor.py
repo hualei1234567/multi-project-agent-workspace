@@ -182,7 +182,8 @@ def test_dry_run_returns_argv_and_releases_lease(env):
     result = executor.run_item(item["id"], dry_run=True)
     assert result["dry_run"] is True
     assert result["argv"][0] == "claude"
-    assert result["argv"][result["argv"].index("--agent") + 1] == "frontend-engineer"
+    # 目标仓库没有 .claude/agents/frontend-engineer.md → 回退 general-purpose
+    assert result["argv"][result["argv"].index("--agent") + 1] == "general-purpose"
     assert "EX-103" in result["argv"][result["argv"].index("-p") + 1]
     conn = _conn(env)
     try:
@@ -215,3 +216,26 @@ def test_prompt_includes_acceptance_criteria(env):
     prompt = argv[argv.index("-p") + 1]
     assert "验收标准" in prompt
     assert "接口返回 200" in prompt
+
+
+# ---------------------------------------------------------------------------
+# agent 定义回退
+# ---------------------------------------------------------------------------
+def test_agent_falls_back_when_repo_lacks_definition(env):
+    """仓库没有该角色的 .claude/agents 定义时必须回退，否则 claude 直接退出。"""
+    _enable_project(env)
+    item = _item(env, "EX-200")
+    argv = executor.run_item(item["id"], dry_run=True)["argv"]
+    assert argv[argv.index("--agent") + 1] == "general-purpose"
+
+
+def test_agent_uses_role_when_definition_exists(env):
+    """仓库定义了该角色 → 直接用角色名。"""
+    agents_dir = env.repo / ".claude" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "frontend-engineer.md").write_text("---\nname: frontend-engineer\n---\n",
+                                                     encoding="utf-8")
+    _enable_project(env)
+    item = _item(env, "EX-201")
+    argv = executor.run_item(item["id"], dry_run=True)["argv"]
+    assert argv[argv.index("--agent") + 1] == "frontend-engineer"
