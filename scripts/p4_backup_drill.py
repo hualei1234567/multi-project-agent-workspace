@@ -35,6 +35,71 @@ def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
             for name in names}
 
 
+def _revocation_replay_drill() -> dict:
+    """用一个独立临时库演练"撤销 → 备份 → 恢复 → 不再命中"。"""
+    import tempfile as _tempfile
+
+    sys.path.insert(0, str(ROOT / "app"))
+    from agent_platform import store as _store
+    from agent_platform.p4 import knowledge as _knowledge
+
+    workdir = Path(_tempfile.mkdtemp(prefix="p4-revoke-"))
+    db = workdir / "platform.db"
+    conn = _store.connect(db)
+    _store.init_db(conn)
+    conn.execute(
+        "INSERT INTO agent_projects (id, code, name, repo_root, created_at, updated_at)"
+        " VALUES ('rp', 'rp', '演练项目', '/tmp/r', '2026-11-06T00:00:00+00:00',"
+        " '2026-11-06T00:00:00+00:00')")
+    conn.commit()
+
+    source = _knowledge.create_source(conn, "rp", {"title": "演练来源"})
+    item = _knowledge.create_item(conn, "rp", {
+        "title": "演练条目", "source_id": source["id"],
+        "content": "这段内容包含独特标记 zeta-unique 用于验证撤销",
+    })
+    version_id = item["versions"][0]["id"]
+    _knowledge.publish_version(conn, version_id, reviewed_by="qa")
+    before = _knowledge.search(conn, "rp", "zeta-unique")["total"]
+    _knowledge.revoke_version(conn, version_id, reason="演练撤销", revoked_by="qa")
+    after_revoke = _knowledge.search(conn, "rp", "zeta-unique")["total"]
+
+    backup_path = migrate.backup_database(db)
+    conn.close()
+
+    restored_path = workdir / "restored.db"
+    bak = sqlite3.connect(backup_path)
+    restored = sqlite3.connect(restored_path)
+    bak.backup(restored)
+    bak.close()
+
+    residual = restored.execute(
+        "SELECT COUNT(*) FROM knowledge_chunks c"
+        " JOIN knowledge_versions v ON v.id = c.version_id WHERE v.status = 'revoked'"
+    ).fetchone()[0]
+    fts_residual = restored.execute(
+        "SELECT COUNT(*) FROM knowledge_fts f"
+        " JOIN knowledge_versions v ON v.id = f.version_id WHERE v.status = 'revoked'"
+    ).fetchone()[0]
+
+    # 恢复库上再查一次检索（用同一个库连接检索函数）
+    restored.row_factory = sqlite3.Row
+    restored.close()
+    conn2 = _store.connect(restored_path)
+    try:
+        after_restore = _knowledge.search(conn2, "rp", "zeta-unique")["total"]
+    finally:
+        conn2.close()
+
+    ok = (before == 1 and after_revoke == 0 and residual == 0
+          and fts_residual == 0 and after_restore == 0)
+    return {
+        "pass": ok,
+        "detail": (f"撤销前命中 {before}，撤销后 {after_revoke}，"
+                   f"恢复后 {after_restore}；残留块 {residual}，残留索引 {fts_residual}"),
+    }
+
+
 def main() -> int:
     db_path = store.default_db_path()
     results: list[dict] = []
@@ -118,6 +183,11 @@ def main() -> int:
               f"已撤销版本 {revoked} 个，残留索引块 {leftover} 个")
     except sqlite3.DatabaseError as exc:
         check("撤销状态与索引一致", False, str(exc))
+
+    # 撤销重放的**实战**验证：在临时库里造一条已撤销知识，
+    # 备份 → 恢复 → 确认撤销状态保留、索引无残留、检索 0 命中。
+    revoke_case = _revocation_replay_drill()
+    check("撤销重放（实战）", revoke_case["pass"], revoke_case["detail"])
 
     for conn in (source, backup, restored):
         conn.close()
