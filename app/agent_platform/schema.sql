@@ -753,3 +753,56 @@ CREATE TABLE IF NOT EXISTS workflow_bindings (
   created_at   TEXT NOT NULL,
   UNIQUE(project_id, version_id)
 );
+
+-- ============================================================
+-- schema v8（四期 M4）：Agent Lifecycle & Release Governance
+-- Manifest 不可变；审批绑定 manifest_digest，内容一变审批自动失效。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_releases (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES agent_projects(id),
+  release_key     TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'draft',
+  manifest_digest TEXT NOT NULL DEFAULT '',
+  eval_run_id     TEXT,
+  approval_id     TEXT,
+  created_by      TEXT NOT NULL DEFAULT 'local',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  UNIQUE(project_id, release_key)
+);
+
+CREATE TABLE IF NOT EXISTS release_manifest_items (
+  id              TEXT PRIMARY KEY,
+  release_id      TEXT NOT NULL REFERENCES agent_releases(id),
+  artifact_type   TEXT NOT NULL,   -- prompt / skill / model / workflow
+  artifact_ref    TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  digest          TEXT NOT NULL,
+  UNIQUE(release_id, artifact_type, artifact_ref)
+);
+
+CREATE TABLE IF NOT EXISTS canary_deployments (
+  id              TEXT PRIMARY KEY,
+  release_id      TEXT NOT NULL REFERENCES agent_releases(id),
+  project_id      TEXT NOT NULL REFERENCES agent_projects(id),
+  status          TEXT NOT NULL DEFAULT 'planned',
+  traffic_pct     INTEGER NOT NULL DEFAULT 5,
+  stop_threshold_json TEXT NOT NULL DEFAULT '{}',
+  observed_json   TEXT NOT NULL DEFAULT '{}',
+  started_at      TEXT,
+  ended_at        TEXT,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rollback_records (
+  id              TEXT PRIMARY KEY,
+  release_id      TEXT NOT NULL REFERENCES agent_releases(id),
+  deployment_id   TEXT,
+  reason          TEXT NOT NULL,
+  restored_digest TEXT,
+  created_by      TEXT NOT NULL DEFAULT 'local',
+  created_at      TEXT NOT NULL
+);

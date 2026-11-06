@@ -52,6 +52,20 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/publish"),
     ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/bind"),
     ("GET", "/api/projects/{project_id}/workflow-bindings"),
+    ("POST", "/api/projects/{project_id}/releases"),
+    ("GET", "/api/projects/{project_id}/releases"),
+    ("GET", "/api/projects/{project_id}/releases/{release_id}"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/validate"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/evaluation"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/request-approval"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/publish"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/canary"),
+    ("POST", "/api/projects/{project_id}/releases/{release_id}/rollback"),
+    ("POST", "/api/projects/{project_id}/approvals/{approval_id}/approve"),
+    ("GET", "/api/projects/{project_id}/canaries"),
+    ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/observe"),
+    ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/promote"),
+    ("GET", "/api/projects/{project_id}/rollbacks"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -435,6 +449,53 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/workflow-bindings": {
             "get": project_op("get", "项目 Workflow 绑定列表（P4-M3）")[2],
+        },
+        "/api/projects/{project_id}/releases": {
+            "post": project_op("post", "创建 Release 与 Manifest（P4-M4）", body={"type": "object"})[2],
+            "get": project_op("get", "Release 列表（P4-M4）")[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}": {
+            "get": project_op("get", "Release 详情与 Manifest 完整性（P4-M4）",
+                              params=[_param("release_id", where="path", required=True)], errors=(404,))[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/validate": {
+            "post": project_op("post", "校验 Manifest（P4-M4）", params=[_param("release_id", where="path", required=True)])[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/evaluation": {
+            "post": project_op("post", "挂接评估门禁（decision 必须 pass，P4-M4）",
+                               params=[_param("release_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/request-approval": {
+            "post": project_op("post", "申请发布审批（绑定 manifest 摘要，P4-M4）",
+                               params=[_param("release_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/publish": {
+            "post": project_op("post", "发布（需已批准且摘要未变，P4-M4）", params=[_param("release_id", where="path", required=True)])[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/canary": {
+            "post": project_op("post", "启动 Canary（带停止阈值，P4-M4）",
+                               params=[_param("release_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/releases/{release_id}/rollback": {
+            "post": project_op("post", "回滚并留痕（不改写历史版本，P4-M4）",
+                               params=[_param("release_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/approvals/{approval_id}/approve": {
+            "post": project_op("post", "批准发布（提案人不得自批，P4-M4）",
+                               params=[_param("approval_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/canaries": {
+            "get": project_op("get", "Canary 部署列表（P4-M4）")[2],
+        },
+        "/api/projects/{project_id}/canaries/{deployment_id}/observe": {
+            "post": project_op("post", "上报 Canary 指标（越阈值即停止，P4-M4）",
+                               params=[_param("deployment_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/canaries/{deployment_id}/promote": {
+            "post": project_op("post", "Canary 晋级（P4-M4）", params=[_param("deployment_id", where="path", required=True)])[2],
+        },
+        "/api/projects/{project_id}/rollbacks": {
+            "get": project_op("get", "回滚记录（P4-M4）")[2],
         },
         "/api/runtime/services": {
             "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],
