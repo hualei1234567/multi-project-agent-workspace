@@ -113,10 +113,13 @@ def test_migration_upgrades_v1_preserves_rows_and_backs_up(tmp_path, monkeypatch
     }
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    assert [tuple(row) for row in version] == [(2,)]
+    # 三期起目标版本是 v3；v1 库直接升到最新，中间步骤逐级执行。
+    assert [tuple(row) for row in version] == [(migrate.TARGET_VERSION,)]
     assert {"owner", "archived_at", "version"} <= project_cols
     assert counts == {"agent_projects": 1, "tasks": 1, "deliveries": 1}
     assert {"task_dependencies", "executions", "audit_logs"} <= tables
+    # v3 新增表（三期 M3-1~M3-3）
+    assert {"dispatch_plans", "dispatch_items", "runtime_services"} <= tables
     backups = list(db.parent.glob("legacy.db.bak-*"))
     assert len(backups) == 1
 

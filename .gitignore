@@ -4,6 +4,7 @@
 
 # 运行期数据：平台库、快照、日志都在本机，入库会污染历史
 data/platform.db
+data/platform.db.bak-*
 data/platform.db-journal
 data/platform.db-wal
 data/platform.db-shm

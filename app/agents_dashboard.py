@@ -54,14 +54,26 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
+    from agent_platform import auth as auth_service
     from agent_platform import config as platform_config
+    from agent_platform import executor as executor_service
+    from agent_platform import executor_policy
     from agent_platform import openapi as openapi_service
+    from agent_platform import resources as resource_service
+    from agent_platform import runtime as runtime_service
+    from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
+    from app.agent_platform import auth as auth_service
     from app.agent_platform import config as platform_config
+    from app.agent_platform import executor as executor_service
+    from app.agent_platform import executor_policy
     from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import resources as resource_service
+    from app.agent_platform import runtime as runtime_service
+    from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
     from app.agent_platform.state_cache import StateCache
@@ -1278,9 +1290,71 @@ def open_with_os(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+def _run_dispatch_item(project_id: str, item_id: str, *, dry_run: bool, owner: str) -> dict[str, Any]:
+    """校验项目归属后交给执行器。"""
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        row = conn.execute(
+            "SELECT project_id FROM dispatch_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row is None or row["project_id"] != project_id:
+            raise scheduler_service.SchedulerError("not_found", 404, "调度项不存在")
+    finally:
+        conn.close()
+    try:
+        return executor_service.run_item(item_id, owner=owner, dry_run=dry_run)
+    except executor_service.ExecutorError as exc:
+        raise scheduler_service.SchedulerError(exc.code, exc.status, exc.message) from exc
+
+
+def _executor_status() -> dict[str, Any]:
+    """执行器开关状态，供 UI 判断是否展示「执行」按钮。"""
+    return {
+        "global_enabled": executor_policy.executor_enabled(),
+        "env_switch": executor_policy.ENV_SWITCH,
+        "allowed_tools": list(executor_policy.ALLOWED_TOOLS),
+        "algorithms_note": "平台只拉起 claude，禁 push/部署/删数据",
+    }
+
+
+def _schedulable_for(project_id: str) -> dict[str, Any]:
+    """某项目当前可调度与被跳过的任务（只读）。"""
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        ready, skipped = scheduler_service.schedulable(conn, project_id)
+        return {"ready": ready, "skipped": skipped}
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args) -> None:
         return
+
+    def _authorized(self, path: str, query: dict[str, list[str]]) -> bool:
+        """所有请求先过鉴权；不通过时直接写响应并返回 False。"""
+        ok, reason = auth_service.check_request(
+            path=path,
+            client_address=self.client_address[0] if self.client_address else None,
+            headers=self.headers,
+            query_params=query,
+        )
+        if ok:
+            return True
+        self.send_response(401 if reason in {"missing_token", "invalid_token"} else 403)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        body = json.dumps({
+            "ok": False, "error": reason,
+            "message": "需要访问令牌" if reason.endswith("token") else "该接口仅限本机访问",
+            "detail": {"code": reason, "message": reason},
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
@@ -1310,7 +1384,19 @@ class Handler(BaseHTTPRequestHandler):
             raise platform_service.PlatformError("invalid_json", 400)
         return data
 
-    def _error(self, exc: platform_service.PlatformError) -> None:
+    def _fail(self, code: int, error: str, message: str) -> None:
+        """统一错误体：``{ok:false, error, message, detail:{code,message}}``。
+
+        与 ``_error()`` 同形，避免各处手工拼出字段缺失的变体。
+        """
+        self._json(code, {"ok": False, "error": error, "message": message,
+                          "detail": {"code": error, "message": message}})
+
+    def _not_found_route(self) -> None:
+        self._fail(404, "not_found", "接口不存在")
+
+    def _error(self, exc) -> None:
+        """统一错误响应。接受 PlatformError 与同形的 SchedulerError。"""
         self._json(exc.status, {
             "ok": False, "error": exc.code, "message": exc.message,
             "detail": {"code": exc.code, "message": exc.message},
@@ -1319,7 +1405,8 @@ class Handler(BaseHTTPRequestHandler):
     def _platform(self, fn, *args, **kwargs) -> None:
         try:
             self._json(200, fn(*args, **kwargs))
-        except platform_service.PlatformError as exc:
+        except (platform_service.PlatformError, scheduler_service.SchedulerError,
+                resource_service.ResourceError, runtime_service.RuntimeError_) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -1365,17 +1452,51 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if not self._authorized(path, query):
+            return
         try:
             if path == "/api/open":
                 project = self._project_from_query(query)
                 raw = (query.get("path") or [None])[0]
                 target = safe_project_path(project, raw)
                 if target is None:
-                    self._json(400, {"ok": False, "error": "invalid_path",
-                                     "detail": {"code": "invalid_path", "message": "路径不可用"}})
+                    self._fail(400, "invalid_path", "路径不可用")
                     return
                 self._json(200, {"ok": open_with_os(target), "path": str(target)})
                 return
+            # 运行时控制（M3-3）
+            if path == "/api/runtime/services":
+                self._platform(runtime_service.register_service, self._body())
+                return
+            if path == "/api/runtime/collect":
+                self._platform(runtime_service.collect_once)
+                return
+            if path.startswith("/api/runtime/actions/") and path.endswith("/preflight"):
+                segments = self._segments(path)
+                if len(segments) == 5:
+                    self._platform(runtime_service.preflight, segments[3])
+                    return
+            if path.startswith("/api/runtime/actions/") and path.endswith("/run"):
+                segments = self._segments(path)
+                if len(segments) == 5:
+                    body = self._body()
+                    self._platform(
+                        runtime_service.run_action, segments[3],
+                        preflight_token=body.get("preflight_token"),
+                        confirm=bool(body.get("confirm")),
+                        dry_run=bool(body.get("dry_run")),
+                    )
+                    return
+            # 跨项目协作（M3-2）：共享资源是平台级，不挂在项目下
+            if path == "/api/shared-resources":
+                self._platform(resource_service.create_resource, self._body())
+                return
+            if (path.startswith("/api/shared-resources/")
+                    and path.rstrip("/").endswith("/claims")):
+                segments = self._segments(path)
+                if len(segments) == 4:
+                    self._platform(resource_service.claim_resource, segments[2], self._body())
+                    return
             if path == "/api/projects":
                 payload = self._body()
                 fingerprint = "POST /api/projects " + hashlib.sha1(
@@ -1402,8 +1523,7 @@ class Handler(BaseHTTPRequestHandler):
                 rest = segments[3:]
                 self._project_post(project_id, rest)
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         except platform_service.PlatformError as exc:
             self._error(exc)
 
@@ -1431,6 +1551,27 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
+        # 执行单个调度项（M3-1 T3-103）。项目与全局两道开关默认关闭。
+        if len(rest) == 4 and rest[:2] == ["dispatch", "items"] and rest[3] in ("run", "dry-run"):
+            body = self._body()
+            dry = rest[3] == "dry-run"
+            self._platform(
+                _run_dispatch_item, project_id, rest[2],
+                dry_run=dry,
+                owner=str(body.get("owner") or "local"),
+            )
+            return
+        # 自主调度（M3-1）：生成计划是纯计算 + 落库，不执行任何进程。
+        if rest == ["dispatch", "plan"]:
+            body = self._body()
+            self._platform(
+                scheduler_service.create_plan, project_id,
+                strategy=str(body.get("strategy") or "priority"),
+                created_by=str(body.get("created_by") or "local"),
+                max_items=body.get("max_items"),
+                notes=body.get("notes"),
+            )
+            return
         if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "transition":
             self._platform(platform_service.transition_task, project_id, rest[1], self._body())
             return
@@ -1449,12 +1590,13 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["visit"]:
             self._platform(platform_service.record_visit, project_id)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if not self._authorized(path, parse_qs(parsed.query)):
+            return
         try:
             segments = self._segments(path)
             if len(segments) == 3 and segments[:2] == ["api", "projects"]:
@@ -1469,21 +1611,30 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self._body()
                 self._platform(platform_service.patch_document, segments[2], segments[4], payload)
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         except platform_service.PlatformError as exc:
             self._error(exc)
 
     def do_PUT(self) -> None:
-        segments = self._segments(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
+        segments = self._segments(parsed.path)
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], True)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_DELETE(self) -> None:
-        segments = self._segments(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
+        segments = self._segments(parsed.path)
+        # DELETE /api/shared-resources/{id}/claims/{claim_id}
+        if (len(segments) == 5 and segments[:2] == ["api", "shared-resources"]
+                and segments[3] == "claims"):
+            self._platform(resource_service.release_claim, segments[2], segments[4])
+            return
         if (len(segments) == 7 and segments[:2] == ["api", "projects"]
                 and segments[3] == "tasks" and segments[5] == "dependencies"):
             self._platform(platform_service.delete_dependency, segments[2], segments[4], segments[6])
@@ -1494,11 +1645,12 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], False)
             return
-        self._json(404, {"ok": False, "error": "not_found",
-                         "detail": {"code": "not_found", "message": "接口不存在"}})
+        self._not_found_route()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if not self._authorized(parsed.path, parse_qs(parsed.query)):
+            return
         path = parsed.path
         query = parse_qs(parsed.query)
         if path.startswith("/api/agent/"):
@@ -1540,6 +1692,21 @@ class Handler(BaseHTTPRequestHandler):
                 status=(query.get("status") or [None])[0],
                 favorite=(query.get("favorite") or [None])[0],
             )
+        elif path == "/api/runtime/services":
+            self._platform(runtime_service.list_services)
+        elif path == "/api/runtime/actions":
+            self._platform(runtime_service.list_action_runs,
+                           limit=int((query.get("limit") or ["20"])[0]))
+        elif path == "/api/agent-platform/cross-project":
+            self._platform(platform_service.cross_project_graph)
+        elif path == "/api/shared-resources":
+            self._platform(resource_service.list_resources)
+        elif path.startswith("/api/shared-resources/"):
+            rid = unquote(path[len("/api/shared-resources/"):].strip("/"))
+            if rid:
+                self._platform(resource_service.get_resource, rid)
+            else:
+                self._not_found_route()
         elif path == "/api/agent-platform/overview":
             self._platform(platform_service.overview)
         elif path == "/api/me/recent-projects":
@@ -1568,13 +1735,32 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/projects/"):
             segments = self._segments(path)
             if len(segments) < 3:
-                self._json(404, {"ok": False, "error": "not_found",
-                                 "detail": {"code": "not_found", "message": "接口不存在"}})
+                self._not_found_route()
                 return
             project_id = segments[2]
             rest = segments[3:]
             if not rest:
                 self._platform_project(platform_service.get_project, project_id)
+                return
+            # 自主调度只读（M3-1）
+            if rest == ["dispatch", "plans"]:
+                self._platform(
+                    scheduler_service.list_plans, project_id,
+                    page=(query.get("page") or ["1"])[0],
+                    page_size=(query.get("page_size") or ["20"])[0],
+                )
+                return
+            if len(rest) == 3 and rest[:2] == ["dispatch", "plans"]:
+                self._platform(scheduler_service.get_plan, project_id, rest[2])
+                return
+            if len(rest) == 3 and rest[:2] == ["dispatch", "items"]:
+                self._platform(scheduler_service.get_item, project_id, rest[2])
+                return
+            if rest == ["dispatch", "executor"]:
+                self._json(200, _executor_status())
+                return
+            if rest == ["dispatch", "schedulable"]:
+                self._platform(_schedulable_for, project_id)
                 return
             if rest == ["tasks"]:
                 self._platform(
@@ -1589,6 +1775,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(rest) == 2 and rest[0] == "tasks":
                 self._platform(platform_service.get_task, project_id, rest[1])
+                return
+            if len(rest) == 3 and rest[:2] == ["tasks", rest[1]] and rest[2] == "cross-dependencies":
+                self._platform(platform_service.task_cross_dependencies, project_id, rest[1])
                 return
             if rest == ["deliveries"]:
                 self._platform(
@@ -1629,8 +1818,7 @@ class Handler(BaseHTTPRequestHandler):
                     page_size=(query.get("page_size") or ["20"])[0],
                 )
                 return
-            self._json(404, {"ok": False, "error": "not_found",
-                             "detail": {"code": "not_found", "message": "接口不存在"}})
+            self._not_found_route()
         elif path == "/view":
             # 独立查看页：新标签页直接展示内容；路径仍走 safe_project_path 白名单。
             try:
@@ -1671,21 +1859,18 @@ class Handler(BaseHTTPRequestHandler):
             raw = (query.get("path") or [None])[0]
             target = safe_project_path(project, raw)
             if target is None:
-                self._json(404, {"ok": False, "error": "not_found",
-                                 "detail": {"code": "not_found", "message": "文件不存在或越界"}})
+                self._fail(404, "not_found", "文件不存在或越界")
                 return
             try:
                 self._send(200, target.read_bytes(), MIME.get(target.suffix.lower(), "application/octet-stream"))
             except OSError:
-                self._json(500, {"ok": False, "error": "unreadable",
-                                 "detail": {"code": "unreadable", "message": "文件读取失败"}})
+                self._fail(500, "unreadable", "文件读取失败")
                 return
             platform_service.record_file_open(project["id"], str(raw or ""))
         elif path in ("/", "/index.html"):
             self._send(200, load_page(), "text/html; charset=utf-8")
         else:
-            self._send(404, b'{"error":"not found","detail":{"code":"not_found","message":"not found"}}',
-                       "application/json")
+            self._not_found_route()
 
 
 def main() -> int:

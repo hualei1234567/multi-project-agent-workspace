@@ -275,7 +275,9 @@ def ensure_configured_projects(conn: sqlite3.Connection) -> list[str]:
             continue
         slugs = [str(s) for s in (item.get("session_slugs") or []) if s]
         now = store.now_iso()
-        with conn:
+        # 注意：连接是 autocommit（isolation_level=None），`with conn:` 并不会开事务，
+        # 旧代码在这里误以为有原子性。改用显式 write_tx，项目与角色一起成功或一起回滚。
+        with store.write_tx(conn):
             conn.execute(
                 """
                 INSERT INTO agent_projects
@@ -296,7 +298,7 @@ def ensure_configured_projects(conn: sqlite3.Connection) -> list[str]:
                     now,
                 ),
             )
-        ensure_project_agents(conn, code, templates.STANDARD_1_6)
+            ensure_project_agents(conn, code, templates.STANDARD_1_6)
         created.append(code)
     return created
 
@@ -890,6 +892,108 @@ def _pagination(page: int | str | None, page_size: int | str | None) -> tuple[in
     except (TypeError, ValueError):
         size = 20
     return page_num, max(1, min(size, PAGE_SIZE_MAX))
+
+
+def task_cross_dependencies(project_id: str, task_id: str) -> dict[str, Any]:
+    """某任务的跨项目依赖关系（进/出两个方向）。
+
+    M3-2：跨项目依赖必须**双向可见** —— 本项目的任务依赖别人时能看到，
+    被别人依赖时也要能看到「谁在等我们」，否则跨项目协作没有抓手。
+    """
+    with store.session() as conn:
+        _require_project(conn, project_id)
+        task = _task_row(conn, project_id, task_id)
+        outgoing = [
+            {
+                "id": row["id"],
+                "dependency_type": row["dependency_type"],
+                "target_task_id": row["target_id"],
+                "target_task_key": row["target_key"],
+                "target_project_id": row["target_project_id"],
+                "target_project_name": row["target_project_name"],
+                "target_status": row["target_status"],
+            }
+            for row in conn.execute(
+                """
+                SELECT d.id, d.dependency_type, t.id AS target_id, t.task_key AS target_key,
+                       t.project_id AS target_project_id, p.name AS target_project_name,
+                       t.status AS target_status
+                  FROM task_dependencies d
+                  JOIN tasks t ON t.id = d.depends_on_task_id
+                  JOIN agent_projects p ON p.id = t.project_id
+                 WHERE d.task_id = ? AND d.cross_project = 1
+                 ORDER BY p.name, t.task_key
+                """,
+                (task["id"],),
+            )
+        ]
+        incoming = [
+            {
+                "id": row["id"],
+                "dependency_type": row["dependency_type"],
+                "source_task_id": row["source_id"],
+                "source_task_key": row["source_key"],
+                "source_project_id": row["source_project_id"],
+                "source_project_name": row["source_project_name"],
+                "source_status": row["source_status"],
+            }
+            for row in conn.execute(
+                """
+                SELECT d.id, d.dependency_type, t.id AS source_id, t.task_key AS source_key,
+                       t.project_id AS source_project_id, p.name AS source_project_name,
+                       t.status AS source_status
+                  FROM task_dependencies d
+                  JOIN tasks t ON t.id = d.task_id
+                  JOIN agent_projects p ON p.id = t.project_id
+                 WHERE d.depends_on_task_id = ? AND d.cross_project = 1
+                 ORDER BY p.name, t.task_key
+                """,
+                (task["id"],),
+            )
+        ]
+        return {"task_id": task["id"], "task_key": task["task_key"],
+                "outgoing": outgoing, "incoming": incoming}
+
+
+def cross_project_graph() -> dict[str, Any]:
+    """平台级跨项目协作图：项目节点 + 跨项目依赖边 + 阻塞统计（只读）。
+
+    不引入新表，纯查询聚合。
+    """
+    with store.session() as conn:
+        projects = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id, code, name, status FROM agent_projects ORDER BY name"
+            )
+        ]
+        edges = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT d.id, d.project_id AS from_project_id,
+                       tt.project_id AS to_project_id,
+                       d.task_id, tf.task_key AS from_task_key, tf.status AS from_status,
+                       d.depends_on_task_id, tt.task_key AS to_task_key, tt.status AS to_status
+                  FROM task_dependencies d
+                  JOIN tasks tf ON tf.id = d.task_id
+                  JOIN tasks tt ON tt.id = d.depends_on_task_id
+                 WHERE d.cross_project = 1
+                 ORDER BY d.created_at DESC
+                """
+            )
+        ]
+        # 被跨项目依赖「卡住」的任务：目标未完成 → 源项目在等
+        blocking = [edge for edge in edges if edge["to_status"] != "done"]
+        by_project: dict[str, int] = {}
+        for edge in blocking:
+            by_project[edge["from_project_id"]] = by_project.get(edge["from_project_id"], 0) + 1
+        return {
+            "projects": projects,
+            "edges": edges,
+            "blocked_edges": len(blocking),
+            "blocked_by_project": by_project,
+        }
 
 
 def list_tasks(
@@ -1583,29 +1687,40 @@ def transition_task(project_id: str, task_id: str, payload: dict[str, Any]) -> d
         elif current == "done":
             updates.append("completed_at = NULL")
         params.append(task["id"])
-        conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
-        audit(
-            conn, project_id, "task.transition", "task", task["id"],
-            detail={
-                "task_key": task["task_key"],
-                "from": current,
-                "to": to_status,
-                "reason": reason or None,
-                "blocked_reason": blocked_reason or None,
-            },
-        )
-        _insert_task_event(
-            conn, project_id, task["id"], "task_transition",
-            f"{task['task_key']} {current} -> {to_status}" + (f"：{reason}" if reason else ""),
-        )
+        # 状态、审计、事件必须同生同灭：中途失败不能留下「状态改了但没留痕」
+        with store.write_tx(conn):
+            conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            audit(
+                conn, project_id, "task.transition", "task", task["id"],
+                detail={
+                    "task_key": task["task_key"],
+                    "from": current,
+                    "to": to_status,
+                    "reason": reason or None,
+                    "blocked_reason": blocked_reason or None,
+                },
+            )
+            _insert_task_event(
+                conn, project_id, task["id"], "task_transition",
+                f"{task['task_key']} {current} -> {to_status}" + (f"：{reason}" if reason else ""),
+            )
         return {"task": _task_detail(conn, project_id, task["id"])}
     finally:
         conn.close()
 
 
 def _resolve_task_in_project(
-    conn: sqlite3.Connection, project_id: str, reference: Any
+    conn: sqlite3.Connection,
+    project_id: str,
+    reference: Any,
+    *,
+    allow_cross_project: bool = False,
 ) -> dict[str, Any]:
+    """按 id 或 task_key 解析任务。
+
+    ``allow_cross_project=True``（三期 M3-2）时允许引用其它项目的任务，
+    此时必须用**全局唯一**的 id（task_key 只在项目内唯一，跨项目会歧义）。
+    """
     text = str(reference or "").strip()
     if not text:
         raise PlatformError("invalid_payload", 422, "depends_on_task_id 必填")
@@ -1615,18 +1730,28 @@ def _resolve_task_in_project(
     if row is None:
         raise PlatformError("not_found", 404, "依赖任务不存在")
     if row["project_id"] != project_id:
-        raise PlatformError("cross_project_reference", 422, "依赖任务不属于当前项目")
+        if not allow_cross_project:
+            raise PlatformError("cross_project_reference", 422, "依赖任务不属于当前项目")
+        # 跨项目引用必须用 id：task_key 可能与本项目某个任务重名。
+        if row["id"] != text:
+            raise PlatformError(
+                "ambiguous_reference", 422,
+                "跨项目依赖必须使用任务 id（task_key 仅在项目内唯一）",
+            )
     return _task_dict(row)
 
 
 def _dependency_cycle(
     conn: sqlite3.Connection, project_id: str, task_id: str, depends_on_task_id: str
 ) -> bool:
-    """新增 task_id -> depends_on 边后，若 depends_on 能回到 task_id 则成环。"""
+    """新增 task_id -> depends_on 边后，若 depends_on 能回到 task_id 则成环。
+
+    三期 M3-2：按**全局任务图**遍历。跨项目依赖引入后，只在单项目子图里找环
+    会漏掉 A项目任务 → B项目任务 → A项目任务 这类跨项目环。
+    """
     edges: dict[str, list[str]] = {}
     for row in conn.execute(
-        "SELECT task_id, depends_on_task_id FROM task_dependencies WHERE project_id = ?",
-        (project_id,),
+        "SELECT task_id, depends_on_task_id FROM task_dependencies"
     ).fetchall():
         edges.setdefault(row["task_id"], []).append(row["depends_on_task_id"])
     edges.setdefault(task_id, []).append(depends_on_task_id)
@@ -1652,12 +1777,22 @@ def add_dependency(project_id: str, task_id: str, payload: dict[str, Any]) -> di
         _require_project(conn, project_id, write=True)
         task = _task_row(conn, project_id, task_id)
         _require_writable_task(task)
-        depends = _resolve_task_in_project(conn, project_id, payload.get("depends_on_task_id"))
+        allow_cross = bool(payload.get("cross_project"))
+        depends = _resolve_task_in_project(
+            conn, project_id, payload.get("depends_on_task_id"),
+            allow_cross_project=allow_cross,
+        )
         if depends["id"] == task["id"]:
             raise PlatformError("invalid_payload", 422, "任务不能依赖自身")
         dependency_type = str(payload.get("dependency_type") or "blocks")
         if dependency_type not in {"blocks", "related"}:
             raise PlatformError("invalid_payload", 422, "dependency_type 非法")
+        is_cross = depends["project_id"] != project_id
+        # 跨项目只允许 blocks：related 是弱关联，跨项目没有排程意义。
+        if is_cross and dependency_type != "blocks":
+            raise PlatformError(
+                "invalid_payload", 422, "跨项目依赖只支持 blocks 类型"
+            )
         if _dependency_cycle(conn, project_id, task["id"], depends["id"]):
             raise PlatformError("dependency_cycle", 422, "依赖成环")
         now = store.now_iso()
@@ -1666,16 +1801,19 @@ def add_dependency(project_id: str, task_id: str, payload: dict[str, Any]) -> di
             conn.execute(
                 """
                 INSERT INTO task_dependencies
-                    (id, project_id, task_id, depends_on_task_id, dependency_type, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (id, project_id, task_id, depends_on_task_id, dependency_type,
+                     cross_project, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (dep_id, project_id, task["id"], depends["id"], dependency_type, now),
+                (dep_id, project_id, task["id"], depends["id"], dependency_type,
+                 1 if is_cross else 0, now),
             )
         except sqlite3.IntegrityError:
             raise PlatformError("conflict", 409, "依赖已存在")
+        label = f"{depends['task_key']}" if not is_cross else f"{depends['task_key']}@{depends['project_id']}"
         _insert_task_event(
             conn, project_id, task["id"], "dependency_added",
-            f"{task['task_key']} 依赖 {depends['task_key']}",
+            f"{task['task_key']} 依赖 {label}",
         )
         return {"dependency_id": dep_id, "task": _task_detail(conn, project_id, task["id"])}
     finally:
