@@ -64,10 +64,13 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
+    from agent_platform.p4 import autonomy as autonomy_service
     from agent_platform.p4 import evaluation as evaluation_service
     from agent_platform.p4 import governance as p4_governance
+    from agent_platform.p4 import improvement as improvement_service
     from agent_platform.p4 import killswitch as p4_killswitch
     from agent_platform.p4 import knowledge as knowledge_service
+    from agent_platform.p4 import outcome as outcome_service
     from agent_platform.p4 import policy as p4_policy
     from agent_platform.p4 import release as release_service
     from agent_platform.p4 import workflow as workflow_service
@@ -83,10 +86,13 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
+    from app.agent_platform.p4 import autonomy as autonomy_service
     from app.agent_platform.p4 import evaluation as evaluation_service
     from app.agent_platform.p4 import governance as p4_governance
+    from app.agent_platform.p4 import improvement as improvement_service
     from app.agent_platform.p4 import killswitch as p4_killswitch
     from app.agent_platform.p4 import knowledge as knowledge_service
+    from app.agent_platform.p4 import outcome as outcome_service
     from app.agent_platform.p4 import policy as p4_policy
     from app.agent_platform.p4 import release as release_service
     from app.agent_platform.p4 import workflow as workflow_service
@@ -1493,6 +1499,124 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _p4_call(self, fn, exc_types, *args, **kwargs) -> None:
+        conn = platform_store.connect()
+        try:
+            self._json(200, fn(conn, *args, **kwargs))
+        except exc_types as exc:
+            self._error(exc)
+        except Exception:  # noqa: BLE001
+            self._json(500, {"ok": False, "error": "internal_error",
+                             "detail": {"code": "internal_error", "message": "内部错误"}})
+        finally:
+            conn.close()
+
+    def _handle_p4_misc(self, project_id: str, rest: list[str], method: str,
+                        query: dict[str, list[str]]) -> bool:
+        """M5 改进 / M6 价值 / M7 自主化 三个域的路由。"""
+        if not rest or rest[0] not in {"improvements", "outcome", "autonomy"}:
+            return False
+        # 必须先确认是本域请求再读 body：否则会把别的 POST 请求体吃掉。
+        body = self._body() if method == "POST" else {}
+
+        imp = (improvement_service.ImprovementError,)
+        out = (outcome_service.OutcomeError,)
+        aut = (autonomy_service.AutonomyError,)
+
+        # ---- M5 改进 ----
+        if method == "POST" and rest == ["improvements", "failures"]:
+            self._p4_call(improvement_service.record_failure, imp, project_id, body)
+            return True
+        if method == "GET" and rest == ["improvements", "failures"]:
+            self._p4_call(improvement_service.list_patterns, imp, project_id)
+            return True
+        if method == "POST" and rest == ["improvements", "cases"]:
+            self._p4_call(improvement_service.open_case, imp, project_id, body)
+            return True
+        if method == "GET" and rest == ["improvements", "cases"]:
+            self._p4_call(improvement_service.list_cases, imp, project_id)
+            return True
+        if (method == "POST" and len(rest) == 4 and rest[:2] == ["improvements", "cases"]
+                and rest[3] == "root-cause"):
+            self._p4_call(improvement_service.assess_root_cause, imp, rest[2], body)
+            return True
+        if method == "POST" and rest == ["improvements", "proposals"]:
+            self._p4_call(improvement_service.create_proposal, imp, project_id, body)
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["improvements", "proposals"] and rest[3] == "sandbox"):
+            self._p4_call(improvement_service.run_sandbox, imp, rest[2],
+                          str(body.get("eval_run_id") or ""))
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["improvements", "proposals"]
+                and rest[3] == "request-approval"):
+            if not self._policy_guard(project_id, "change_proposal", "request_approval",
+                                      risk="R3"):
+                return True
+            self._p4_call(improvement_service.request_approval, imp, rest[2],
+                          requested_by=str(body.get("requested_by") or "local"))
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["improvements", "approvals"] and rest[3] == "approve"):
+            if not self._policy_guard(project_id, "change_proposal", "approve", risk="R4"):
+                return True
+            self._p4_call(improvement_service.approve, imp, rest[2],
+                          approved_by=str(body.get("approved_by") or ""),
+                          note=body.get("note"))
+            return True
+
+        # ---- M6 价值 ----
+        if method == "POST" and rest == ["outcome", "metrics"]:
+            self._p4_call(outcome_service.define_metric, out, project_id, body)
+            return True
+        if method == "GET" and rest == ["outcome", "metrics"]:
+            self._p4_call(outcome_service.list_metrics, out, project_id)
+            return True
+        if method == "POST" and rest == ["outcome", "records"]:
+            self._p4_call(outcome_service.record_value, out, project_id, body)
+            return True
+        if method == "GET" and rest == ["outcome", "summary"]:
+            self._p4_call(outcome_service.summarize, out, project_id,
+                          (query.get("metric_key") or [""])[0])
+            return True
+        if method == "GET" and rest == ["outcome", "cost"]:
+            self._p4_call(outcome_service.cost_summary, out, project_id)
+            return True
+
+        # ---- M7 自主化 ----
+        if method == "POST" and rest == ["autonomy", "eligibilities"]:
+            self._p4_call(
+                autonomy_service.get_or_create, aut, project_id,
+                task_type=str(body.get("task_type") or "default"),
+                tool_scope=str(body.get("tool_scope") or "read_write_code"),
+                environment=str(body.get("environment") or "dev"),
+            )
+            return True
+        if method == "GET" and rest == ["autonomy", "eligibilities"]:
+            self._p4_call(autonomy_service.list_for_project, aut, project_id)
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["autonomy", "eligibilities"] and rest[3] == "evidence"):
+            self._p4_call(autonomy_service.submit_evidence, aut, rest[2],
+                          body.get("evidence") or {})
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["autonomy", "eligibilities"] and rest[3] == "approve"):
+            if not self._policy_guard(project_id, "autonomy_eligibility", "approve", risk="R4"):
+                return True
+            self._p4_call(autonomy_service.approve_level, aut, rest[2],
+                          level=str(body.get("level") or "A0"),
+                          approved_by=str(body.get("approved_by") or ""),
+                          reason=str(body.get("reason") or "未说明"))
+            return True
+        if (method == "POST" and len(rest) == 4
+                and rest[:2] == ["autonomy", "eligibilities"] and rest[3] == "suspend"):
+            self._p4_call(autonomy_service.suspend, aut, rest[2],
+                          reason=str(body.get("reason") or "未说明"))
+            return True
+        return False
+
     def _handle_release(self, project_id: str, rest: list[str], method: str) -> bool:
         """发布治理域路由。已处理返回 True。"""
         if not rest or rest[0] not in {"releases", "approvals", "canaries", "rollbacks"}:
@@ -1948,6 +2072,9 @@ class Handler(BaseHTTPRequestHandler):
         # 四期发布治理域（P4-M4）
         if self._handle_release(project_id, rest, "POST"):
             return
+        # 四期 改进 / 价值 / 自主化（P4-M5~M7）
+        if self._handle_p4_misc(project_id, rest, "POST", {}):
+            return
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
@@ -2164,6 +2291,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # 四期发布治理域（P4-M4）
             if self._handle_release(project_id, rest, "GET"):
+                return
+            # 四期 改进 / 价值 / 自主化（P4-M5~M7）
+            if self._handle_p4_misc(project_id, rest, "GET", query):
                 return
             # 自主调度只读（M3-1）
             if rest == ["dispatch", "plans"]:

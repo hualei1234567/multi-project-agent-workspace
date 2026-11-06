@@ -119,6 +119,27 @@ V4_TABLES = (
     "event_inbox",
 )
 
+#: v10（四期 M6）：业务价值域。
+V10_TABLES = (
+    "outcome_metric_definitions",
+    "outcome_metric_versions",
+    "outcome_records",
+)
+
+#: v11（四期 M7）：自主化资格域。
+V11_TABLES = (
+    "autonomy_eligibilities",
+    "autonomy_changes",
+)
+
+#: v9（四期 M5）：持续改进域。
+V9_TABLES = (
+    "failure_patterns",
+    "improvement_cases",
+    "change_proposals",
+    "sandbox_evaluations",
+)
+
 #: v8（四期 M4）：发布治理域。
 V8_TABLES = (
     "agent_releases",
@@ -317,6 +338,26 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V8_TABLES,
         description="四期 M4 发布治理域：Release / Manifest / Canary / 回滚",
     ),
+    MigrationStep(
+        9,
+        tables=V9_TABLES,
+        description="四期 M5 改进域：失败模式 / Case / 变更提案 / 沙箱评估",
+    ),
+    MigrationStep(
+        10,
+        tables=V10_TABLES,
+        columns=(("token_usage_events", (
+            ("cost_usd", "REAL"),
+            ("price_version", "TEXT"),
+            ("cost_source", "TEXT"),
+        )),),
+        description="四期 M6 价值域：指标定义/版本/记录 + Usage 成本列（Expand）",
+    ),
+    MigrationStep(
+        11,
+        tables=V11_TABLES,
+        description="四期 M7 自主化域：资格与等级变更",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version
@@ -352,6 +393,9 @@ _V5_MARKER = "schema v5（四期"
 _V6_MARKER = "schema v6（四期"
 _V7_MARKER = "schema v7（四期"
 _V8_MARKER = "schema v8（四期"
+_V9_MARKER = "schema v9（四期"
+_V10_MARKER = "schema v10（四期"
+_V11_MARKER = "schema v11（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -373,6 +417,12 @@ def schema_statements(target_version: int | None = None) -> list[str]:
         text = text.split(_V7_MARKER)[0]
     if target_version is not None and target_version < 8 and _V8_MARKER in text:
         text = text.split(_V8_MARKER)[0]
+    if target_version is not None and target_version < 9 and _V9_MARKER in text:
+        text = text.split(_V9_MARKER)[0]
+    if target_version is not None and target_version < 10 and _V10_MARKER in text:
+        text = text.split(_V10_MARKER)[0]
+    if target_version is not None and target_version < 11 and _V11_MARKER in text:
+        text = text.split(_V11_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

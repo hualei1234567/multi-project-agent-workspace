@@ -66,6 +66,25 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/observe"),
     ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/promote"),
     ("GET", "/api/projects/{project_id}/rollbacks"),
+    ("POST", "/api/projects/{project_id}/improvements/failures"),
+    ("GET", "/api/projects/{project_id}/improvements/failures"),
+    ("POST", "/api/projects/{project_id}/improvements/cases"),
+    ("GET", "/api/projects/{project_id}/improvements/cases"),
+    ("POST", "/api/projects/{project_id}/improvements/cases/{case_id}/root-cause"),
+    ("POST", "/api/projects/{project_id}/improvements/proposals"),
+    ("POST", "/api/projects/{project_id}/improvements/proposals/{proposal_id}/sandbox"),
+    ("POST", "/api/projects/{project_id}/improvements/proposals/{proposal_id}/request-approval"),
+    ("POST", "/api/projects/{project_id}/improvements/approvals/{approval_id}/approve"),
+    ("POST", "/api/projects/{project_id}/outcome/metrics"),
+    ("GET", "/api/projects/{project_id}/outcome/metrics"),
+    ("POST", "/api/projects/{project_id}/outcome/records"),
+    ("GET", "/api/projects/{project_id}/outcome/summary"),
+    ("GET", "/api/projects/{project_id}/outcome/cost"),
+    ("POST", "/api/projects/{project_id}/autonomy/eligibilities"),
+    ("GET", "/api/projects/{project_id}/autonomy/eligibilities"),
+    ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/evidence"),
+    ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/approve"),
+    ("POST", "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/suspend"),
     ("GET", "/api/projects/{project_id}/tasks"),
     ("POST", "/api/projects/{project_id}/tasks"),
     ("GET", "/api/projects/{project_id}/tasks/{task_id}"),
@@ -496,6 +515,55 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/rollbacks": {
             "get": project_op("get", "回滚记录（P4-M4）")[2],
+        },
+        "/api/projects/{project_id}/improvements/failures": {
+            "post": project_op("post", "登记失败信号（P4-M5）", params=[], body={"type": "object"})[2],
+            "get": project_op("get", "失败模式列表（P4-M5）", params=[])[2],
+        },
+        "/api/projects/{project_id}/improvements/cases": {
+            "post": project_op("post", "创建改进 Case（P4-M5）", params=[], body={"type": "object"})[2],
+            "get": project_op("get", "改进 Case 列表（P4-M5）", params=[])[2],
+        },
+        "/api/projects/{project_id}/improvements/cases/{case_id}/root-cause": {
+            "post": project_op("post", "评估根因（必须带证据，P4-M5）", params=[_param("case_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/improvements/proposals": {
+            "post": project_op("post", "创建变更提案（P4-M5）", params=[], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/improvements/proposals/{proposal_id}/sandbox": {
+            "post": project_op("post", "沙箱评估（不通过即否决，P4-M5）", params=[_param("proposal_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/improvements/proposals/{proposal_id}/request-approval": {
+            "post": project_op("post", "申请改进审批（P4-M5）", params=[_param("proposal_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/improvements/approvals/{approval_id}/approve": {
+            "post": project_op("post", "批准改进（提案人不得自批，P4-M5）", params=[_param("approval_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/outcome/metrics": {
+            "post": project_op("post", "定义指标（口径版本化，P4-M6）", params=[], body={"type": "object"})[2],
+            "get": project_op("get", "指标字典（P4-M6）", params=[])[2],
+        },
+        "/api/projects/{project_id}/outcome/records": {
+            "post": project_op("post", "记录指标值（quality 必填，P4-M6）", params=[], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/outcome/summary": {
+            "get": project_op("get", "指标汇总（verified/estimated 分开，P4-M6）", params=[])[2],
+        },
+        "/api/projects/{project_id}/outcome/cost": {
+            "get": project_op("get", "成本汇总（只读第三期账本，P4-M6）", params=[])[2],
+        },
+        "/api/projects/{project_id}/autonomy/eligibilities": {
+            "post": project_op("post", "获取/创建自动化资格（P4-M7）", params=[], body={"type": "object"})[2],
+            "get": project_op("get", "资格列表（P4-M7）", params=[])[2],
+        },
+        "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/evidence": {
+            "post": project_op("post", "提交资格证据（P4-M7）", params=[_param("eligibility_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/approve": {
+            "post": project_op("post", "批准等级（生产上限 A2，P4-M7）", params=[_param("eligibility_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/autonomy/eligibilities/{eligibility_id}/suspend": {
+            "post": project_op("post", "暂停资格（回落到 A0，P4-M7）", params=[_param("eligibility_id", where="path", required=True)], body={"type": "object"})[2],
         },
         "/api/runtime/services": {
             "get": _operation("运行时服务列表（含最近一次探测）", tags=["runtime"],

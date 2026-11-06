@@ -22,7 +22,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import governance, killswitch
+from . import autonomy, governance, killswitch
 
 RISK_ORDER = {"R0": 0, "R1": 1, "R2": 2, "R3": 3, "R4": 4}
 
@@ -88,8 +88,14 @@ def decide(
     environment: str = "dev",
     risk: str = "R2",
     domain: str | None = None,
+    task_type: str | None = None,
+    required_automation: str | None = None,
 ) -> Decision:
-    """唯一判定入口。任何写操作、执行、导出、检索都必须先过这里。"""
+    """唯一判定入口。任何写操作、执行、导出、检索都必须先过这里。
+
+    ``required_automation`` 表示该操作要求的自动化等级（A1–A4）。
+    资格不够直接拒绝——资格不等于授权，但也不允许绕过资格。
+    """
     blocked, why = killswitch.is_blocked(conn, project_id=project_id, domain=domain)
     if blocked:
         return Decision(allowed=False, reason=why, blocked_by="kill_switch")
@@ -97,6 +103,15 @@ def decide(
     ok, reason = governance.principal_active(principal)
     if not ok:
         return Decision(allowed=False, reason=reason, blocked_by="principal")
+
+    if required_automation and project_id:
+        current = autonomy.current_level(conn, project_id, task_type or "default", environment)
+        if not autonomy.level_satisfies(current, required_automation):
+            return Decision(
+                allowed=False,
+                reason=f"自动化等级不足：当前 {current}，要求 {required_automation}",
+                blocked_by="automation",
+            )
 
     matched: list[str] = []
     deny_hit = None

@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS token_usage_events (
   total_tokens       INTEGER NOT NULL DEFAULT 0,
   source             TEXT NOT NULL,
   occurred_at        TEXT NOT NULL,
+  cost_usd           REAL,
+  price_version      TEXT,
+  cost_source        TEXT,
   UNIQUE(session_id, message_uuid, agent_id, model)
 );
 
@@ -805,4 +808,138 @@ CREATE TABLE IF NOT EXISTS rollback_records (
   restored_digest TEXT,
   created_by      TEXT NOT NULL DEFAULT 'local',
   created_at      TEXT NOT NULL
+);
+
+-- ============================================================
+-- schema v9（四期 M5）：Continuous Improvement
+-- 失败/反馈 → Case → 根因 → 变更提案 → 沙箱评估 → 人工批准
+-- Agent 不得直接改生产配置（V6.0 §16.6）。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS failure_patterns (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  pattern_key TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  occurrences INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE(project_id, pattern_key)
+);
+
+CREATE TABLE IF NOT EXISTS improvement_cases (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES agent_projects(id),
+  title         TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open',
+  source_type   TEXT NOT NULL DEFAULT 'evaluation',   -- evaluation / feedback / regression
+  source_ref    TEXT,
+  pattern_id    TEXT,
+  root_cause    TEXT,
+  root_cause_evidence_json TEXT NOT NULL DEFAULT '{}',
+  owner         TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS change_proposals (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES agent_projects(id),
+  case_id        TEXT NOT NULL REFERENCES improvement_cases(id),
+  title          TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'draft',
+  base_version   TEXT,
+  candidate_version TEXT,
+  change_json    TEXT NOT NULL DEFAULT '{}',
+  expected_benefit TEXT,
+  rollback_plan  TEXT,
+  approval_id    TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_evaluations (
+  id            TEXT PRIMARY KEY,
+  proposal_id   TEXT NOT NULL REFERENCES change_proposals(id),
+  eval_run_id   TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  result_json   TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL
+);
+
+-- ============================================================
+-- schema v10（四期 M6）：Business Outcome & ROI
+-- 真实值 / 估算值 / 待验证值必须分开存，不允许混在一起算平均。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS outcome_metric_definitions (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  metric_key  TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  formula     TEXT NOT NULL,
+  unit        TEXT,
+  direction   TEXT NOT NULL DEFAULT 'higher_better',
+  owner       TEXT,
+  created_at  TEXT NOT NULL,
+  UNIQUE(project_id, metric_key)
+);
+
+CREATE TABLE IF NOT EXISTS outcome_metric_versions (
+  id            TEXT PRIMARY KEY,
+  definition_id TEXT NOT NULL REFERENCES outcome_metric_definitions(id),
+  version       INTEGER NOT NULL,
+  formula       TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  UNIQUE(definition_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS outcome_records (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES agent_projects(id),
+  metric_key     TEXT NOT NULL,
+  metric_version INTEGER NOT NULL DEFAULT 1,
+  value          REAL,
+  quality        TEXT NOT NULL DEFAULT 'unknown',
+  source         TEXT,
+  window_start   TEXT,
+  window_end     TEXT,
+  note           TEXT,
+  created_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_records_project
+  ON outcome_records(project_id, metric_key, created_at DESC);
+
+-- ============================================================
+-- schema v11（四期 M7）：Evidence-based Autonomy
+-- 资格只表示"可以申请更高自动化"，不等于执行授权；
+-- 真正放行仍然由 policy.decide 判定（V6.0 §18）。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS autonomy_eligibilities (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES agent_projects(id),
+  task_type     TEXT NOT NULL,
+  tool_scope    TEXT NOT NULL DEFAULT 'read_write_code',
+  environment   TEXT NOT NULL DEFAULT 'dev',
+  level         TEXT NOT NULL DEFAULT 'A0',
+  status        TEXT NOT NULL DEFAULT 'not_assessed',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  expires_at    TEXT,
+  approved_by   TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE(project_id, task_type, tool_scope, environment)
+);
+
+CREATE TABLE IF NOT EXISTS autonomy_changes (
+  id             TEXT PRIMARY KEY,
+  eligibility_id TEXT NOT NULL REFERENCES autonomy_eligibilities(id),
+  from_level     TEXT,
+  to_level       TEXT NOT NULL,
+  reason         TEXT NOT NULL,
+  requested_by   TEXT NOT NULL,
+  approved_by    TEXT,
+  created_at     TEXT NOT NULL
 );
