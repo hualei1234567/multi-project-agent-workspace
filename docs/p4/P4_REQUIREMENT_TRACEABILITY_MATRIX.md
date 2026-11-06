@@ -178,3 +178,36 @@
 | 无业务 Owner | OUT-006、P4-M0 门禁 |
 
 **P4-M1 建议首批消化**：GAP-1、GAP-2、GAP-3、OPS-001/002/005、EVAL-001～009。其余按 DAG 顺序推进。
+
+---
+
+## 14. 实施状态更新（2026-11-06，P4-M1～M7 全部落地后）
+
+上表「状态」列冻结于 P4-M0；本节记录实际实施结果，避免用旧快照判断当前进度。
+
+| 里程碑 | 状态 | 代码位置 | 测试 |
+|---|---|---|---|
+| 地基（身份/Policy/KillSwitch/事件） | **IMPLEMENTED + TESTED** | `app/agent_platform/p4/{governance,policy,killswitch,events}.py` | `test_p4_governance.py` 14 项、`test_p4_http_gate.py` 6 项 |
+| P4-M1 Evaluation | **IMPLEMENTED + TESTED** | `p4/evaluation.py` | `test_p4_evaluation.py` 8 项 + HTTP 全流程 |
+| P4-M2 Knowledge | **IMPLEMENTED + TESTED** | `p4/knowledge.py` | `test_p4_knowledge.py` 9 项 + HTTP 2 项 |
+| P4-M3 Workflow | **IMPLEMENTED + TESTED** | `p4/workflow.py` | `test_p4_workflow.py` 11 项 |
+| P4-M4 Release | **IMPLEMENTED + TESTED** | `p4/release.py` | `test_p4_release.py` 10 项 |
+| P4-M5 Improvement | **IMPLEMENTED + TESTED** | `p4/improvement.py` | `test_p4_improvement.py` 6 项 |
+| P4-M6 Outcome | **IMPLEMENTED + TESTED** | `p4/outcome.py` | `test_p4_outcome_autonomy.py` 5 项 |
+| P4-M7 Autonomy | **IMPLEMENTED + TESTED** | `p4/autonomy.py` | `test_p4_outcome_autonomy.py` 4 项 |
+| P4-M8 Catalog | **DEFERRED（P1 范围）** | — | — |
+
+**规模**：schema v11 / 68 张表 / 94 条 API 路径（117 个操作）/ 17,512 行 Python / 265 项测试全绿 / ruff 全清。
+
+**仍未满足的门禁（诚实记录）**：
+
+| 门禁 | 现状 |
+|---|---|
+| 两隔离项目的越权测试 | 单测覆盖了授权矩阵，**未做真实双项目端到端渗透测试** |
+| 备份恢复演练（P4-OPS-004） | 未执行，仅定义了 RPO/RTO |
+| Runbook 与运维交接（P4-OPS-006） | 未编写 |
+| 真实业务数据下的评估集 | 目前只有合成样本，业务 Owner 尚未提供真实集 |
+| GitLab / CI | 无 remote，仍为本地测试门禁 |
+| Catalog（P4-M8 P1） | 未启动 |
+
+以上是 P4-M8 最终验收前必须补齐的部分，不得用"功能都实现了"掩盖。
