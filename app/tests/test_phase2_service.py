@@ -94,11 +94,11 @@ def test_migration_upgrades_v1_preserves_rows_and_backs_up(tmp_path, monkeypatch
         INSERT INTO schema_version VALUES (1, '2026-11-01T00:00:00+00:00');
         INSERT INTO agent_projects
           (id, code, name, status, repo_root, created_at, updated_at)
-          VALUES ('ddp', 'ddp', 'DDP', 'active', '/tmp/repo', 'x', 'x');
+          VALUES ('default', 'default', 'DDP', 'active', '/tmp/repo', 'x', 'x');
         INSERT INTO tasks (id, project_id, task_key, title, status, updated_at)
-          VALUES ('t1', 'ddp', 'TEAM-001', '旧任务', 'todo', 'x');
+          VALUES ('t1', 'default', 'TEAM-001', '旧任务', 'todo', 'x');
         INSERT INTO deliveries (id, project_id, title, kind, path, created_at)
-          VALUES ('d1', 'ddp', '旧交付', 'other', 'docs/a.md', 'x');
+          VALUES ('d1', 'default', '旧交付', 'other', 'docs/a.md', 'x');
     """)
     conn.close()
 
@@ -303,11 +303,11 @@ def test_dependencies_cross_project_and_cycle(env):
 
 
 def test_mirror_task_is_readonly(env):
-    service.backfill_project("ddp")
-    mirror = service.list_tasks("ddp", page_size=100)["items"][0]
+    service.backfill_project("default")
+    mirror = service.list_tasks("default", page_size=100)["items"][0]
     assert mirror["readonly"] is True
     with pytest.raises(service.PlatformError) as err:
-        service.patch_task("ddp", mirror["id"], {"title": "改不了"})
+        service.patch_task("default", mirror["id"], {"title": "改不了"})
     assert err.value.code == "readonly_resource" and err.value.status == 409
 
 
@@ -315,31 +315,31 @@ def test_mirror_task_is_readonly(env):
 # B-06 交付
 # ---------------------------------------------------------------------------
 def test_delivery_review_and_mirror_readonly(env):
-    task = service.create_task("ddp", {"task_key": "TEAM-200", "title": "交付任务"})["task"]
-    delivery = service.create_delivery("ddp", {
+    task = service.create_task("default", {"task_key": "TEAM-200", "title": "交付任务"})["task"]
+    delivery = service.create_delivery("default", {
         "title": "实现完成", "kind": "code", "summary": "改了 3 个文件",
         "task_id": task["id"],
     })["delivery"]
     assert delivery["status"] == "submitted" and delivery["readonly"] is False
 
     with pytest.raises(service.PlatformError) as no_comment:
-        service.review_delivery("ddp", delivery["id"], {"decision": "rejected"})
+        service.review_delivery("default", delivery["id"], {"decision": "rejected"})
     assert no_comment.value.code == "invalid_payload" and no_comment.value.status == 422
 
-    rejected = service.review_delivery("ddp", delivery["id"], {
+    rejected = service.review_delivery("default", delivery["id"], {
         "decision": "rejected", "comment": "缺测试",
     })["delivery"]
     assert rejected["status"] == "rejected" and rejected["rejection_reason"] == "缺测试"
 
-    accepted = service.review_delivery("ddp", delivery["id"], {"decision": "accepted"})["delivery"]
+    accepted = service.review_delivery("default", delivery["id"], {"decision": "accepted"})["delivery"]
     assert accepted["status"] == "accepted" and accepted["reviewer"] == "local"
-    assert service.list_audit_logs(project="ddp", action="delivery.review")["total"] == 2
+    assert service.list_audit_logs(project="default", action="delivery.review")["total"] == 2
 
-    service.backfill_project("ddp")
-    merged = service.list_deliveries("ddp", page_size=100)
+    service.backfill_project("default")
+    merged = service.list_deliveries("default", page_size=100)
     mirror = next(item for item in merged["items"] if item["readonly"])
     with pytest.raises(service.PlatformError) as readonly:
-        service.review_delivery("ddp", mirror["id"], {"decision": "accepted"})
+        service.review_delivery("default", mirror["id"], {"decision": "accepted"})
     assert readonly.value.code == "readonly_resource"
 
 
@@ -365,16 +365,16 @@ def test_executions_are_aggregated_idempotently(env):
         "agentType": "backend-engineer", "description": "实现接口", "finished": True,
     }, ensure_ascii=False))
 
-    service.backfill_project("ddp")
-    service.backfill_project("ddp")
-    data = service.list_executions("ddp", page_size=100)
+    service.backfill_project("default")
+    service.backfill_project("default")
+    data = service.list_executions("default", page_size=100)
     assert data["total"] == 2
     main = next(item for item in data["items"] if item["total_tokens"] == 15)
     sub = next(item for item in data["items"] if item["total_tokens"] == 100)
     assert main["status"] == "succeeded" and main["duration_ms"] == 10000
     assert main["session_id"] == "sess-x"
     assert sub["status"] == "succeeded" and sub["summary"] == "实现接口"
-    detail = service.get_execution("ddp", main["id"])["execution"]
+    detail = service.get_execution("default", main["id"])["execution"]
     assert detail["model_id"] == "test-model"
 
 
@@ -382,34 +382,34 @@ def test_executions_are_aggregated_idempotently(env):
 # B-08 文档 / 收藏 / 最近访问
 # ---------------------------------------------------------------------------
 def test_documents_favorites_and_recent(env):
-    doc = service.create_document("ddp", {
+    doc = service.create_document("default", {
         "title": "架构", "document_type": "adr", "uri": "docs/reports/notes.md",
     })["document"]
     with pytest.raises(service.PlatformError) as escape:
-        service.create_document("ddp", {"title": "越界", "uri": "../outside.md"})
+        service.create_document("default", {"title": "越界", "uri": "../outside.md"})
     assert escape.value.code == "invalid_payload"
     with pytest.raises(service.PlatformError) as duplicate:
-        service.create_document("ddp", {"title": "重复", "uri": "docs/reports/notes.md"})
+        service.create_document("default", {"title": "重复", "uri": "docs/reports/notes.md"})
     assert duplicate.value.code == "conflict"
 
-    patched = service.patch_document("ddp", doc["id"], {"document_type": "api"})["document"]
+    patched = service.patch_document("default", doc["id"], {"document_type": "api"})["document"]
     assert patched["document_type"] == "api"
-    assert service.list_documents("ddp")["total"] == 1
-    service.delete_document("ddp", doc["id"])
-    assert service.list_documents("ddp")["total"] == 0
+    assert service.list_documents("default")["total"] == 1
+    service.delete_document("default", doc["id"])
+    assert service.list_documents("default")["total"] == 0
 
     service.create_project({"code": "alpha", "name": "Alpha", "session_slugs": []})
-    assert service.set_favorite("ddp", True)["favorite"] is True
+    assert service.set_favorite("default", True)["favorite"] is True
     favorite_ids = {item["id"] for item in service.list_projects(favorite="1")["items"]}
-    assert favorite_ids == {"ddp"}
-    assert service.get_project("ddp")["favorite"] is True
-    service.set_favorite("ddp", False)
-    assert service.get_project("ddp")["favorite"] is False
+    assert favorite_ids == {"default"}
+    assert service.get_project("default")["favorite"] is True
+    service.set_favorite("default", False)
+    assert service.get_project("default")["favorite"] is False
 
-    service.record_visit("ddp")
+    service.record_visit("default")
     service.record_visit("alpha")
     recent = service.recent_projects()
-    assert [item["id"] for item in recent["items"]][:2] == ["alpha", "ddp"]
+    assert [item["id"] for item in recent["items"]][:2] == ["alpha", "default"]
     assert recent["total"] == 2
 
 

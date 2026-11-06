@@ -28,7 +28,7 @@ if str(SCRIPTS) not in sys.path:
 import agents_dashboard as dash
 from agent_platform import service, sources, store
 
-DDP = "ddp"
+DDP = "default"
 PROJECT_B = "proj-b"
 PROJECT_C = "proj-c"
 

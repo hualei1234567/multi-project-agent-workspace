@@ -44,7 +44,7 @@ def _actions(db: Path) -> list[str]:
         conn.close()
 
 
-def _agent(project="ddp", role="frontend-engineer"):
+def _agent(project="default", role="frontend-engineer"):
     with store.session() as conn:
         return conn.execute(
             "SELECT id FROM project_agents WHERE project_id=? AND role_key=?", (project, role)
@@ -55,18 +55,18 @@ def _agent(project="ddp", role="frontend-engineer"):
 # 调度
 # ---------------------------------------------------------------------------
 def test_plan_creation_is_audited(env):
-    service.create_task("ddp", {
+    service.create_task("default", {
         "title": "审计用例", "task_key": "AU-001", "assignee_agent_id": _agent(),
     })
-    scheduler.create_plan("ddp")
+    scheduler.create_plan("default")
     assert "dispatch.plan.create" in _actions(env.db)
 
 
 def test_plan_audit_records_counts(env):
-    service.create_task("ddp", {
+    service.create_task("default", {
         "title": "审计用例2", "task_key": "AU-002", "assignee_agent_id": _agent(),
     })
-    plan = scheduler.create_plan("ddp")
+    plan = scheduler.create_plan("default")
     with store.session() as conn:
         row = conn.execute(
             "SELECT detail_json FROM audit_logs WHERE action='dispatch.plan.create'"
@@ -100,7 +100,7 @@ def test_runtime_audit_captures_result(env):
 # ---------------------------------------------------------------------------
 def test_resource_claim_and_release_audited(env):
     res = resources.create_resource({"name": "审计资源", "kind": "host"})
-    claim = resources.claim_resource(res["id"], {"project_id": "ddp"})
+    claim = resources.claim_resource(res["id"], {"project_id": "default"})
     resources.release_claim(res["id"], claim["claim_id"])
     actions = _actions(env.db)
     assert "resource.claim" in actions
@@ -109,12 +109,12 @@ def test_resource_claim_and_release_audited(env):
 
 def test_resource_audit_has_project_scope(env):
     res = resources.create_resource({"name": "审计资源2", "kind": "host"})
-    resources.claim_resource(res["id"], {"project_id": "ddp"})
+    resources.claim_resource(res["id"], {"project_id": "default"})
     with store.session() as conn:
         row = conn.execute(
             "SELECT project_id, detail_json FROM audit_logs WHERE action='resource.claim'"
         ).fetchone()
-    assert row["project_id"] == "ddp"
+    assert row["project_id"] == "default"
     assert json.loads(row["detail_json"])["amount"] == 1
 
 
@@ -128,5 +128,5 @@ def test_audit_failure_does_not_break_business(env, monkeypatch):
 
     monkeypatch.setattr(service, "audit", _boom)
     res = resources.create_resource({"name": "容错资源", "kind": "host"})
-    claim = resources.claim_resource(res["id"], {"project_id": "ddp"})
+    claim = resources.claim_resource(res["id"], {"project_id": "default"})
     assert claim["claim_id"]

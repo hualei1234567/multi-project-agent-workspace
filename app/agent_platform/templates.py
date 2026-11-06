@@ -54,19 +54,19 @@ STANDARD_ROLES: list[dict[str, Any]] = [
         "product-manager", "Product Manager",
         "需求分析、PRD、优先级与验收标准（只读）",
         2, 10, "general-owner", "subagent", "subagent",
-        ["team-dispatch", "ddp-memory"],
+        ["team-dispatch"],
     ),
     _role(
         "system-architect", "System Architect",
         "架构分析、技术方案、接口与数据设计（只读）",
         2, 20, "general-owner", "subagent", "subagent",
-        ["ddp-architecture-planning", "api-contract", "ddp-traceability"],
+        ["api-contract", "architecture-design"],
     ),
     _role(
         "ux-designer", "UX Designer",
         "页面设计、交互与组件规范（只读）",
         2, 30, "general-owner", "subagent", "subagent",
-        ["ddp-ui-design", "frontend-design", "ui-ux-pro-max"],
+        ["frontend-design", "ui-ux-pro-max"],
     ),
     _role(
         "frontend-engineer", "Frontend Engineer",
@@ -78,7 +78,7 @@ STANDARD_ROLES: list[dict[str, Any]] = [
         "backend-engineer", "Backend Engineer",
         "API、服务、模型、迁移与后端测试（独立 worktree）",
         3, 20, "general-owner", "subagent", "worktree",
-        ["tdd", "ddp-codebase-analysis", "api-contract", "diagnosing-bugs"],
+        ["tdd", "api-contract", "diagnosing-bugs"],
     ),
     _role(
         "qa-devops", "QA & DevOps",
@@ -111,7 +111,7 @@ LEAN_ROLES: list[dict[str, Any]] = [
         "product-architecture", "Product / Architecture",
         "产品与架构方案（可配置、可移除）",
         2, 30, "general-owner", "subagent", "readonly",
-        ["team-dispatch", "ddp-architecture-planning", "api-contract"],
+        ["team-dispatch", "api-contract"],
         is_required=False,
     ),
 ]

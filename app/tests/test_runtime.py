@@ -147,10 +147,10 @@ def test_probe_never_raises(env):
 def test_duplicate_service_name_rejected(env, monkeypatch):
     monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(env.db))
     runtime.register_service({"name": "重复", "kind": "port", "target": "127.0.0.1:1",
-                              "project_id": "ddp"})
+                              "project_id": "default"})
     with pytest.raises(runtime.RuntimeError_) as exc:
         runtime.register_service({"name": "重复", "kind": "port", "target": "127.0.0.1:2",
-                                  "project_id": "ddp"})
+                                  "project_id": "default"})
     assert exc.value.code == "conflict"
 
 

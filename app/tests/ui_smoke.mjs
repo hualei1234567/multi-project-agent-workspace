@@ -7,7 +7,7 @@
  *
  * 覆盖：
  *   1) 平台总览标题 / 2 项目侧栏 / KPI 与 /api/agent-platform/overview 一致
- *   2) 切换 demo-b：URL、Token 0、花费 —、任务 0；再切回 ddp
+ *   2) 切换 demo-b：URL、Token 0、花费 —、任务 0；再切回 material
  *   3) 切换竞态：延迟目标项目 /api/state，快速切换，旧响应不得覆盖当前项目
  *   4) Tab 深链、刷新保持、前进后退
  *   5) 旧链接 /?agent=<id>&theme=dark 重定向
@@ -177,7 +177,7 @@ async function main() {
 
   // 夹具自带：demo-b 必须存在且名为「演示项目 B」。以前靠人工往库里塞，
   // 换个机器跑就会因夹具缺失/改名而误报；这里缺了就用 API 建出来，收尾再删。
-  // 基线项目数按实际配置算（ddp + material + …），不写死：新增纳管项目不该让冒烟失败
+  // 基线项目数按实际配置算（material + material + …），不写死：新增纳管项目不该让冒烟失败
   const baselineIds = projects.items.map((p) => p.id).filter((id) => id !== "demo-b");
   const baselineCount = baselineIds.length;
   let fixtureCreated = false;
@@ -232,7 +232,7 @@ async function main() {
       `实际 ${sidebarCount}`,
     );
     const pids = await page.locator("#sb-projects .sb-proj").evaluateAll((els) => els.map((e) => e.dataset.pid));
-    check(pids.includes("ddp") && pids.includes("demo-b"), "侧栏包含 ddp 与 demo-b", pids.join(","));
+    check(pids.includes("material") && pids.includes("demo-b"), "侧栏包含 material 与 demo-b", pids.join(","));
 
     const expToken = fmtNum(overview.token_24h);
     const expCost = fmtUsd(overview.cost_24h);
@@ -272,18 +272,18 @@ async function main() {
     }
     await page.screenshot({ path: join(SHOT_DIR, "02-demo-b.png"), fullPage: true });
 
-    await page.locator('#sb-projects .sb-proj[data-pid="ddp"]').click();
-    await page.waitForFunction(() => location.hash === "#/p/ddp/overview", null, { timeout: 5000 });
+    await page.locator('#sb-projects .sb-proj[data-pid="material"]').click();
+    await page.waitForFunction(() => location.hash === "#/p/material/overview", null, { timeout: 5000 });
     await waitOverviewReady(page);
-    const ddpToken = await kpiValue(page, "今日 Token");
+    const materialToken = await kpiValue(page, "今日 Token");
     // 两条口径：UI 读 /api/state 的实时 transcript 扫描，/api/projects 的 stats 读回填进库的
     // token_usage_events。不先回填，活跃会话持续增长就会让两者越拉越远（不是 bug，是没对齐）。
     // 比较前触发一次回填并重取 API，让两条口径落在同一时刻。
-    await fetch(`${BASE}/api/projects/ddp/backfill`, { method: "POST" });
+    await fetch(`${BASE}/api/projects/material/backfill`, { method: "POST" });
     projects = (await api("/api/projects")).body;
-    const ddpTokenApi = projects.items.find((p) => p.id === "ddp").stats.token_24h;
-    check(withinTolerance(ddpToken, ddpTokenApi), "回填后 ddp 今日 Token 与 API 一致（±2%）", `UI ${ddpToken} / API ${fmtNum(ddpTokenApi)}`);
-    check((await activePid(page)) === "ddp", "侧栏高亮 ddp", String(await activePid(page)));
+    const materialTokenApi = projects.items.find((p) => p.id === "material").stats.token_24h;
+    check(withinTolerance(materialToken, materialTokenApi), "回填后 material 今日 Token 与 API 一致（±2%）", `UI ${materialToken} / API ${fmtNum(materialTokenApi)}`);
+    check((await activePid(page)) === "material", "侧栏高亮 material", String(await activePid(page)));
 
     // ------------------------------------------------------------ 3) 竞态
     async function raceCase(delayedPid, firstPid, secondPid, label) {
@@ -312,10 +312,10 @@ async function main() {
       await page.unroute(pattern, handler);
     }
 
-    // 反向：延迟 ddp 响应，先点 ddp 再点 demo-b；旧 ddp 响应不得覆盖 demo-b
-    await raceCase("ddp", "ddp", "demo-b", "竞态(延迟 ddp)");
-    // 正向：延迟 demo-b 响应，先点 demo-b 再点 ddp
-    await raceCase("demo-b", "demo-b", "ddp", "竞态(延迟 demo-b)");
+    // 反向：延迟 material 响应，先点 material 再点 demo-b；旧 material 响应不得覆盖 demo-b
+    await raceCase("material", "material", "demo-b", "竞态(延迟 material)");
+    // 正向：延迟 demo-b 响应，先点 demo-b 再点 material
+    await raceCase("demo-b", "demo-b", "material", "竞态(延迟 demo-b)");
 
     // --------------------------------------------------------- 4) Tab 深链
     const tabs = [
@@ -328,7 +328,7 @@ async function main() {
       ["settings", "项目设置"],
     ];
     for (const [tab, marker] of tabs) {
-      await page.goto(`${BASE}/#/p/ddp/${tab}`, { waitUntil: "domcontentloaded" });
+      await page.goto(`${BASE}/#/p/material/${tab}`, { waitUntil: "domcontentloaded" });
       await waitText(page, marker);
       // 深链必须真的渲染出内容：只断言 marker 会漏掉「路由中断但无报错」（曾真实发生）
       const viewLen = await page.locator("#view").innerText().then((t) => t.trim().length).catch(() => 0);
@@ -338,24 +338,24 @@ async function main() {
       await settle(page, 200);
       const hash = new URL(page.url()).hash;
       const found = await page.getByText(marker, { exact: false }).first().count();
-      check(hash === `#/p/ddp/${tab}` && found > 0, `深链 #/p/ddp/${tab} 可达`, `hash=${hash} marker=${marker}`);
+      check(hash === `#/p/material/${tab}` && found > 0, `深链 #/p/material/${tab} 可达`, `hash=${hash} marker=${marker}`);
       // 刷新保持
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitText(page, marker);
       await settle(page, 200);
-      check(new URL(page.url()).hash === `#/p/ddp/${tab}`, `刷新后保持 #/p/ddp/${tab}`, new URL(page.url()).hash);
+      check(new URL(page.url()).hash === `#/p/material/${tab}`, `刷新后保持 #/p/material/${tab}`, new URL(page.url()).hash);
     }
     // 前进/后退
-    await page.goto(`${BASE}/#/p/ddp/agents`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
     await settle(page, 800);
-    await page.goto(`${BASE}/#/p/ddp/tasks`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE}/#/p/material/tasks`, { waitUntil: "domcontentloaded" });
     await settle(page, 800);
     await page.goBack();
     await settle(page, 700);
-    check(new URL(page.url()).hash === "#/p/ddp/agents", "后退回到 agents", new URL(page.url()).hash);
+    check(new URL(page.url()).hash === "#/p/material/agents", "后退回到 agents", new URL(page.url()).hash);
     await page.goForward();
     await settle(page, 700);
-    check(new URL(page.url()).hash === "#/p/ddp/tasks", "前进回到 tasks", new URL(page.url()).hash);
+    check(new URL(page.url()).hash === "#/p/material/tasks", "前进回到 tasks", new URL(page.url()).hash);
 
     // ------------------------------------------------ 5) 旧链接与主题保留
     const legacyAgent = "legacy-agent-smoke";
@@ -365,8 +365,8 @@ async function main() {
     const legacySearch = new URL(page.url()).search;
     const theme = await page.locator("html").getAttribute("data-theme");
     check(
-      legacyHash === `#/p/ddp/agents?agent=${legacyAgent}`,
-      "旧链接重定向到 #/p/ddp/agents?agent=...",
+      legacyHash === `#/p/material/agents?agent=${legacyAgent}`,
+      "旧链接重定向到 #/p/material/agents?agent=...",
       legacyHash,
     );
     check(legacySearch.includes(`agent=${legacyAgent}`) && legacySearch.includes("theme=dark"), "旧查询参数保留（含 theme=dark）", legacySearch);

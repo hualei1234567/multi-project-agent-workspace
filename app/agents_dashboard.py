@@ -168,9 +168,9 @@ def _prefixes_for(repo: Path | None = None) -> tuple[str, ...]:
 
 ROLE_BY_DIR = {
     "内部平台": ("General Owner", "主会话 / 主仓库"),
-    "ddp-fe": ("Frontend Engineer", "独立 worktree"),
-    "ddp-be": ("Backend Engineer", "独立 worktree"),
-    "ddp-qa-review": ("QA & DevOps", "独立 worktree / 只读审查"),
+    "fe": ("Frontend Engineer", "独立 worktree"),
+    "be": ("Backend Engineer", "独立 worktree"),
+    "qa-review": ("QA & DevOps", "独立 worktree / 只读审查"),
 }
 
 ROLE_BY_KEYWORD = (
@@ -1972,7 +1972,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"ok": False, "error": "internal_error",
                              "detail": {"code": "internal_error", "message": "内部错误"}})
 
-    def _project_from_query(self, query: dict[str, list[str]], default: str | None = "ddp") -> dict[str, Any]:
+    def _project_from_query(self, query: dict[str, list[str]], default: str | None = None) -> dict[str, Any]:
         project_id = (query.get("project") or [default])[0]
         if not project_id:
             raise platform_service.PlatformError("project_not_found", 404)

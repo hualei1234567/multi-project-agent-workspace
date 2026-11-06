@@ -1187,7 +1187,7 @@ function sumStat(list, key) {
   return total;
 }
 function fallbackProject() {
-  return { id: "ddp", code: "ddp", name: "DDP", description: "具身智能数据闭环平台", status: "active", repo_root: "", stats: null, updated_at: null };
+  return { id: "default", code: "default", name: "默认项目", description: "加载失败时的占位项目", status: "active", repo_root: "", stats: null, updated_at: null };
 }
 
 /* ---------- 收藏 / 最近访问 / 项目配色 ---------- */
@@ -1275,12 +1275,12 @@ function projectInitial(p) {
 const urlTheme = new URLSearchParams(location.search).get("theme");
 function applyTheme(t) { document.documentElement.dataset.theme = t; }
 function initTheme() {
-  const saved = urlTheme || safeGet("ddp-dash-theme");
+  const saved = urlTheme || safeGet("agent-platform-theme");
   applyTheme(saved || "dark");
 }
 function setTheme(next) {
   applyTheme(next);
-  safeSet("ddp-dash-theme", next);
+  safeSet("agent-platform-theme", next);
   if (ROUTE.kind === "settings") renderGlobalSettings();
   else if (ROUTE.kind === "project" && ROUTE.tab === "settings") renderProjectContent();
 }
@@ -1329,7 +1329,7 @@ async function ensureProjects(force = false) {
     APP.projectsErr = e;
     if (!APP.projects.length) {
       APP.projects = [fallbackProject()];
-      APP.defaultProjectId = "ddp";
+      APP.defaultProjectId = APP.projects[0].id;
       APP.degraded = true;
     }
   }
@@ -1339,7 +1339,7 @@ async function ensureProjects(force = false) {
 
 function resolveProject(key) {
   if (!key) {
-    key = APP.defaultProjectId || "ddp";
+    key = APP.defaultProjectId || (APP.projects[0] && APP.projects[0].id) || "default";
   }
   const k = String(key);
   return APP.projects.find(p => String(p.id) === k)
@@ -2339,7 +2339,7 @@ const DISPATCH_STATUS_TEXT = {
 const DISPATCH_STATUS_CLASS = {};
 
 function dispatchProjectKey() {
-  return ROUTE.key || APP.state?.project?.id || "ddp";
+  return ROUTE.key || APP.state?.project?.id || APP.defaultProjectId || "default";
 }
 function dispatchStatusBadge(status) {
   return `<span class="chip" data-status="${esc(status)}">${esc(DISPATCH_STATUS_TEXT[status] || status)}</span>`;
@@ -4011,7 +4011,8 @@ function stateOwnedBy(data, project) {
   if (data?.project) {
     return String(data.project.id) === String(project.id) || String(data.project.code || "").toLowerCase() === String(project.code || "").toLowerCase();
   }
-  return String(project.code || "").toLowerCase() === "ddp";
+  // 没有 data.project 时退化为"当前项目即默认项目"，不再写死某个项目 id
+  return String(project.id) === String(APP.defaultProjectId || project.id);
 }
 
 async function loadState(project, force = false) {
@@ -4451,7 +4452,7 @@ function bindGlobal() {
   const legacyAgent = new URLSearchParams(location.search).get("agent");
   if (!location.hash) {
     const target = legacyAgent
-      ? `#/p/ddp/agents?agent=${encodeURIComponent(legacyAgent)}`
+      ? `#/p/${APP.defaultProjectId || "default"}/agents?agent=${encodeURIComponent(legacyAgent)}`
       : "#/";
     history.replaceState(null, "", location.pathname + location.search + target);
   }

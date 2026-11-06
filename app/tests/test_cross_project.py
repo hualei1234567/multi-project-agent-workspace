@@ -35,7 +35,7 @@ def env(tmp_path, monkeypatch):
     return SimpleNamespace(db=db, repo=repo, other=other)
 
 
-def _agent(project="ddp", role="frontend-engineer"):
+def _agent(project="default", role="frontend-engineer"):
     with store.session() as conn:
         row = conn.execute(
             "SELECT id FROM project_agents WHERE project_id=? AND role_key=?",
@@ -54,30 +54,30 @@ def _task(project, key, **extra):
 # 跨项目依赖
 # ---------------------------------------------------------------------------
 def test_same_project_dependency_still_works(env):
-    a = _task("ddp", "X-001")
-    b = _task("ddp", "X-002")
-    service.add_dependency("ddp", b["id"], {"depends_on_task_id": a["id"]})
-    detail = service.task_cross_dependencies("ddp", b["id"])
+    a = _task("default", "X-001")
+    b = _task("default", "X-002")
+    service.add_dependency("default", b["id"], {"depends_on_task_id": a["id"]})
+    detail = service.task_cross_dependencies("default", b["id"])
     assert detail["outgoing"] == []  # 同项目不算跨项目
 
 
 def test_cross_project_dependency_requires_flag(env):
     a = _task("proj-b", "B-001")
-    b = _task("ddp", "X-003")
+    b = _task("default", "X-003")
     with pytest.raises(service.PlatformError) as exc:
-        service.add_dependency("ddp", b["id"], {"depends_on_task_id": a["id"]})
+        service.add_dependency("default", b["id"], {"depends_on_task_id": a["id"]})
     assert exc.value.code == "cross_project_reference"
 
 
 def test_cross_project_dependency_created(env):
     a = _task("proj-b", "B-002")
-    b = _task("ddp", "X-004")
+    b = _task("default", "X-004")
     result = service.add_dependency(
-        "ddp", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
+        "default", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
     )
     assert result["dependency_id"]
 
-    out = service.task_cross_dependencies("ddp", b["id"])["outgoing"]
+    out = service.task_cross_dependencies("default", b["id"])["outgoing"]
     assert len(out) == 1
     assert out[0]["target_project_id"] == "proj-b"
     assert out[0]["target_task_key"] == "B-002"
@@ -85,25 +85,25 @@ def test_cross_project_dependency_created(env):
     # 反向可见：B 项目能看到谁在等它
     inc = service.task_cross_dependencies("proj-b", a["id"])["incoming"]
     assert len(inc) == 1
-    assert inc[0]["source_project_id"] == "ddp"
+    assert inc[0]["source_project_id"] == "default"
 
 
 def test_cross_project_requires_id_not_task_key(env):
     _task("proj-b", "B-003")
-    b = _task("ddp", "X-005")
+    b = _task("default", "X-005")
     with pytest.raises(service.PlatformError) as exc:
         service.add_dependency(
-            "ddp", b["id"], {"depends_on_task_id": "B-003", "cross_project": True}
+            "default", b["id"], {"depends_on_task_id": "B-003", "cross_project": True}
         )
     assert exc.value.code == "ambiguous_reference"
 
 
 def test_cross_project_only_blocks_type(env):
     a = _task("proj-b", "B-004")
-    b = _task("ddp", "X-006")
+    b = _task("default", "X-006")
     with pytest.raises(service.PlatformError) as exc:
         service.add_dependency(
-            "ddp", b["id"],
+            "default", b["id"],
             {"depends_on_task_id": a["id"], "cross_project": True, "dependency_type": "related"},
         )
     assert "只支持 blocks" in exc.value.message
@@ -111,10 +111,10 @@ def test_cross_project_only_blocks_type(env):
 
 def test_cross_project_cycle_detected(env):
     """A项目任务 → B项目任务 → A项目任务 必须被全局图检测拦住。"""
-    a1 = _task("ddp", "X-010")
+    a1 = _task("default", "X-010")
     b1 = _task("proj-b", "B-010")
     service.add_dependency(
-        "ddp", a1["id"], {"depends_on_task_id": b1["id"], "cross_project": True}
+        "default", a1["id"], {"depends_on_task_id": b1["id"], "cross_project": True}
     )
     with pytest.raises(service.PlatformError) as exc:
         service.add_dependency(
@@ -125,22 +125,22 @@ def test_cross_project_cycle_detected(env):
 
 def test_cross_project_graph(env):
     a = _task("proj-b", "B-020")
-    b = _task("ddp", "X-020")
+    b = _task("default", "X-020")
     service.add_dependency(
-        "ddp", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
+        "default", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
     )
     graph = service.cross_project_graph()
-    assert {p["id"] for p in graph["projects"]} >= {"ddp", "proj-b"}
+    assert {p["id"] for p in graph["projects"]} >= {"default", "proj-b"}
     assert len(graph["edges"]) == 1
     assert graph["blocked_edges"] == 1  # B-020 未完成
-    assert graph["blocked_by_project"]["ddp"] == 1
+    assert graph["blocked_by_project"]["default"] == 1
 
 
 def test_cross_project_unblocks_when_done(env):
     a = _task("proj-b", "B-030")
-    b = _task("ddp", "X-030")
+    b = _task("default", "X-030")
     service.add_dependency(
-        "ddp", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
+        "default", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
     )
     for status in ("in_progress", "review", "done"):
         v = service.get_task("proj-b", a["id"])["task"]["version"]
@@ -150,12 +150,12 @@ def test_cross_project_unblocks_when_done(env):
 
 def test_scheduler_respects_cross_project_dependency(env):
     a = _task("proj-b", "B-040")
-    b = _task("ddp", "X-040", assignee_agent_id=_agent())
+    b = _task("default", "X-040", assignee_agent_id=_agent())
     service.add_dependency(
-        "ddp", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
+        "default", b["id"], {"depends_on_task_id": a["id"], "cross_project": True}
     )
     with store.session() as conn:
-        ready, skipped = scheduler.schedulable(conn, "ddp")
+        ready, skipped = scheduler.schedulable(conn, "default")
     assert b["id"] not in {t["id"] for t in ready}
     assert any(s["task_key"] == "X-040" and "B-040" in s["reason"] for s in skipped)
 
@@ -185,17 +185,17 @@ def test_duplicate_resource_name_rejected(env):
 
 def test_exclusive_resource_blocks_second_project(env):
     res = _resource()
-    first = resources.claim_resource(res["id"], {"project_id": "ddp"})
+    first = resources.claim_resource(res["id"], {"project_id": "default"})
     assert first["claim_id"]
     with pytest.raises(resources.ResourceError) as exc:
         resources.claim_resource(res["id"], {"project_id": "proj-b"})
     assert exc.value.code == "resource_busy"
-    assert "ddp" in exc.value.message
+    assert "default" in exc.value.message
 
 
 def test_release_allows_other_project(env):
     res = _resource()
-    claim = resources.claim_resource(res["id"], {"project_id": "ddp"})
+    claim = resources.claim_resource(res["id"], {"project_id": "default"})
     resources.release_claim(res["id"], claim["claim_id"])
     second = resources.claim_resource(res["id"], {"project_id": "proj-b"})
     assert second["claim_id"]
@@ -203,7 +203,7 @@ def test_release_allows_other_project(env):
 
 def test_shared_resource_capacity(env):
     res = _resource(name="GPU 池", kind="gpu", capacity=2, exclusive=False)
-    resources.claim_resource(res["id"], {"project_id": "ddp", "amount": 2})
+    resources.claim_resource(res["id"], {"project_id": "default", "amount": 2})
     with pytest.raises(resources.ResourceError) as exc:
         resources.claim_resource(res["id"], {"project_id": "proj-b", "amount": 1})
     assert exc.value.code == "capacity_exceeded"
@@ -217,7 +217,7 @@ def test_expired_claim_frees_resource(env):
         # 直接插一条已过期的占用
         conn.execute(
             "INSERT INTO resource_claims (id, resource_id, project_id, amount, status,"
-            " expires_at, created_at) VALUES ('c1', ?, 'ddp', 1, 'active',"
+            " expires_at, created_at) VALUES ('c1', ?, 'default', 1, 'active',"
             " '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')",
             (res["id"],),
         )
@@ -231,7 +231,7 @@ def test_expired_claim_frees_resource(env):
 
 def test_release_is_idempotent(env):
     res = _resource()
-    claim = resources.claim_resource(res["id"], {"project_id": "ddp"})
+    claim = resources.claim_resource(res["id"], {"project_id": "default"})
     first = resources.release_claim(res["id"], claim["claim_id"])
     second = resources.release_claim(res["id"], claim["claim_id"])
     assert first["changed"] is True

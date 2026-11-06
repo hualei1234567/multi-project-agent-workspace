@@ -37,7 +37,7 @@ HTTP 在 `scripts/agents_dashboard.py`（旧 `/api/state` 字段与旧 HTML 保�
 | GET | `/api/projects/{id}/events?page&page_size` |
 | POST | `/api/projects/{id}/backfill` |
 | GET | `/api/agent-platform/overview` |
-| GET | `/api/state?project={id}`（缺省 `ddp`；旧字段 + `project`） |
+| GET | `/api/state?project={id}`（缺省取配置里的默认项目；旧字段 + `project`） |
 | GET | `/api/team-templates`、`/api/team-templates/{key}` |
 | GET / POST | `/api/agent/{id}`、`/api/file?project&path`、`/api/open?project&path` |
 
@@ -64,7 +64,7 @@ HTTP 在 `scripts/agents_dashboard.py`（旧 `/api/state` 字段与旧 HTML 保�
 ## 运行 / 测试
 
 ```bash
-python3 scripts/agents_dashboard.py --port 8099      # 启动时自动建库 + 回填默认 ddp
+python3 scripts/agents_dashboard.py --port 8099      # 启动时自动建库 + 登记配置里的纳管项目
 python3 scripts/agents_dashboard.py --once           # 回填后打印旧兼容快照
 python3 -m pytest scripts/tests -q                   # 19 用例
 ```

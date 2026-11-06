@@ -46,7 +46,7 @@ def _agent(env, role="frontend-engineer"):
     conn = _conn(env)
     try:
         return conn.execute(
-            "SELECT * FROM project_agents WHERE project_id='ddp' AND role_key=?", (role,)
+            "SELECT * FROM project_agents WHERE project_id='default' AND role_key=?", (role,)
         ).fetchone()
     finally:
         conn.close()
@@ -56,7 +56,7 @@ def _enable_project(env):
     conn = _conn(env)
     try:
         conn.execute(
-            "UPDATE agent_projects SET settings_json=? WHERE id='ddp'",
+            "UPDATE agent_projects SET settings_json=? WHERE id='default'",
             (json.dumps({"execution_enabled": True}),),
         )
     finally:
@@ -65,10 +65,10 @@ def _enable_project(env):
 
 def _item(env, key="EX-100", role="frontend-engineer"):
     agent = _agent(env, role)
-    service.create_task("ddp", {
+    service.create_task("default", {
         "title": f"任务 {key}", "task_key": key, "assignee_agent_id": agent["id"],
     })
-    plan = scheduler.create_plan("ddp")
+    plan = scheduler.create_plan("default")
     return next(i for i in plan["items"] if i["role_key"] == role)
 
 
@@ -104,17 +104,17 @@ def test_rejected_for_readonly_role(env):
     conn = _conn(env)
     try:
         qa = conn.execute(
-            "SELECT * FROM project_agents WHERE project_id='ddp' AND role_key='qa-devops'"
+            "SELECT * FROM project_agents WHERE project_id='default' AND role_key='qa-devops'"
         ).fetchone()
         now = store.now_iso()
         conn.execute(
             "INSERT INTO dispatch_plans (id,project_id,status,strategy,created_at)"
-            " VALUES ('pl1','ddp','draft','manual',?)", (now,),
+            " VALUES ('pl1','default','draft','manual',?)", (now,),
         )
         conn.execute(
             "INSERT INTO dispatch_items (id,plan_id,project_id,task_id,agent_id,role_key,"
             " status,priority,attempt,max_attempts,result_json,created_at,updated_at)"
-            " VALUES ('it1','pl1','ddp',NULL,?,'qa-devops','queued','P1',0,2,'{}',?,?)",
+            " VALUES ('it1','pl1','default',NULL,?,'qa-devops','queued','P1',0,2,'{}',?,?)",
             (qa["id"], now, now),
         )
     finally:
@@ -206,11 +206,11 @@ def test_prompt_contains_task_and_guardrails(env):
 def test_prompt_includes_acceptance_criteria(env):
     _enable_project(env)
     agent = _agent(env)
-    service.create_task("ddp", {
+    service.create_task("default", {
         "title": "带验收标准", "task_key": "EX-105", "assignee_agent_id": agent["id"],
         "acceptance_criteria": ["接口返回 200", "有回归用例"],
     })
-    plan = scheduler.create_plan("ddp")
+    plan = scheduler.create_plan("default")
     item = next(i for i in plan["items"] if i["task_id"])
     argv = executor.run_item(item["id"], dry_run=True)["argv"]
     prompt = argv[argv.index("-p") + 1]

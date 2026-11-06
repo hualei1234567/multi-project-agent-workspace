@@ -1,6 +1,6 @@
 {
   "_comment": "纳管项目清单。repo_root 指向 ~/vscodeworkspace/<项目>；team_dir 省略时按 ~/agent-team/<id>-team 推导。",
-  "default_project_id": "ddp",
+  "default_project_id": "material",
   "projects": [
     {
       "id": "material",

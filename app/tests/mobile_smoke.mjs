@@ -15,7 +15,7 @@ const check = (ok, name, detail="") => { results.push({ok,name,detail}); console
 for (const vp of [{w:390,h:844,name:"iPhone"},{w:768,h:1024,name:"iPad"}]) {
   const page = await browser.newPage({ viewport:{width:vp.w,height:vp.h}, isMobile: vp.w<500, hasTouch: vp.w<500 });
   const errs = []; page.on("pageerror", e=>errs.push(String(e)));
-  await page.goto(`${BASE}/#/p/ddp/dispatch`, {waitUntil:"domcontentloaded"});
+  await page.goto(`${BASE}/#/p/material/dispatch`, {waitUntil:"domcontentloaded"});
   await page.waitForTimeout(3500);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 2);
   check(!overflow, `${vp.name} 无横向溢出`, `scrollW=${await page.evaluate(()=>document.documentElement.scrollWidth)} / vw=${vp.w}`);

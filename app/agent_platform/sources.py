@@ -52,9 +52,9 @@ SELF_REPORT_STATUS_MAP = {
 
 WORKTREE_ROLE_BY_DIR = {
     "内部平台": "general-owner",
-    "ddp-fe": "frontend-engineer",
-    "ddp-be": "backend-engineer",
-    "ddp-qa-review": "qa-devops",
+    "fe": "frontend-engineer",
+    "be": "backend-engineer",
+    "qa-review": "qa-devops",
 }
 
 ROLE_ALIASES = {

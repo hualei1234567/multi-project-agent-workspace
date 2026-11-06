@@ -63,18 +63,18 @@ def test_write_tx_rolls_back_on_error(env):
 
 def test_transition_is_atomic(env):
     """状态迁移失败时，状态与审计都不能落库。"""
-    task = service.create_task("ddp", {"title": "事务用例", "task_key": "TX-001"})
+    task = service.create_task("default", {"title": "事务用例", "task_key": "TX-001"})
     before_status = task["task"]["status"]
     before_audit = _audit_count(env.db, "task.transition")
 
     # 非法迁移直接抛错，不应留下任何写入
     with pytest.raises(service.PlatformError):
         service.transition_task(
-            "ddp", task["task"]["id"],
+            "default", task["task"]["id"],
             {"to_status": "done", "expected_version": task["task"]["version"]},
         )
 
-    current = service.get_task("ddp", task["task"]["id"])["task"]
+    current = service.get_task("default", task["task"]["id"])["task"]
     assert current["status"] == before_status
     assert current["version"] == task["task"]["version"]
     assert _audit_count(env.db, "task.transition") == before_audit

@@ -36,7 +36,7 @@
 | 持久化 | SQLite（WAL，`isolation_level=None`，显式 `BEGIN IMMEDIATE`） | 无 ORM，手写 SQL |
 | 前端 | 单 HTML 文件，原生 JS，hash 路由，innerHTML 重渲染 | 无构建、无 npm 运行依赖 |
 | 契约 | OpenAPI 3.1 由 `openapi.py` 手工维护 + 测试强制同步 | 双写：`API_PATHS`(60) 与 `_paths()`(60) 必须一致 |
-| 进程托管 | launchd `com.ddp.agents-dashboard.plist` | Mac 本机 |
+| 进程托管 | launchd `com.agentplatform.dashboard.plist` | Mac 本机 |
 | 外部依赖 | 无运行时第三方包；测试用 pytest / ruff | — |
 
 ---
@@ -149,7 +149,7 @@ scripts/                   start.sh / status.sh / test.sh
 |---|---|---|---|
 | 管理平台 | 8099 | 运行中，**仅 127.0.0.1** | `lsof` PID 71154 |
 | 采集：runtime_checks | — | **最新 2026-11-05T11:41，已停更** | D-2 |
-| launchd | — | `com.ddp.agents-dashboard` 已加载；同目录另有 `com.ddp.gitlab-runner-2`、`com.ddp.tailscale-watchdog` | `~/Library/LaunchAgents/` |
+| launchd | — | `com.agentplatform.dashboard` 已加载；同目录另有 `com.ddp.gitlab-runner-2`、`com.ddp.tailscale-watchdog` | `~/Library/LaunchAgents/` |
 | Tailscale | — | stopped | 三期审计 §3.4 |
 | DDP 管理平台 8080 | 8080 | 本机不可达 | 三期审计 §3.4 |
 

@@ -15,10 +15,12 @@ from typing import Any
 
 from . import sources, store, templates
 
-DEFAULT_PROJECT_ID = "ddp"
-DEFAULT_PROJECT_CODE = "ddp"
-DEFAULT_PROJECT_NAME = "DDP 具身智能数据闭环平台"
-DEFAULT_PROJECT_DESCRIPTION = "机器人数据采集、标注与模型闭环平台"
+#: 只有在**没有任何纳管配置**时才使用的占位项目（测试 / 裸环境）。
+#: 配了 config/projects.json 时不会创建它。
+DEFAULT_PROJECT_ID = "default"
+DEFAULT_PROJECT_CODE = "default"
+DEFAULT_PROJECT_NAME = "默认项目"
+DEFAULT_PROJECT_DESCRIPTION = "未配置纳管项目时的占位项目"
 PROJECT_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,23}$")
 PROJECT_STATUSES = frozenset({"active", "paused", "risk", "archived"})
 ACTIVE_AGENT_STATUSES = ("working", "running")
@@ -214,12 +216,43 @@ def ensure_project_agents(
     return created
 
 
+def configured_default_project_id() -> str | None:
+    """配置里的默认项目 id；没有配置返回 None。"""
+    from . import config
+
+    cfg = config.load_projects_config()
+    projects = [p for p in cfg.get("projects", []) if isinstance(p, dict)]
+    if not projects:
+        return None
+    want = str(cfg.get("default_project_id") or "").strip()
+    for item in projects:
+        pid = str(item.get("id") or item.get("code") or "")
+        if want and pid == want:
+            return pid
+    first = projects[0]
+    return str(first.get("id") or first.get("code") or "") or None
+
+
 def ensure_default_project(
     conn: sqlite3.Connection, repo_root: Path | None = None
-) -> dict[str, Any]:
-    """确保默认 DDP 项目存在；不覆盖已有项目/角色数据。"""
-    repo = (repo_root or repo_root_default()).resolve()
+) -> dict[str, Any] | None:
+    """确保默认项目存在。
+
+    有 ``config/projects.json`` 时**什么都不创建**：默认项目由配置决定，
+    由 :func:`ensure_configured_projects` 负责登记。只有完全没有配置时
+    （测试或裸环境）才创建一个中性占位项目，避免凭空造出一个业务项目。
+    """
+    from . import config
+
     templates.ensure_templates(conn)
+    if config.load_projects_config().get("projects"):
+        pid = configured_default_project_id()
+        if not pid:
+            return None
+        row = conn.execute("SELECT * FROM agent_projects WHERE id = ?", (pid,)).fetchone()
+        return get_project_with(conn, pid) if row is not None else None
+
+    repo = (repo_root or repo_root_default()).resolve()
     row = conn.execute("SELECT * FROM agent_projects WHERE id = ?", (DEFAULT_PROJECT_ID,)).fetchone()
     if row is None:
         now = store.now_iso()
@@ -310,7 +343,7 @@ def bootstrap(conn: sqlite3.Connection | None = None, repo_root: Path | None = N
         store.init_db(conn)
         ensure_default_project(conn, repo_root)
         ensure_configured_projects(conn)
-        return DEFAULT_PROJECT_ID
+        return configured_default_project_id() or DEFAULT_PROJECT_ID
     finally:
         if own:
             conn.close()
@@ -772,7 +805,13 @@ def list_projects(
             project.pop("settings_json", None)
             items.append(project)
         ids = [item["id"] for item in items]
-        default_id = DEFAULT_PROJECT_ID if DEFAULT_PROJECT_ID in ids else (ids[0] if ids else None)
+        configured = configured_default_project_id()
+        if configured in ids:
+            default_id = configured
+        elif DEFAULT_PROJECT_ID in ids:
+            default_id = DEFAULT_PROJECT_ID
+        else:
+            default_id = ids[0] if ids else None
         return {"items": items, "total": len(items), "default_project_id": default_id}
     finally:
         if own:

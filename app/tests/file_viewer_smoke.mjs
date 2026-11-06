@@ -84,7 +84,7 @@ async function main() {
   try {
     const h = await api("/api/projects");
     if (h.status !== 200) throw new Error(`/api/projects HTTP ${h.status}`);
-    const st = await api("/api/state?project=ddp");
+    const st = await api("/api/state?project=material");
     if (st.status !== 200 || !Array.isArray(st.body?.reports)) throw new Error("/api/state 未返回 reports");
   } catch (e) {
     console.log(`[FAIL] 平台实例不可用（${BASE}）：${e.message}`);
@@ -96,17 +96,17 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   try {
-    const deliveryHref = await openModalAndGetHref(page, "#/p/ddp/deliveries");
+    const deliveryHref = await openModalAndGetHref(page, "#/p/material/deliveries");
     check(Boolean(deliveryHref), "交付记录：弹窗出现「新标签页查看」链接", deliveryHref || "未找到");
     if (deliveryHref) await verifyView(page, deliveryHref, "交付记录");
 
-    const docsHref = await openModalAndGetHref(page, "#/p/ddp/docs");
+    const docsHref = await openModalAndGetHref(page, "#/p/material/docs");
     check(Boolean(docsHref), "文档配置：弹窗出现「新标签页查看」链接", docsHref || "未找到");
     if (docsHref) await verifyView(page, docsHref, "文档配置");
 
     // 目录穿越必须被拒绝
     const bad = await page.evaluate(async () => {
-      const r = await fetch("/view?path=" + encodeURIComponent("../../etc/passwd") + "&project=ddp", { cache: "no-store" });
+      const r = await fetch("/view?path=" + encodeURIComponent("../../etc/passwd") + "&project=material", { cache: "no-store" });
       return { status: r.status, text: await r.text() };
     });
     check(bad.status === 404, "目录穿越路径被拒绝", String(bad.status));

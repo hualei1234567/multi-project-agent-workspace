@@ -37,7 +37,7 @@ def _agent_id(env_db: Path, role: str) -> str:
     conn = store.connect(env_db)
     try:
         row = conn.execute(
-            "SELECT id FROM project_agents WHERE project_id='ddp' AND role_key=?", (role,)
+            "SELECT id FROM project_agents WHERE project_id='default' AND role_key=?", (role,)
         ).fetchone()
         return row["id"]
     finally:
@@ -45,19 +45,19 @@ def _agent_id(env_db: Path, role: str) -> str:
 
 
 def _task(env, key, *, priority="P2", agent=None, status="todo"):
-    task = service.create_task("ddp", {
+    task = service.create_task("default", {
         "title": f"任务 {key}", "task_key": key, "priority": priority,
         "assignee_agent_id": agent or env.fe,
     })["task"]
     if status != "todo":
-        service.transition_task("ddp", task["id"], {
+        service.transition_task("default", task["id"], {
             "to_status": "in_progress", "expected_version": task["version"],
         })
     return task
 
 
 def test_unassigned_task_not_schedulable(env):
-    task = service.create_task("ddp", {"title": "无人任务", "task_key": "S-001"})["task"]
+    task = service.create_task("default", {"title": "无人任务", "task_key": "S-001"})["task"]
     ready, skipped = _schedulable(env)
     assert task["id"] not in {t["id"] for t in ready}
     assert any(s["task_key"] == "S-001" and "未指派" in s["reason"] for s in skipped)
@@ -97,7 +97,7 @@ def test_subagent_role_is_schedulable(env):
 def test_blocked_by_unfinished_dependency(env):
     first = _task(env, "S-004")
     second = _task(env, "S-005")
-    service.add_dependency("ddp", second["id"], {"depends_on_task_id": first["id"]})
+    service.add_dependency("default", second["id"], {"depends_on_task_id": first["id"]})
     ready, skipped = _schedulable(env)
     ready_ids = {t["id"] for t in ready}
     assert first["id"] in ready_ids
@@ -108,14 +108,14 @@ def test_blocked_by_unfinished_dependency(env):
 def test_dependency_satisfied_after_done(env):
     first = _task(env, "S-006")
     second = _task(env, "S-007")
-    service.add_dependency("ddp", second["id"], {"depends_on_task_id": first["id"]})
+    service.add_dependency("default", second["id"], {"depends_on_task_id": first["id"]})
     # first: todo -> in_progress -> review -> done
-    v = service.get_task("ddp", first["id"])["task"]["version"]
-    service.transition_task("ddp", first["id"], {"to_status": "in_progress", "expected_version": v})
-    v = service.get_task("ddp", first["id"])["task"]["version"]
-    service.transition_task("ddp", first["id"], {"to_status": "review", "expected_version": v})
-    v = service.get_task("ddp", first["id"])["task"]["version"]
-    service.transition_task("ddp", first["id"], {"to_status": "done", "expected_version": v})
+    v = service.get_task("default", first["id"])["task"]["version"]
+    service.transition_task("default", first["id"], {"to_status": "in_progress", "expected_version": v})
+    v = service.get_task("default", first["id"])["task"]["version"]
+    service.transition_task("default", first["id"], {"to_status": "review", "expected_version": v})
+    v = service.get_task("default", first["id"])["task"]["version"]
+    service.transition_task("default", first["id"], {"to_status": "done", "expected_version": v})
 
     ready, _ = _schedulable(env)
     assert second["id"] in {t["id"] for t in ready}
@@ -131,7 +131,7 @@ def test_priority_ordering(env):
 
 def test_plan_creates_items_and_is_idempotent_against_active(env):
     task = _task(env, "S-010")
-    plan = scheduler.create_plan("ddp")
+    plan = scheduler.create_plan("default")
     assert plan["status"] == "draft"
     keys = [i["task_id"] for i in plan["items"]]
     assert task["id"] in keys
@@ -145,32 +145,32 @@ def test_plan_creates_items_and_is_idempotent_against_active(env):
 def test_plan_max_items(env):
     for i in range(3):
         _task(env, f"S-02{i}")
-    plan = scheduler.create_plan("ddp", max_items=2)
+    plan = scheduler.create_plan("default", max_items=2)
     assert len(plan["items"]) == 2
 
 
 def test_plan_detail_and_list(env):
     _task(env, "S-030")
-    plan = scheduler.create_plan("ddp")
-    detail = scheduler.get_plan("ddp", plan["id"])
+    plan = scheduler.create_plan("default")
+    detail = scheduler.get_plan("default", plan["id"])
     assert detail["id"] == plan["id"]
     assert detail["items"]
-    listing = scheduler.list_plans("ddp")
+    listing = scheduler.list_plans("default")
     assert listing["total"] >= 1
-    item = scheduler.get_item("ddp", detail["items"][0]["id"])
+    item = scheduler.get_item("default", detail["items"][0]["id"])
     assert item["status"] == "queued"
     assert item["logs"] == []
 
 
 def test_invalid_strategy_rejected(env):
     with pytest.raises(scheduler.SchedulerError):
-        scheduler.create_plan("ddp", strategy="whatever")
+        scheduler.create_plan("default", strategy="whatever")
 
 
 def _schedulable(env):
     conn = store.connect(env.db)
     try:
         store.init_db(conn)
-        return scheduler.schedulable(conn, "ddp")
+        return scheduler.schedulable(conn, "default")
     finally:
         conn.close()

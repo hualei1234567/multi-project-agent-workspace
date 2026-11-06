@@ -59,7 +59,7 @@ def _build_repo(repo: Path, *, title: str = "Alpha 任务") -> None:
         json.dumps({
             "role": "backend-engineer", "state": "blocked", "task": "TEAM-002",
             "updated_at": "2026-11-02T09:00:00+08:00", "note": "等待接口确认",
-            "worktree": "/tmp/ddp-be",
+            "worktree": "/tmp/default-be",
         }, ensure_ascii=False),
     )
     _write(repo / "ai-team" / "reports" / "TEAM-001-qa.md", "# QA\n")
@@ -200,12 +200,12 @@ def test_builtin_templates_role_keys(env):
 
 
 def test_default_project_is_not_overwritten(env):
-    first = service.get_project("ddp")
-    assert first["name"] == "DDP 具身智能数据闭环平台"
+    first = service.get_project("default")
+    assert first["name"] == service.DEFAULT_PROJECT_NAME
     assert len(first["agents"]) == 7
     assert env.slug in first["session_slugs"]
     service.bootstrap(repo_root=env.repo)
-    second = service.get_project("ddp")
+    second = service.get_project("default")
     assert [a["id"] for a in second["agents"]] == [a["id"] for a in first["agents"]]
 
 
@@ -263,20 +263,20 @@ def test_cost_24h_is_project_scoped_and_null_safe(env, monkeypatch):
         "code": "alpha", "name": "Alpha", "repo_root": str(env.repo),
         "session_slugs": ["alpha-slug"],
     })
-    _insert_token_event("ddp", "s1", "m1", 200)
-    _insert_token_event("ddp", "s2", "m2", 50)
+    _insert_token_event("default", "s1", "m1", 200)
+    _insert_token_event("default", "s2", "m2", 50)
     _insert_token_event("alpha", "s3", "m3", 100)
 
     # 按 token 占比分摊：s1 200/1000、s2 50/200、s3 100/400
-    assert service.project_stats_for("ddp")["cost_24h"] == 0.8
+    assert service.project_stats_for("default")["cost_24h"] == 0.8
     assert service.project_stats_for("alpha")["cost_24h"] == 0.8125
-    assert service.project_usage("ddp") == {
+    assert service.project_usage("default") == {
         "token_24h": 250, "cost_24h": 0.8, "source": "transcript/ccusage-session",
     }
     overview = service.overview()
     assert overview["cost_24h"] == 1.6125
     costs = {item["id"]: item["stats"]["cost_24h"] for item in overview["projects"]}
-    assert costs == {"ddp": 0.8, "alpha": 0.8125}
+    assert costs == {"default": 0.8, "alpha": 0.8125}
 
 
 def test_cost_allocates_cross_day_session_by_token_share(env, monkeypatch):
@@ -285,9 +285,9 @@ def test_cost_allocates_cross_day_session_by_token_share(env, monkeypatch):
         "last_activity": _recent(1),
         "total_cost": 10.0, "total_tokens": 1000,
     }])
-    _insert_token_event("ddp", "cross-day", "part1", 200)
+    _insert_token_event("default", "cross-day", "part1", 200)
     # 跨天会话只分摊窗口内 200/1000 = 20%：10 * 0.2 = 2.0，而不是整段 10.0
-    assert service.project_stats_for("ddp")["cost_24h"] == 2.0
+    assert service.project_stats_for("default")["cost_24h"] == 2.0
 
 
 def test_cost_is_null_when_no_window_tokens(env, monkeypatch):
@@ -296,7 +296,7 @@ def test_cost_is_null_when_no_window_tokens(env, monkeypatch):
         "last_activity": _recent(1),
         "total_cost": 5.0, "total_tokens": 0,
     }])
-    assert service.project_stats_for("ddp")["cost_24h"] is None
+    assert service.project_stats_for("default")["cost_24h"] is None
 
 
 def test_ccusage_session_parser_and_failures(monkeypatch):
@@ -385,14 +385,14 @@ def test_archived_project_is_read_only(env):
 # 采集：任务 / 状态 / 交付 / Token
 # ---------------------------------------------------------------------------
 def test_backfill_tasks_status_and_deliveries(env):
-    result = service.backfill_project("ddp")
+    result = service.backfill_project("default")
     assert result["counts"]["tasks"] == 2
     assert result["counts"]["agents"] == 7
-    agents = {a["role_key"]: a for a in service.get_project("ddp")["agents"]}
+    agents = {a["role_key"]: a for a in service.get_project("default")["agents"]}
     assert agents["general-owner"]["status"] == "working"
     assert agents["backend-engineer"]["status"] == "blocked"
     assert agents["general-owner"]["current_task_id"]
-    deliveries = service.list_deliveries("ddp", page_size=100)["items"]
+    deliveries = service.list_deliveries("default", page_size=100)["items"]
     qa = next(d for d in deliveries if d["title"] == "TEAM-001-qa.md")
     assert qa["kind"] == "test_report"
     assert qa["task_key"] == "TEAM-001"
@@ -401,18 +401,18 @@ def test_backfill_tasks_status_and_deliveries(env):
 
 def test_token_events_are_deduplicated_and_incremental(env):
     main, _ = _build_transcript(env.projects_root, env.slug)
-    service.backfill_project("ddp")
+    service.backfill_project("default")
 
     conn = sqlite3.connect(env.db)
     rows = conn.execute(
-        "SELECT message_uuid, total_tokens FROM token_usage_events WHERE project_id = 'ddp'"
+        "SELECT message_uuid, total_tokens FROM token_usage_events WHERE project_id = 'default'"
     ).fetchall()
     assert sorted(row[0] for row in rows) == ["m1", "m2", "m3"]
     assert sum(row[1] for row in rows) == 125
 
-    service.backfill_project("ddp")  # 幂等：cursor 未变，不重复
+    service.backfill_project("default")  # 幂等：cursor 未变，不重复
     count = conn.execute(
-        "SELECT COUNT(*) FROM token_usage_events WHERE project_id = 'ddp'"
+        "SELECT COUNT(*) FROM token_usage_events WHERE project_id = 'default'"
     ).fetchone()[0]
     assert count == 3
 
@@ -424,12 +424,12 @@ def test_token_events_are_deduplicated_and_incremental(env):
                 "input_tokens": 1000, "output_tokens": 0,
             }},
         }) + "\n")
-    service.backfill_project("ddp")
+    service.backfill_project("default")
     count = conn.execute(
-        "SELECT COUNT(*) FROM token_usage_events WHERE project_id = 'ddp'"
+        "SELECT COUNT(*) FROM token_usage_events WHERE project_id = 'default'"
     ).fetchone()[0]
     total = conn.execute(
-        "SELECT SUM(total_tokens) FROM token_usage_events WHERE project_id = 'ddp'"
+        "SELECT SUM(total_tokens) FROM token_usage_events WHERE project_id = 'default'"
     ).fetchone()[0]
     conn.close()
     assert count == 4
@@ -437,7 +437,7 @@ def test_token_events_are_deduplicated_and_incremental(env):
 
 
 def test_overview_aggregates_project_scope(env):
-    service.backfill_project("ddp")
+    service.backfill_project("default")
     data = service.overview()
     assert data["project_total"] >= 1
     assert data["project_active"] >= 1
@@ -488,7 +488,7 @@ def test_state_endpoint_isolation_and_legacy_fields(http_server, env, monkeypatc
         "last_activity": _recent(1), "total_cost": 7.5,
         "total_tokens": 1000,
     }])
-    _insert_token_event("ddp", "s1", "http-m1", 100)
+    _insert_token_event("default", "s1", "http-m1", 100)
     service.create_project({
         "code": "alpha", "name": "Alpha", "repo_root": str(env.repo),
         "session_slugs": [],
@@ -497,7 +497,7 @@ def test_state_endpoint_isolation_and_legacy_fields(http_server, env, monkeypatc
 
     code, default_state = _request(http_server, "/api/state")
     assert code == 200
-    assert default_state["project"]["id"] == "ddp"
+    assert default_state["project"]["id"] == "default"
     for key in ("generated_at", "owner", "roster", "statuses", "kanban",
                 "tasks", "agents", "worktrees", "reports", "usage", "stats"):
         assert key in default_state
@@ -525,9 +525,9 @@ def test_state_endpoint_isolation_and_legacy_fields(http_server, env, monkeypatc
 def test_projects_api_contract(http_server):
     code, data = _request(http_server, "/api/projects")
     assert code == 200
-    assert data["default_project_id"] == "ddp"
+    assert data["default_project_id"] == "default"
     assert data["total"] >= 1
-    item = next(p for p in data["items"] if p["id"] == "ddp")
+    item = next(p for p in data["items"] if p["id"] == "default")
     for key in ("agent_total", "agent_active", "task_todo", "task_in_progress",
                 "task_blocked", "token_24h"):
         assert key in item["stats"]
@@ -563,25 +563,25 @@ def _request_raw(base: str, path: str):
 
 
 def test_file_access_is_confined_to_project_root(http_server, env):
-    code, body = _request_raw(http_server, "/api/file?project=ddp&path=ai-team/TASK_BOARD.md")
+    code, body = _request_raw(http_server, "/api/file?project=default&path=ai-team/TASK_BOARD.md")
     assert code == 200 and b"# Board" in body
-    code, body = _request_raw(http_server, "/api/file?project=ddp&path=../../../../etc/passwd")
+    code, body = _request_raw(http_server, "/api/file?project=default&path=../../../../etc/passwd")
     assert code == 404 and json.loads(body)["error"] == "not_found"
     code, body = _request_raw(http_server, "/api/file?project=nope&path=ai-team/TASK_BOARD.md")
     assert code == 404 and json.loads(body)["error"] == "project_not_found"
     outside = env.tmp / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
-    code, body = _request_raw(http_server, f"/api/file?project=ddp&path={outside}")
+    code, body = _request_raw(http_server, f"/api/file?project=default&path={outside}")
     assert code == 404 and json.loads(body)["error"] == "not_found"
 
 
 def test_backfill_endpoint_and_archive_guard(http_server, env):
-    code, _ = _request(http_server, "/api/projects/ddp/backfill", "POST", {})
+    code, _ = _request(http_server, "/api/projects/default/backfill", "POST", {})
     assert code == 200
-    service.patch_project("ddp", {"status": "archived"})
-    code, data = _request(http_server, "/api/projects/ddp/backfill", "POST", {})
+    service.patch_project("default", {"status": "archived"})
+    code, data = _request(http_server, "/api/projects/default/backfill", "POST", {})
     assert code == 403 and data["error"] == "project_archived"
-    code, _ = _request(http_server, "/api/projects/ddp/tasks?page=1&page_size=500")
+    code, _ = _request(http_server, "/api/projects/default/tasks?page=1&page_size=500")
     assert code == 200
 
 
@@ -643,7 +643,7 @@ def test_bootstrap_registers_configured_projects_once(env, monkeypatch, tmp_path
     _build_repo(extra_repo, title="C 任务")
     cfg = tmp_path / "projects.json"
     cfg.write_text(json.dumps({
-        "default_project_id": "ddp",
+        "default_project_id": "default",
         "projects": [
             {"id": "proj-c", "code": "proj-c", "name": "Project C",
              "repo_root": str(extra_repo), "session_slugs": ["c-slug"]},

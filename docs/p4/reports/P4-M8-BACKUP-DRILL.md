@@ -40,7 +40,7 @@
 | 项 | 现状（2026-11-06 更新） |
 |---|---|
 | **RTO** | ✅ 实测 **22 秒**（bootout → bootstrap → `/healthz` 可用），远低于 1 小时目标 |
-| **RPO** | ✅ 每日 03:30 自动备份（launchd `com.ddp.agent-platform-backup`），保留 14 份；最坏丢失窗口 24 小时 |
+| **RPO** | ✅ 每日 03:30 自动备份（launchd `com.agentplatform.backup`），保留 14 份；最坏丢失窗口 24 小时 |
 | **撤销重放** | ✅ 已实战：临时库造撤销数据 → 备份 → 恢复 → 检索 0 命中、分块与索引 0 残留 |
 | 备份文件轮转 | ✅ `scripts/backup.sh` 自动保留最近 14 份，只删 `platform.db.bak-*` 形态文件 |
 
@@ -50,7 +50,7 @@
 
 原本三项"未验证"（RTO、RPO、撤销重放）已在同日补齐：
 
-- 每日 03:30 自动热备 + 14 份轮转（`com.ddp.agent-platform-backup`）；
+- 每日 03:30 自动热备 + 14 份轮转（`com.agentplatform.backup`）；
 - 实测 RTO 22 秒；
 - 撤销重放用真实撤销数据走完整链路。
 

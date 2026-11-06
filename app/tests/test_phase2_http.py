@@ -144,78 +144,78 @@ def test_idempotency_key_over_http(http_server):
 
 
 def test_task_transition_and_dependencies_over_http(http_server):
-    code, left = _request(http_server, "/api/projects/ddp/tasks", "POST",
+    code, left = _request(http_server, "/api/projects/default/tasks", "POST",
                           {"task_key": "A-1", "title": "A1"})
     assert code == 200
-    code, right = _request(http_server, "/api/projects/ddp/tasks", "POST",
+    code, right = _request(http_server, "/api/projects/default/tasks", "POST",
                            {"task_key": "A-2", "title": "A2"})
     assert code == 200
     a1, a2 = left["task"], right["task"]
 
-    code, moved = _request(http_server, f"/api/projects/ddp/tasks/{a1['id']}/transition", "POST",
+    code, moved = _request(http_server, f"/api/projects/default/tasks/{a1['id']}/transition", "POST",
                            {"to_status": "in_progress", "expected_version": 1})
     assert code == 200 and moved["task"]["status"] == "in_progress"
 
-    code, invalid = _request(http_server, f"/api/projects/ddp/tasks/{a1['id']}/transition", "POST",
+    code, invalid = _request(http_server, f"/api/projects/default/tasks/{a1['id']}/transition", "POST",
                              {"to_status": "done", "expected_version": moved["task"]["version"]})
     assert code == 409 and invalid["detail"]["code"] == "invalid_transition"
 
-    code, dep = _request(http_server, f"/api/projects/ddp/tasks/{a2['id']}/dependencies", "POST",
+    code, dep = _request(http_server, f"/api/projects/default/tasks/{a2['id']}/dependencies", "POST",
                          {"depends_on_task_id": a1["id"]})
     assert code == 200 and dep["dependency_id"]
-    code, cycle = _request(http_server, f"/api/projects/ddp/tasks/{a1['id']}/dependencies", "POST",
+    code, cycle = _request(http_server, f"/api/projects/default/tasks/{a1['id']}/dependencies", "POST",
                            {"depends_on_task_id": a2["id"]})
     assert code == 422 and cycle["detail"]["code"] == "dependency_cycle"
 
     code, deleted = _request(
         http_server,
-        f"/api/projects/ddp/tasks/{a2['id']}/dependencies/{dep['dependency_id']}",
+        f"/api/projects/default/tasks/{a2['id']}/dependencies/{dep['dependency_id']}",
         "DELETE",
     )
     assert code == 200 and deleted["ok"] is True
 
 
 def test_delivery_favorites_audit_over_http(http_server):
-    code, delivery = _request(http_server, "/api/projects/ddp/deliveries", "POST",
+    code, delivery = _request(http_server, "/api/projects/default/deliveries", "POST",
                               {"title": "交付", "kind": "code", "summary": "done"})
     assert code == 200 and delivery["delivery"]["status"] == "submitted"
     delivery_id = delivery["delivery"]["id"]
 
-    code, rejected = _request(http_server, f"/api/projects/ddp/deliveries/{delivery_id}/review",
+    code, rejected = _request(http_server, f"/api/projects/default/deliveries/{delivery_id}/review",
                               "POST", {"decision": "rejected"})
     assert code == 422 and rejected["detail"]["code"] == "invalid_payload"
-    code, reviewed = _request(http_server, f"/api/projects/ddp/deliveries/{delivery_id}/review",
+    code, reviewed = _request(http_server, f"/api/projects/default/deliveries/{delivery_id}/review",
                               "POST", {"decision": "rejected", "comment": "缺测试"})
     assert code == 200 and reviewed["delivery"]["status"] == "rejected"
 
-    code, fav = _request(http_server, "/api/projects/ddp/favorite", "PUT")
+    code, fav = _request(http_server, "/api/projects/default/favorite", "PUT")
     assert code == 200 and fav["favorite"] is True
     code, listed = _request(http_server, "/api/projects?favorite=1")
-    assert code == 200 and {item["id"] for item in listed["items"]} == {"ddp"}
-    code, unfav = _request(http_server, "/api/projects/ddp/favorite", "DELETE")
+    assert code == 200 and {item["id"] for item in listed["items"]} == {"default"}
+    code, unfav = _request(http_server, "/api/projects/default/favorite", "DELETE")
     assert code == 200 and unfav["favorite"] is False
 
-    code, visit = _request(http_server, "/api/projects/ddp/visit", "POST", {})
-    assert code == 200 and visit["project_id"] == "ddp"
+    code, visit = _request(http_server, "/api/projects/default/visit", "POST", {})
+    assert code == 200 and visit["project_id"] == "default"
     code, recent = _request(http_server, "/api/me/recent-projects")
-    assert code == 200 and [item["id"] for item in recent["items"]] == ["ddp"]
+    assert code == 200 and [item["id"] for item in recent["items"]] == ["default"]
 
-    code, logs = _request(http_server, "/api/audit-logs?project=ddp&action=delivery.review")
+    code, logs = _request(http_server, "/api/audit-logs?project=default&action=delivery.review")
     assert code == 200 and logs["total"] == 1
     assert logs["items"][0]["detail"]["decision"] == "rejected"
 
 
 def test_team_template_preview_and_apply_over_http(http_server):
-    code, preview = _request(http_server, "/api/projects/ddp/team/preview", "POST",
+    code, preview = _request(http_server, "/api/projects/default/team/preview", "POST",
                              {"template_key": "lean-1-3"})
     assert code == 200
     assert {item["role_key"] for item in preview["added"]} == {
         "fullstack-engineer", "qa-engineer", "product-architecture",
     }
-    code, applied = _request(http_server, "/api/projects/ddp/team/apply", "POST",
+    code, applied = _request(http_server, "/api/projects/default/team/apply", "POST",
                              {"template_key": "lean-1-3"})
     assert code == 200 and applied["created"] == 3
-    agents = service.get_project("ddp")["agents"]
+    agents = service.get_project("default")["agents"]
     assert len(agents) == 10  # 标准 7 个旧实例全部保留 + 3 个新增
-    code, logs = _request(http_server, "/api/audit-logs?project=ddp&action=template.apply")
+    code, logs = _request(http_server, "/api/audit-logs?project=default&action=template.apply")
     assert code == 200 and logs["total"] == 1

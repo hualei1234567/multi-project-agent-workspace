@@ -25,7 +25,7 @@ def test_executor_disabled_by_default(monkeypatch):
     assert policy.executor_enabled() is False
     with pytest.raises(policy.ExecutorError, match="未启用"):
         policy.build_spec(
-            project_code="ddp", repo_root="/tmp", role_key="frontend-engineer",
+            project_code="default", repo_root="/tmp", role_key="frontend-engineer",
             execution_mode="worktree", prompt="do it",
         )
 
@@ -114,13 +114,13 @@ def test_allowed_prefix_but_denied_pattern_wins():
 def test_cwd_inside_repo_allowed(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    assert policy.validate_cwd("ddp", repo, repo) == repo.resolve()
+    assert policy.validate_cwd("default", repo, repo) == repo.resolve()
 
 
 def test_cwd_subdir_of_repo_allowed(tmp_path):
     repo = tmp_path / "repo"
     (repo / "backend").mkdir(parents=True)
-    resolved = policy.validate_cwd("ddp", repo, repo / "backend")
+    resolved = policy.validate_cwd("default", repo, repo / "backend")
     assert resolved == (repo / "backend").resolve()
 
 
@@ -130,14 +130,14 @@ def test_cwd_outside_repo_rejected(tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()
     with pytest.raises(policy.ExecutorError, match="不在允许范围"):
-        policy.validate_cwd("ddp", repo, other)
+        policy.validate_cwd("default", repo, other)
 
 
 def test_cwd_traversal_rejected(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     with pytest.raises(policy.ExecutorError):
-        policy.validate_cwd("ddp", repo, repo / ".." / "outside")
+        policy.validate_cwd("default", repo, repo / ".." / "outside")
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ def test_non_executable_modes_rejected(tmp_path, monkeypatch, mode):
     repo.mkdir()
     with pytest.raises(policy.ExecutorError, match="不允许自动执行"):
         policy.build_spec(
-            project_code="ddp", repo_root=repo, role_key="qa-devops",
+            project_code="default", repo_root=repo, role_key="qa-devops",
             execution_mode=mode, prompt="do it",
         )
 
@@ -161,7 +161,7 @@ def test_executable_modes_accepted(tmp_path, monkeypatch, mode):
     repo = tmp_path / "repo"
     repo.mkdir()
     spec = policy.build_spec(
-        project_code="ddp", repo_root=repo, role_key="frontend-engineer",
+        project_code="default", repo_root=repo, role_key="frontend-engineer",
         execution_mode=mode, prompt="do it",
     )
     assert spec.cwd == repo.resolve()
@@ -173,7 +173,7 @@ def test_empty_prompt_rejected(tmp_path, monkeypatch):
     repo.mkdir()
     with pytest.raises(policy.ExecutorError, match="提示为空"):
         policy.build_spec(
-            project_code="ddp", repo_root=repo, role_key="frontend-engineer",
+            project_code="default", repo_root=repo, role_key="frontend-engineer",
             execution_mode="worktree", prompt="   ",
         )
 
@@ -186,7 +186,7 @@ def test_argv_uses_whitelisted_binary_and_no_shell(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     spec = policy.build_spec(
-        project_code="ddp", repo_root=repo, role_key="backend-engineer",
+        project_code="default", repo_root=repo, role_key="backend-engineer",
         execution_mode="worktree", prompt="实现接口",
     )
     argv = spec.argv()
@@ -205,7 +205,7 @@ def test_max_turns_and_timeout_clamped(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     spec = policy.build_spec(
-        project_code="ddp", repo_root=repo, role_key="backend-engineer",
+        project_code="default", repo_root=repo, role_key="backend-engineer",
         execution_mode="worktree", prompt="x", max_turns=99999, timeout_s=1,
     )
     assert spec.max_turns == 200
@@ -218,6 +218,6 @@ def test_invalid_role_rejected(tmp_path, monkeypatch):
     repo.mkdir()
     with pytest.raises(policy.ExecutorError, match="角色标识非法"):
         policy.build_spec(
-            project_code="ddp", repo_root=repo, role_key="../../etc/passwd",
+            project_code="default", repo_root=repo, role_key="../../etc/passwd",
             execution_mode="worktree", prompt="x",
         )

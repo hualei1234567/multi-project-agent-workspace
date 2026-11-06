@@ -12,7 +12,7 @@
 |---|---|
 | 进程 | `python app/agents_dashboard.py --port 8099` |
 | 监听 | 仅 `127.0.0.1:8099`（不绑局域网，除非显式 `--tailscale`） |
-| 托管 | launchd `com.ddp.agents-dashboard`（`~/Library/LaunchAgents/`） |
+| 托管 | launchd `com.agentplatform.dashboard`（`~/Library/LaunchAgents/`） |
 | 数据库 | `data/platform.db`（SQLite，WAL） |
 | 日志 | stdout `\tmp\ddp-agents-dashboard.log`、stderr `\tmp\ddp-agents-dashboard.err.log` |
 | 健康检查 | `curl -s http://127.0.0.1:8099/healthz` → `{"ok":true,"schema_version":N}` |
@@ -25,13 +25,13 @@
 
 ```bash
 # 重启（推荐）
-launchctl kickstart -k gui/$(id -u)/com.ddp.agents-dashboard
+launchctl kickstart -k gui/$(id -u)/com.agentplatform.dashboard
 
 # 停止
-launchctl bootout gui/$(id -u)/com.ddp.agents-dashboard
+launchctl bootout gui/$(id -u)/com.agentplatform.dashboard
 
 # 重新加载 plist（改过 plist 后）
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ddp.agents-dashboard.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentplatform.dashboard.plist
 ```
 
 **注意**：启动到开始监听约需 **60 秒**（初始化时会回填项目数据、扫仓库）。
@@ -96,11 +96,11 @@ RPO = 24 小时，RTO = 1 小时（单机 SQLite）。备份文件在 `data/`，
 ### 3.4 恢复真实灾难
 
 ```bash
-launchctl bootout gui/$(id -u)/com.ddp.agents-dashboard
+launchctl bootout gui/$(id -u)/com.agentplatform.dashboard
 cp data/platform.db data/platform.db.broken-$(date +%Y%m%d%H%M%S)
 cp data/platform.db.bak-<时间戳> data/platform.db
 rm -f data/platform.db-wal data/platform.db-shm
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ddp.agents-dashboard.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentplatform.dashboard.plist
 curl -s http://127.0.0.1:8099/healthz
 ```
 
