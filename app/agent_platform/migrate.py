@@ -108,6 +108,30 @@ V3_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     )),
 )
 
+#: v4（四期 M1 地基）：身份授权、Policy、Kill Switch、审批、事件平面。
+V4_TABLES = (
+    "principals",
+    "project_members",
+    "policy_rules",
+    "kill_switches",
+    "approvals",
+    "event_outbox",
+    "event_inbox",
+)
+
+V4_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    # 全链路关联标识：审计与事件必须能串起同一次业务链路。
+    ("audit_logs", (
+        ("correlation_id", "TEXT"),
+    )),
+    ("dispatch_items", (
+        ("correlation_id", "TEXT"),
+    )),
+    ("executions", (
+        ("correlation_id", "TEXT"),
+    )),
+)
+
 
 # ---------------------------------------------------------------------------
 # 版本链
@@ -178,6 +202,40 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v4 数据回填：为已有项目建立本机所有者主体与成员关系。
+
+    目的：让"启用鉴权"不打断本机使用。回环请求解析为 ``local-owner``，
+    它被授予全部现有项目的 owner 角色；远端令牌解析为 ``remote-token``，
+    默认不是任何项目成员——因此远端在没有显式 Grant 前只能被拒绝。
+    """
+    now = store.now_iso()
+    conn.execute(
+        "INSERT INTO principals (id, principal_type, display_name, is_platform_owner,"
+        " status, created_at, updated_at)"
+        " SELECT 'local-owner', 'user', '本机所有者', 1, 'active', ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM principals WHERE id = 'local-owner')",
+        (now, now),
+    )
+    # 远端令牌主体：默认不给任何项目成员关系。远端要访问必须先被显式授权，
+    # 这正是"Deny by Default"；不给默认权限是刻意的，不是遗漏。
+    conn.execute(
+        "INSERT INTO principals (id, principal_type, display_name, is_platform_owner,"
+        " status, created_at, updated_at)"
+        " SELECT 'remote-token', 'service', '远端令牌', 0, 'active', ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM principals WHERE id = 'remote-token')",
+        (now, now),
+    )
+    for row in conn.execute("SELECT id FROM agent_projects").fetchall():
+        conn.execute(
+            "INSERT INTO project_members (id, project_id, principal_id, role, created_at)"
+            " SELECT ?, ?, 'local-owner', 'owner', ?"
+            " WHERE NOT EXISTS (SELECT 1 FROM project_members WHERE project_id = ?"
+            " AND principal_id = 'local-owner')",
+            (store.stable_id(row["id"], "local-owner"), row["id"], now, row["id"]),
+        )
+
+
 #: 版本链：按 version 升序。新增一版只追加一项。
 MIGRATIONS: tuple[MigrationStep, ...] = (
     MigrationStep(
@@ -193,6 +251,13 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         columns=V3_COLUMN_UPGRADES,
         backfill=_migrate_v2_to_v3,
         description="三期：调度、共享资源、运行时控制 + 跨项目依赖列",
+    ),
+    MigrationStep(
+        4,
+        tables=V4_TABLES,
+        columns=V4_COLUMN_UPGRADES,
+        backfill=_migrate_v3_to_v4,
+        description="四期 M1 地基：身份授权、Policy、Kill Switch、审批、事件平面",
     ),
 )
 
@@ -224,6 +289,7 @@ def _log(message: str) -> None:
 
 #: schema.sql 里标记 v3 段的注释锚点；定向升到 v2 时裁掉这一段。
 _V3_MARKER = "schema v3（三期"
+_V4_MARKER = "schema v4（四期"
 
 
 def schema_statements(target_version: int | None = None) -> list[str]:
@@ -235,6 +301,8 @@ def schema_statements(target_version: int | None = None) -> list[str]:
     text = store.SCHEMA_PATH.read_text(encoding="utf-8")
     if target_version is not None and target_version < 3 and _V3_MARKER in text:
         text = text.split(_V3_MARKER)[0]
+    if target_version is not None and target_version < 4 and _V4_MARKER in text:
+        text = text.split(_V4_MARKER)[0]
     lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
     statements = []
     for chunk in "\n".join(lines).split(";"):

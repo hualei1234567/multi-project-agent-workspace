@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS executions (
   model_id      TEXT,
   total_tokens  INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL DEFAULT 'transcript',
+  correlation_id TEXT,
   UNIQUE (project_id, session_id, agent_id)
 );
 
@@ -196,7 +197,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   resource_id   TEXT,
   result        TEXT NOT NULL DEFAULT 'ok',
   detail_json   TEXT NOT NULL DEFAULT '{}',
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  correlation_id    TEXT
 );
 
 -- POST 幂等键（内部实现，契约见 docs/113 §1）
@@ -268,7 +270,8 @@ CREATE TABLE IF NOT EXISTS dispatch_items (
   error_summary    TEXT,
   result_json      TEXT NOT NULL DEFAULT '{}',
   created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  correlation_id  TEXT
 );
 
 -- 同一任务在同一时刻只允许一个活跃调度项（防双跑）
@@ -397,3 +400,122 @@ CREATE TABLE IF NOT EXISTS runtime_action_runs (
 
 CREATE INDEX IF NOT EXISTS idx_runtime_action_runs_action
   ON runtime_action_runs(action_id, created_at DESC);
+
+-- ============================================================
+-- schema v4（四期 M1 地基）：身份授权 / Policy / Kill Switch / 审批 / 事件平面
+-- ============================================================
+
+-- 主体：人、Agent、服务。Agent Profile 只是能力定义，不自动拥有项目数据访问权。
+CREATE TABLE IF NOT EXISTS principals (
+  id                TEXT PRIMARY KEY,
+  principal_type    TEXT NOT NULL,                    -- user / agent / service
+  display_name      TEXT NOT NULL,
+  is_platform_owner INTEGER NOT NULL DEFAULT 0,
+  agent_project_id  TEXT,                             -- agent 绑定的项目
+  status            TEXT NOT NULL DEFAULT 'active',   -- active / suspended / revoked
+  expires_at        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+-- 项目成员：RBAC 的角色来源。角色只有 owner / operator / viewer / auditor 四类，
+-- 领域责任角色（Evaluation Owner 等）映射到这四类，不新建全局超级角色。
+CREATE TABLE IF NOT EXISTS project_members (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL REFERENCES agent_projects(id),
+  principal_id TEXT NOT NULL REFERENCES principals(id),
+  role         TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  UNIQUE(project_id, principal_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_members_principal
+  ON project_members(principal_id);
+
+-- 策略规则：effect=allow 时放行，effect=deny 时拒绝；无命中即拒绝（Deny by Default）。
+CREATE TABLE IF NOT EXISTS policy_rules (
+  id            TEXT PRIMARY KEY,
+  scope         TEXT NOT NULL DEFAULT 'global',       -- global / project
+  project_id    TEXT,
+  principal_id  TEXT,
+  principal_type TEXT,
+  resource_type TEXT NOT NULL DEFAULT '*',
+  action        TEXT NOT NULL DEFAULT '*',
+  environment   TEXT NOT NULL DEFAULT '*',            -- dev / staging / production / *
+  max_risk      TEXT NOT NULL DEFAULT 'R4',           -- 允许的最高业务风险等级
+  effect        TEXT NOT NULL DEFAULT 'allow',        -- allow / deny
+  requires_approval INTEGER NOT NULL DEFAULT 0,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  note          TEXT,
+  created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_policy_rules_lookup
+  ON policy_rules(enabled, resource_type, action);
+
+-- Kill Switch：DB 驱动，按范围生效，带 TTL。触发后新请求立即被拒。
+CREATE TABLE IF NOT EXISTS kill_switches (
+  id           TEXT PRIMARY KEY,
+  scope        TEXT NOT NULL,                         -- global / project / project_domain
+  project_id   TEXT,
+  domain       TEXT,
+  reason       TEXT NOT NULL,
+  triggered_by TEXT NOT NULL,
+  expires_at   TEXT,                                  -- NULL = 不自动解除
+  released_at  TEXT,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_kill_switches_active
+  ON kill_switches(scope, project_id, released_at);
+
+-- 审批：高风险动作的前置。提案者不得自批（服务层校验）。
+CREATE TABLE IF NOT EXISTS approvals (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  resource_type  TEXT NOT NULL,
+  resource_id    TEXT NOT NULL,
+  action         TEXT NOT NULL,
+  requested_by   TEXT NOT NULL,
+  approved_by    TEXT,
+  status         TEXT NOT NULL DEFAULT 'pending',     -- pending / approved / rejected / expired
+  digest         TEXT,                                -- 绑定的内容摘要，内容变则审批失效
+  request_note   TEXT,
+  decision_note  TEXT,
+  expires_at     TEXT,
+  created_at     TEXT NOT NULL,
+  decided_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_pending
+  ON approvals(status, resource_type, resource_id);
+
+-- 事件 Outbox：与业务状态同事务写入，由 dispatcher 单线程投递（至少一次）。
+CREATE TABLE IF NOT EXISTS event_outbox (
+  id             TEXT PRIMARY KEY,
+  event_id       TEXT NOT NULL UNIQUE,
+  event_type     TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  project_id     TEXT,
+  resource_type  TEXT,
+  resource_id    TEXT,
+  correlation_id TEXT,
+  causation_id   TEXT,
+  payload_json   TEXT NOT NULL DEFAULT '{}',
+  occurred_at    TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'pending',     -- pending / dispatched / failed
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  last_error     TEXT,
+  dispatched_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_outbox_pending
+  ON event_outbox(status, occurred_at);
+
+-- 消费端去重：至少一次投递必然重复，靠这里保证不重复产生副作用。
+CREATE TABLE IF NOT EXISTS event_inbox (
+  event_id     TEXT NOT NULL,
+  consumer     TEXT NOT NULL,
+  processed_at TEXT NOT NULL,
+  PRIMARY KEY (event_id, consumer)
+);

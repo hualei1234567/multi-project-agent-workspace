@@ -1,0 +1,104 @@
+"""P4 治理闸门在 HTTP 层的效果：Kill Switch 秒级生效，本机不被打断。"""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import agents_dashboard as dash
+from agent_platform import service, sources, store
+from agent_platform.p4 import killswitch
+
+
+@pytest.fixture(autouse=True)
+def _no_ccusage(monkeypatch):
+    monkeypatch.setattr(sources, "ccusage_session_costs", list)
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    db_path = tmp_path / "platform.db"
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    repo = tmp_path / "repo"
+    (repo / "ai-team").mkdir(parents=True)
+    (repo / "ai-team" / "TASK_BOARD.md").write_text("# Board\n", encoding="utf-8")
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db_path))
+    config_file = tmp_path / "projects.json"
+    config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(config_file))
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(projects_root))
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
+    service.bootstrap(repo_root=repo)
+    killswitch.reset_cache()
+    yield SimpleNamespace(db=db_path, repo=repo, projects_root=projects_root)
+    killswitch.reset_cache()
+
+
+@pytest.fixture()
+def server(env, monkeypatch):
+    monkeypatch.setattr(dash, "REPO", env.repo)
+    monkeypatch.setattr(dash, "PROJECTS_ROOT", env.projects_root)
+    monkeypatch.setattr(dash, "STATUS_DIR", env.repo / "ai-team" / "status")
+    monkeypatch.setattr(dash, "SLUG_PREFIXES", ())
+    httpd = dash.ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        yield base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _request(base: str, path: str, method: str = "GET", body: dict | None = None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = Request(base + path, data=data, method=method,
+                  headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def test_api_works_normally_without_switch(server):
+    code, data = _request(server, "/api/projects")
+    assert code == 200
+    assert "items" in data
+
+
+def test_global_kill_switch_blocks_api_immediately(server, env):
+    conn = store.connect(env.db)
+    try:
+        killswitch.trigger(conn, scope="global", reason="演练", triggered_by="test")
+    finally:
+        conn.close()
+
+    code, data = _request(server, "/api/projects")
+    assert code == 503
+    assert data["error"] == "kill_switch"
+
+
+def test_release_restores_service(server, env):
+    conn = store.connect(env.db)
+    try:
+        switch = killswitch.trigger(
+            conn, scope="global", reason="演练", triggered_by="test"
+        )
+        assert _request(server, "/api/projects")[0] == 503
+        killswitch.release(conn, switch["id"], released_by="test")
+    finally:
+        conn.close()
+    assert _request(server, "/api/projects")[0] == 200

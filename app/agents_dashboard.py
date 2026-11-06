@@ -64,6 +64,9 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
+    from agent_platform.p4 import governance as p4_governance
+    from agent_platform.p4 import killswitch as p4_killswitch
+    from agent_platform.p4 import policy as p4_policy
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
     from app.agent_platform import auth as auth_service
@@ -76,6 +79,9 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
+    from app.agent_platform.p4 import governance as p4_governance
+    from app.agent_platform.p4 import killswitch as p4_killswitch
+    from app.agent_platform.p4 import policy as p4_policy
     from app.agent_platform.state_cache import StateCache
 
 #: 默认项目仓库根（平台已脱离单一仓库，由 config/projects.json 决定）
@@ -1290,6 +1296,23 @@ def open_with_os(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+#: 资源类型 → 业务域。Kill Switch 支持按域停（如只停 material 的评估）。
+_POLICY_DOMAINS = {
+    "evaluation_run": "evaluation",
+    "evaluation_dataset": "evaluation",
+    "knowledge_item": "knowledge",
+    "knowledge_source": "knowledge",
+    "workflow_version": "workflow",
+    "agent_release": "release",
+    "improvement_case": "improvement",
+    "outcome_record": "outcome",
+}
+
+
+def _policy_domain(resource_type: str) -> str | None:
+    return _POLICY_DOMAINS.get(resource_type)
+
+
 def _run_dispatch_item(project_id: str, item_id: str, *, dry_run: bool, owner: str) -> dict[str, Any]:
     """校验项目归属后交给执行器。"""
     conn = platform_store.connect()
@@ -1334,7 +1357,12 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def _authorized(self, path: str, query: dict[str, list[str]]) -> bool:
-        """所有请求先过鉴权；不通过时直接写响应并返回 False。"""
+        """所有请求先过鉴权，再过治理闸门；不通过时直接写响应并返回 False。
+
+        顺序即 V6.0 §7.5 的前三步：认证主体 → 确定主体 → 全局 Kill Switch。
+        项目级授权在各路由用 ``_policy_guard`` 单独判定（需要项目上下文）。
+        """
+        self.principal = None
         ok, reason = auth_service.check_request(
             path=path,
             client_address=self.client_address[0] if self.client_address else None,
@@ -1342,7 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
             query_params=query,
         )
         if ok:
-            return True
+            return self._governance_gate(path)
         self.send_response(401 if reason in {"missing_token", "invalid_token"} else 403)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         body = json.dumps({
@@ -1354,6 +1382,58 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+        return False
+
+    def _governance_gate(self, path: str) -> bool:
+        """解析主体 + 全局 Kill Switch。失败时已写响应并返回 False。"""
+        if path in auth_service.PUBLIC_PATHS:
+            return True
+        try:
+            conn = platform_store.connect()
+            try:
+                address = self.client_address[0] if self.client_address else None
+                self.principal = p4_governance.resolve_principal(
+                    conn, is_loopback=auth_service.is_loopback(address)
+                )
+                blocked, why = p4_killswitch.is_blocked(conn)
+                if blocked:
+                    self._json(503, {"ok": False, "error": "kill_switch",
+                                     "message": why,
+                                     "detail": {"code": "kill_switch", "message": why}})
+                    return False
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - 治理层故障不得让整个服务 500
+            self.principal = None
+        return True
+
+    def _policy_guard(self, project_id: str | None, resource_type: str,
+                      action: str, *, risk: str = "R2") -> bool:
+        """项目级授权判定。不通过时已写 403/412 并返回 False。"""
+        conn = platform_store.connect()
+        try:
+            decision = p4_policy.decide(
+                conn,
+                principal=getattr(self, "principal", None),
+                project_id=project_id,
+                resource_type=resource_type,
+                action=action,
+                risk=risk,
+                domain=_policy_domain(resource_type),
+            )
+        except Exception:  # noqa: BLE001 - 判定异常按拒绝处理（Deny by Default）
+            decision = p4_policy.Decision(allowed=False, reason="policy_error")
+        finally:
+            conn.close()
+        if decision.allowed:
+            return True
+        code = 412 if decision.requires_approval else 403
+        self._json(code, {
+            "ok": False,
+            "error": "policy_denied",
+            "message": "需要审批" if decision.requires_approval else "无权执行该操作",
+            "detail": {"code": decision.reason, "message": decision.reason},
+        })
         return False
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
@@ -1478,6 +1558,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
             if path.startswith("/api/runtime/actions/") and path.endswith("/run"):
                 segments = self._segments(path)
+                if len(segments) == 5 and not self._policy_guard(
+                    None, "runtime_action", "run", risk="R3"
+                ):
+                    return
                 if len(segments) == 5:
                     body = self._body()
                     self._platform(
@@ -1555,6 +1639,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(rest) == 4 and rest[:2] == ["dispatch", "items"] and rest[3] in ("run", "dry-run"):
             body = self._body()
             dry = rest[3] == "dry-run"
+            if not dry and not self._policy_guard(project_id, "dispatch_item", "run", risk="R3"):
+                return
             self._platform(
                 _run_dispatch_item, project_id, rest[2],
                 dry_run=dry,
