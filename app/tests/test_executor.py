@@ -19,6 +19,15 @@ if str(SCRIPTS) not in sys.path:
 from agent_platform import executor, scheduler, service, store
 from agent_platform import executor_policy as policy
 
+import shutil as _shutil
+
+# 执行器依赖 claude CLI；没有该二进制的机器（如部署服务器）跳过本模块，
+# 不把"环境缺依赖"伪装成"测试通过"。
+pytestmark = pytest.mark.skipif(
+    _shutil.which("claude") is None,
+    reason="需要 claude CLI（执行器依赖），本机未安装",
+)
+
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):

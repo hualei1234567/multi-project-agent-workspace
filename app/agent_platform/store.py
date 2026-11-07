@@ -39,7 +39,7 @@ def default_db_path() -> Path:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def iso_utc(value: str | None) -> str | None:
@@ -50,16 +50,16 @@ def iso_utc(value: str | None) -> str | None:
     if not text:
         return None
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))  # noqa: FURB162
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return text
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)  # noqa: UP017
-    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 def from_mtime(mtime: float) -> str:
-    return datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="seconds")
 
 
 def stable_id(*parts: Any) -> str:

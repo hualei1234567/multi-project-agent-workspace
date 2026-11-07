@@ -829,8 +829,8 @@ def _duration_ms(first: str | None, last: str | None) -> int | None:
     if not first or not last:
         return None
     try:
-        start = datetime.fromisoformat(first.replace("Z", "+00:00"))  # noqa: FURB162
-        end = datetime.fromisoformat(last.replace("Z", "+00:00"))  # noqa: FURB162
+        start = datetime.fromisoformat(first.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(last.replace("Z", "+00:00"))
     except ValueError:
         return None
     return max(int((end - start).total_seconds() * 1000), 0)

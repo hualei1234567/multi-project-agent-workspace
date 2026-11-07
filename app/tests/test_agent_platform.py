@@ -6,7 +6,7 @@ import json
 import sqlite3
 import sys
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -68,7 +68,7 @@ def _build_repo(repo: Path, *, title: str = "Alpha 任务") -> None:
 
 def _recent(hours: float = 1.0) -> str:
     """窗口内时间戳（相对当前 UTC，避免写死日期过 24h 后失效）。"""
-    return (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
 def _insert_token_event(project_id: str, session_id: str, message_uuid: str, total: int,

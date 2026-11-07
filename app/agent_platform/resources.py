@@ -35,7 +35,7 @@ def _now() -> str:
 
 def _expires(seconds: int) -> str:
     return (
-        datetime.now(timezone.utc) + timedelta(seconds=seconds)  # noqa: UP017
+        datetime.now(timezone.utc) + timedelta(seconds=seconds)
     ).isoformat(timespec="seconds")
 
 

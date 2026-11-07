@@ -1,0 +1,4 @@
+# 目标运行时是 Python 3.10+（部署机 Ubuntu 22.04 自带 3.10），
+# 不要使用 3.11 才有的 datetime.UTC 等写法。
+target-version = "py310"
+line-length = 100

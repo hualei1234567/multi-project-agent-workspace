@@ -4696,14 +4696,15 @@ function bindGlobal() {
   bindGlobal();
 
   const legacyAgent = new URLSearchParams(location.search).get("agent");
+  // 先拿到项目列表再决定落到哪个项目，否则默认项目 id 还没解析出来。
+  await ensureProjects();
   if (!location.hash) {
     const target = legacyAgent
-      ? `#/p/${APP.defaultProjectId || "default"}/agents?agent=${encodeURIComponent(legacyAgent)}`
+      ? `#/p/${APP.defaultProjectId || (APP.projects[0] && APP.projects[0].id) || "default"}/agents?agent=${encodeURIComponent(legacyAgent)}`
       : "#/";
     history.replaceState(null, "", location.pathname + location.search + target);
   }
 
-  await ensureProjects();
   await onRoute();
   loadOverview();
   scheduleStatePolling();

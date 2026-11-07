@@ -1,0 +1,16 @@
+{
+  "name": "multi-project-agent-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "description": "多项目 Agent 管理平台工作区（仅用于浏览器冒烟测试工具链）",
+  "type": "module",
+  "scripts": {
+    "smoke": "node app/tests/ui_smoke.mjs",
+    "smoke:mobile": "node app/tests/mobile_smoke.mjs",
+    "smoke:file": "node app/tests/file_viewer_smoke.mjs",
+    "smoke:all": "node app/tests/ui_smoke.mjs && node app/tests/mobile_smoke.mjs && node app/tests/file_viewer_smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

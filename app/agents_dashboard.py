@@ -221,7 +221,7 @@ _usage_cache: dict[str, dict[str, Any]] = {}
 def _iso(ts: float | None) -> str | None:
     if not ts:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat(  # noqa: UP017
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat(
         timespec="seconds"
     )
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
-from datetime import UTC
+from datetime import timezone
 from typing import Any
 
 from .. import store
@@ -51,7 +51,7 @@ def trigger(
         from datetime import datetime, timedelta
 
         expires = (
-            datetime.now(UTC) + timedelta(seconds=max(60, ttl_seconds))
+            datetime.now(timezone.utc) + timedelta(seconds=max(60, ttl_seconds))
         ).isoformat(timespec="seconds")
 
     switch_id = uuid.uuid4().hex

@@ -6,13 +6,35 @@
 
 ---
 
+## 0. 部署拓扑（2026-11-07 起）
+
+| 角色 | 机器 | 说明 |
+|---|---|---|
+| 开发机 | Mac（本工作区） | 只写代码、跑测试；**不再常驻运行** |
+| 运行机 | 笔记本 Ubuntu 22.04 `<LAN_HOST>`（ssh 别名 `<ssh-alias>`） | systemd 托管，监听 `0.0.0.0:8099` |
+| 数据 | 笔记本 `/opt/agent-platform/data/platform.db` | 每日 03:30 自动备份（`agent-platform-backup.timer`） |
+
+部署命令（幂等，只推代码 + 跑测试 + 重启）：
+
+```bash
+scripts/deploy-laptop.sh            # 只更新代码
+scripts/deploy-laptop.sh --with-data  # 连库一起推（首次部署用）
+```
+
+局域网访问：<http://<LAN_HOST>:8099/>；非回环访问必须带令牌
+（`ssh <ssh-alias> 'cat /opt/agent-platform/data/token'`）。
+
+Mac 上如需临时起一份本地实例调试：`scripts/start.sh 8099`（用本地库，与服务器实例互不影响）。
+
+---
+
 ## 1. 服务拓扑
 
 | 项 | 值 |
 |---|---|
-| 进程 | `python app/agents_dashboard.py --port 8099` |
-| 监听 | 仅 `127.0.0.1:8099`（不绑局域网，除非显式 `--tailscale`） |
-| 托管 | launchd `com.agentplatform.dashboard`（`~/Library/LaunchAgents/`） |
+| 进程 | `python app/agents_dashboard.py --host 0.0.0.0 --port 8099`（服务器） |
+| 监听 | 服务器 `0.0.0.0:8099`；Mac 本地实例 `127.0.0.1:8099` |
+| 托管 | 服务器 systemd `agent-platform`；Mac launchd（plist 已改名 `.disabled`，不自动启动） |
 | 数据库 | `data/platform.db`（SQLite，WAL） |
 | 日志 | stdout `\tmp\ddp-agents-dashboard.log`、stderr `\tmp\ddp-agents-dashboard.err.log` |
 | 健康检查 | `curl -s http://127.0.0.1:8099/healthz` → `{"ok":true,"schema_version":N}` |

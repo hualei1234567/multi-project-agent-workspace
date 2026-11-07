@@ -133,7 +133,7 @@ def _agent_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _token_cutoff() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")  # noqa: UP017
+    return (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
 
 
 def _scalar(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -671,11 +671,11 @@ def _project_cost_24h(
         if not raw_ts:
             continue
         try:
-            activity = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))  # noqa: FURB162
+            activity = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
         except ValueError:
             continue
         if activity.tzinfo is None:
-            activity = activity.replace(tzinfo=timezone.utc)  # noqa: UP017
+            activity = activity.replace(tzinfo=timezone.utc)
         if activity < cutoff:
             continue
         cost = session.get("total_cost")
@@ -697,7 +697,7 @@ def project_stats(
     sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cutoff_iso = _token_cutoff()
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=24)  # noqa: UP017
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=24)
     placeholders = ",".join("?" for _ in ACTIVE_AGENT_STATUSES)
     project_row = conn.execute(
         "SELECT session_slugs FROM agent_projects WHERE id = ?", (project_id,)

@@ -5,8 +5,19 @@
  * 用法：AGWS_URL=http://127.0.0.1:8098 node app/tests/mobile_smoke.mjs
  */
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const require = createRequire(import.meta.url);
-const { chromium } = require("/web/node_modules/playwright");
+const HERE = dirname(fileURLToPath(import.meta.url));
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
+  const candidates = ["playwright", join(HERE, "..", "..", "node_modules", "playwright")];
+  for (const c of candidates) {
+    try { return require.resolve(c); } catch { /* 继续找 */ }
+  }
+  console.error("[smoke] 找不到 playwright，请先 npm install");
+  process.exit(2);
+})());
 const BASE = process.env.AGWS_URL || "http://127.0.0.1:8098";
 const browser = await chromium.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const results = [];

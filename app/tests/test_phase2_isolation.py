@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -363,7 +363,7 @@ def test_recent_projects_follow_visit_order(http_server, monkeypatch):
 
     # 固定递增时钟，避免同一秒内 rowid 兜底导致断言不稳定。
     ticks = count()
-    base_time = datetime(2026, 11, 3, 0, 0, 0, tzinfo=UTC)
+    base_time = datetime(2026, 11, 3, 0, 0, 0, tzinfo=timezone.utc)
 
     def _fake_now() -> str:
         return (base_time + timedelta(minutes=next(ticks))).isoformat(timespec="seconds")

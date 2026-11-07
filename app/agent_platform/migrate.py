@@ -535,7 +535,7 @@ def backup_database(path: Path) -> Path | None:
     """
     if not path.exists() or path.stat().st_size == 0:
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")  # noqa: UP017
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     target = path.with_name(f"{path.name}.bak-{stamp}")
     source_conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:

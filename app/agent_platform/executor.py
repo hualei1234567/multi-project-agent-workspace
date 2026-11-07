@@ -97,7 +97,7 @@ def _event(conn, item_id: str, event_type: str, from_status: str | None,
 def _iso_after(seconds: int) -> str:
     from datetime import datetime, timedelta, timezone
 
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(  # noqa: UP017
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(
         timespec="seconds"
     )
 

@@ -239,7 +239,11 @@ async function main() {
     const uiToken = await kpiValue(page, "24h Token");
     const uiCost = await kpiValue(page, "近 24h 花费");
     check(withinTolerance(uiToken, overview.token_24h), "平台 KPI Token 与 API 一致（±2%）", `UI ${uiToken} / API ${expToken}`);
-    check(withinTolerance(uiCost, overview.cost_24h), "平台 KPI 花费与 API 一致（±2%）", `UI ${uiCost} / API ${expCost}`);
+    check(
+      (uiCost === "—" && overview.cost_24h == null) || withinTolerance(uiCost, overview.cost_24h),
+      "平台 KPI 花费与 API 一致（无成本数据时两边都显示 —）",
+      `UI ${uiCost} / API ${expCost}`,
+    );
     // 汇总口径：等于各项目相加（null 安全）
     const sumToken = projects.items.reduce((a, p) => a + (typeof p.stats?.token_24h === "number" ? p.stats.token_24h : 0), 0);
     const costs = projects.items.map((p) => p.stats?.cost_24h).filter((v) => typeof v === "number");
@@ -262,8 +266,8 @@ async function main() {
     check((await activePid(page)) === "demo-b", "侧栏高亮 demo-b", String(await activePid(page)));
     const tabLabels = await page.locator("#view .tabs .tab").evaluateAll((els) => els.map((e) => e.textContent.trim()));
     check(
-      tabLabels.length === TAB_LABELS.length && TAB_LABELS.every((t) => tabLabels.includes(t)),
-      `项目头 ${TAB_LABELS.length} 个 Tab 齐全（含调度与执行记录）`,
+      TAB_LABELS.every((t) => tabLabels.includes(t)) && tabLabels.includes("智能层"),
+      `项目头 Tab 齐全（含调度、执行记录与智能层）`,
       tabLabels.join(" / "),
     );
     const ovText = await page.locator("#view").innerText();
