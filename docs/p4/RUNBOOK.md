@@ -52,6 +52,35 @@ sudo bash /opt/agent-platform/scripts/setup-server-proxy.sh "<订阅链接>"
 # 然后把 agent-platform 的 proxy drop-in 从 17890 改成 7890，并停掉 Mac 上的隧道
 ```
 
+### 0.2 开机自启（Mac 重启后自动恢复）
+
+| 组件 | 位置 | 触发时机 | 说明 |
+|---|---|---|---|
+| 反向隧道 | `/Library/LaunchDaemons/com.agentplatform.proxy-tunnel.plist`（系统级，`UserName=hualei`） | **开机即起，不需要登录** | KeepAlive，崩溃 10 秒后自动重连 |
+| 代理客户端 | 登录项 `MaoMaoYun` | 用户登录后 | 隧道先起、代理后起也没关系：每条连接建立时才转发 |
+| 平台服务 | 服务器 systemd `agent-platform`（enabled） | 服务器开机 | 与 Mac 无关 |
+
+**验证自启是否生效**：
+
+```bash
+sudo launchctl print system/com.agentplatform.proxy-tunnel | grep -E "state|pid"
+osascript -e 'tell application "System Events" to get the name of every login item'
+ssh <ssh-alias> 'ss -ltn | grep 17890'
+```
+
+**注意**：Mac 重启后如果**没有人登录**，代理客户端不会启动，执行器会失败
+（隧道在、出口无）。需要"无人值守也能用"的话，得在 Mac 上开启自动登录，
+这一步需要你的账户密码，我没有代做。
+
+**手动停/启隧道**：
+
+```bash
+sudo launchctl bootout system/com.agentplatform.proxy-tunnel
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.agentplatform.proxy-tunnel.plist
+```
+
+---
+
 **当前状态**：隧道已启用；`DDP_AGENT_PLATFORM_EXECUTOR=on`；material 的
 `execution_enabled=true`。2026-11-07 实测一次真实执行：exit 0，41 秒，
 产出 `ACCEPTANCE.md`，`executions.source='dispatcher'` 有对应记录。
