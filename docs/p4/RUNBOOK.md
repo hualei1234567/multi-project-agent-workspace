@@ -28,19 +28,33 @@ Mac 上如需临时起一份本地实例调试：`scripts/start.sh 8099`（用�
 
 ---
 
-### 0.1 已知限制：执行器的出网依赖
+### 0.1 执行器出网：SSH 反向隧道
 
-服务器上的 `claude` CLI 已安装并配好中转站凭据，但 **`api.teamorouter.com` 需要经由本机代理才能访问**：
+`api.teamorouter.com` 在本地网络里直连不通（TLS 握手被重置），只能经代理访问。
+服务器没有机场订阅，因此**不在服务器上装代理**，改用反向隧道：
 
-- Mac 上代理监听 `127.0.0.1:17890`（Clash 类工具），只绑回环；
-- 服务器直连该域名 TLS 握手失败（IPv4/IPv6 都不通），npm/pypi 等其他站点正常；
-- 因此 **服务器上的执行器（起 `claude` 进程）目前不可用**，`DDP_AGENT_PLATFORM_EXECUTOR` 保持 `off`。
+```
+Mac（127.0.0.1:17890 代理，由 MaoMaoYun/Clash 提供）
+   │  ssh -R 127.0.0.1:17890:127.0.0.1:17890 <ssh-alias>
+   ▼
+服务器 127.0.0.1:17890  ← agent-platform 与 claude CLI 都指向这里
+```
 
-要让执行器在服务器上可用，需要在服务器侧提供出网代理（三选一）：
+- Mac 侧由 launchd `com.agentplatform.proxy-tunnel` 常驻维持，断线自动重连；
+- 服务器侧不需要任何凭据，也不需要改防火墙（连接由 Mac 主动发起）；
+- **代价：Mac 必须开机并联网**，否则执行器不可用（平台其余功能不受影响）。
 
-1. 在笔记本上跑同款代理客户端（推荐，彻底不再依赖 Mac）；
-2. 把 Mac 代理改为监听局域网 + 服务器指过去（Mac 必须常开）；
-3. 开启 Mac 远程登录，服务器建 SSH 反向隧道到 Mac 的 15721/17890。
+切换方式（将来有了订阅就换掉）：
+
+```bash
+# 服务器上导入订阅后
+sudo bash /opt/agent-platform/scripts/setup-server-proxy.sh "<订阅链接>"
+# 然后把 agent-platform 的 proxy drop-in 从 17890 改成 7890，并停掉 Mac 上的隧道
+```
+
+**当前状态**：隧道已启用；`DDP_AGENT_PLATFORM_EXECUTOR=on`；material 的
+`execution_enabled=true`。2026-11-07 实测一次真实执行：exit 0，41 秒，
+产出 `ACCEPTANCE.md`，`executions.source='dispatcher'` 有对应记录。
 
 ---
 
