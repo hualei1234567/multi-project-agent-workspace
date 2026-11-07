@@ -29,6 +29,10 @@ if (( WITH_DATA )); then
   [[ -f data/token ]] && rsync -az data/token "$HOST:$TARGET/data/"
 fi
 
+# 服务器上的仓库路径与 Mac 不同，部署后统一改写（幂等）
+echo "[deploy] 修正远端 repo_root"
+ssh "$HOST" "cd $TARGET && sed -i 's|<HOME>/vscodeworkspace|/home/user/vscodeworkspace|' config/projects.json"
+
 echo "[deploy] 远端跑测试"
 ssh "$HOST" "cd $TARGET && .venv/bin/python -m pytest app/tests -q 2>&1 | tail -3"
 
