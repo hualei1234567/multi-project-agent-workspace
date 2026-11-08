@@ -944,6 +944,10 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .wz-tpl span { display: flex; flex-direction: column; gap: 2px; }
 .wz-tpl em { font-style: normal; font-size: 11.5px; color: var(--muted); }
 .wz-summary { margin: 0; }
+
+.ws-filterbar { justify-content: flex-start; gap: 14px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.ws-filterbar label { display: inline-flex; align-items: center; gap: 6px; }
+.ws-filterbar select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12.5px; }
 .ws-searchbar { display: flex; gap: 10px; margin: 4px 0 16px; }
 .ws-searchbar input { flex: 1; }
 .ws-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 4px 0 16px; }
@@ -1793,7 +1797,7 @@ function paintWorkspace(kind) {
   const data = WS[kind];
   if (!data) { body.innerHTML = wsStateBox(kind); return; }
   if (kind === "work") body.innerHTML = workHTML(data);
-  else if (kind === "portfolio") body.innerHTML = portfolioHTML(data);
+  else if (kind === "portfolio") { body.innerHTML = portfolioHTML(data); bindPortfolioFilters(data); }
   else body.innerHTML = inboxHTML(data);
   if (kind === "inbox") {
     const badge = $("#nav-inbox-badge");
@@ -1853,6 +1857,43 @@ function workHTML(d) {
     <section class="ws-panel"><h3>最近执行</h3><ul>${rows(d.executions.map(execRow), "暂无执行记录")}</ul></section>`;
 }
 
+
+function bindPortfolioFilters(d) {
+  const params = ROUTE.params || new URLSearchParams();
+  const riskSel = $("#pf-risk"), qSel = $("#pf-quality"), grid = $("#pf-grid"), counter = $("#pf-count");
+  if (!grid) return;
+  riskSel.value = params.get("risk") || "";
+  qSel.value = params.get("quality") || "";
+  const apply = () => {
+    const next = new URLSearchParams();
+    if (riskSel.value) next.set("risk", riskSel.value);
+    if (qSel.value) next.set("quality", qSel.value);
+    const qs = next.toString();
+    history.replaceState(null, "", location.pathname + location.search + `#/portfolio${qs ? "?" + qs : ""}`);
+    ROUTE.params = next;
+    const shown = (d.projects || []).filter(x =>
+      (!riskSel.value || x.risk === riskSel.value) &&
+      (!qSel.value || x.data_quality === qSel.value));
+    const pct = (o) => o.completion == null ? 0 : Math.round(o.completion * 100);
+    grid.innerHTML = shown.map(p0 => {
+      const t0 = p0.tasks || {};
+      return `<article class="ws-proj" data-enter="1" data-pid="${esc(p0.id)}">
+        <div class="ws-proj-head"><b>${esc(p0.name)}</b>${riskBadge(p0.risk)}</div>
+        <div class="ws-proj-code">${esc(p0.code || "")} · ${esc(p0.status || "")}</div>
+        <div class="ws-bar"><i style="width:${pct(t0)}%"></i></div>
+        <div class="ws-proj-stats"><span>完成 ${t0.done ?? "—"}/${t0.total ?? "—"}</span>
+          <span>阻塞 ${t0.blocked ?? "—"}</span><span>待验收 ${p0.pending_deliveries ?? "—"}</span>
+          <span>待审批 ${p0.pending_approvals ?? "—"}</span></div>
+        <div class="ws-sub">最近活动 ${p0.last_active_at ? esc(ago(p0.last_active_at)) : "无记录"}</div>
+      </article>`;
+    }).join("") || emptyBox("没有匹配的项目", "调整筛选条件试试");
+    if (counter) counter.textContent = `显示 ${shown.length} / ${(d.projects || []).length}`;
+  };
+  riskSel.onchange = apply;
+  qSel.onchange = apply;
+  apply();
+}
+
 function portfolioHTML(d) {
   const cards = (d.projects || []).map(p => {
     const t = p.tasks || {};
@@ -1884,7 +1925,47 @@ function portfolioHTML(d) {
       ${wsMetric("待审批", s.pending_approvals ?? "—")}
     </div>
     ${d.note ? `<p class="ws-note">${esc(d.note)}</p>` : ""}
-    <div class="ws-grid">${cards || emptyBox("暂无项目", "还没有可见的项目")}</div>`;
+    <div class="ws-toolbar ws-filterbar">
+      <label>风险
+        <select id="pf-risk">
+          <option value="">全部</option>
+          <option value="high">高风险</option>
+          <option value="medium">关注</option>
+          <option value="low">正常</option>
+        </select>
+      </label>
+      <label>数据
+        <select id="pf-quality">
+          <option value="">全部</option>
+          <option value="fresh">新鲜</option>
+          <option value="stale">陈旧</option>
+        </select>
+      </label>
+      <span class="ws-sub" id="pf-count"></span>
+    </div>
+    <div class="ws-grid" id="pf-grid"></div>`;
+
+  const params = (ROUTE.params || new URLSearchParams());
+  const risk = params.get("risk") || "";
+  const quality = params.get("quality") || "";
+  const all = d.projects || [];
+  const shown = all.filter(x => (!risk || x.risk === risk) && (!quality || x.data_quality === quality));
+  const cardHTML = (d0) => (d0.projects || []).map(p0 => {
+    const t0 = p0.tasks || {};
+    const pct0 = t0.completion == null ? null : Math.round(t0.completion * 100);
+    return `<article class="ws-proj" data-enter="1" data-pid="${esc(p0.id)}">
+      <div class="ws-proj-head"><b>${esc(p0.name)}</b>${riskBadge(p0.risk)}</div>
+      <div class="ws-proj-code">${esc(p0.code || "")} · ${esc(p0.status || "")}</div>
+      <div class="ws-bar"><i style="width:${pct0 == null ? 0 : pct0}%"></i></div>
+      <div class="ws-proj-stats">
+        <span>完成 ${t0.done ?? "—"}/${t0.total ?? "—"}</span>
+        <span>阻塞 ${t0.blocked ?? "—"}</span>
+        <span>待验收 ${p0.pending_deliveries ?? "—"}</span>
+        <span>待审批 ${p0.pending_approvals ?? "—"}</span>
+      </div>
+      <div class="ws-sub">最近活动 ${p0.last_active_at ? esc(ago(p0.last_active_at)) : "无记录"}</div>
+    </article>`;
+  }).join("");
 }
 
 function inboxHTML(d) {
