@@ -300,6 +300,7 @@ section { display: grid; gap: 16px; min-width: 0; }
 .roster { position: relative; display: block; }
 .roster::before { content: none; }
 .org-tree { position: relative; display: flex; flex-direction: column; align-items: center; }
+.org-owner-row { display: flex; justify-content: center; gap: 20px; width: 100%; flex-wrap: wrap; }
 .org-owner { width: min(560px, 100%); }
 .org-owner .role-card { min-height: 116px; border-color: color-mix(in srgb, var(--primary) 34%, var(--line)); box-shadow: var(--shadow-sm); }
 .org-bus { position: relative; width: 100%; height: 34px; flex: none; }
@@ -2257,29 +2258,30 @@ function renderRoster(rows) {
       </div>
     </article>`;
 
+  // 布局规则（固定）：General Owner 置顶居中单独一行，其余角色每行 3 个。
+  // 不依赖后端给的 layer 数值——数据里层级缺失或全为同一层时也要稳定成型。
+  const ROLE_ORDER = ["product-manager", "system-architect", "ux-designer",
+                      "frontend-engineer", "backend-engineer", "qa-devops"];
+  const isOwner = r => /owner/i.test(r.role || "") || /主会话/.test(r.form || "");
+  const owners = list.filter(isOwner);
+  const rest = list.filter(r => !isOwner(r)).sort((a, b) => {
+    const ia = ROLE_ORDER.indexOf(String(a.role || "").toLowerCase().replace(/\s+/g, "-"));
+    const ib = ROLE_ORDER.indexOf(String(b.role || "").toLowerCase().replace(/\s+/g, "-"));
+    const ra = ia < 0 ? 99 : ia, rb = ib < 0 ? 99 : ib;
+    if (ra !== rb) return ra - rb;
+    return String(a.role).localeCompare(String(b.role));
+  });
+
   const row = group => `<div class="org-row">${group.map(r => `<div class="org-cell">${card(r)}</div>`).join("")}</div>`;
   const bus = `<div class="org-bus" aria-hidden="true"></div>`;
-  const levels = list.map(r => Number(r.layer ?? r.level)).filter(n => Number.isFinite(n));
   const parts = [];
-  if (levels.length === list.length) {
-    const groups = new Map();
-    for (const r of list) {
-      const lv = Number(r.layer ?? r.level);
-      if (!groups.has(lv)) groups.set(lv, []);
-      groups.get(lv).push(r);
-    }
-    [...groups.keys()].sort((a, b) => a - b).forEach((lv, i) => {
-      const g = groups.get(lv);
-      if (i > 0) parts.push(bus);
-      parts.push(i === 0 && g.length === 1 ? `<div class="org-owner">${card(g[0])}</div>` : row(g));
-    });
-  } else {
-    const owner = list.filter(r => /主会话/.test(r.form || ""));
-    const readOnly = list.filter(r => !/主会话/.test(r.form || "") && /Subagent/.test(r.form || ""));
-    const builders = list.filter(r => !owner.includes(r) && !readOnly.includes(r));
-    if (owner.length) parts.push(`<div class="org-owner">${owner.map(card).join("")}</div>`);
-    if (readOnly.length) parts.push(owner.length ? bus : "", row(readOnly));
-    if (builders.length) parts.push(readOnly.length ? bus : (owner.length ? bus : ""), row(builders));
+  if (owners.length) {
+    // 多个 main session 时仍居中排列，但只在第一行
+    parts.push(`<div class="org-owner-row">${owners.map(r => `<div class="org-owner">${card(r)}</div>`).join("")}</div>`);
+  }
+  for (let i = 0; i < rest.length; i += 3) {
+    if (i === 0) parts.push(bus);
+    parts.push(row(rest.slice(i, i + 3)));
   }
   el.innerHTML = `<div class="org-tree">${parts.filter(Boolean).join("")}</div>`;
   $$(".role-card", el).forEach(cardEl => {
