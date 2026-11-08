@@ -32,7 +32,7 @@ QUIET_WINDOW_SECONDS=90
 
 dispatch_state() {
   ssh "$HOST" "cd $TARGET && .venv/bin/python - <<'PY' 2>/dev/null || echo ERR
-import sqlite3, datetime
+import subprocess, sqlite3, datetime
 c = sqlite3.connect('data/platform.db')
 now = datetime.datetime.now(datetime.timezone.utc)
 cut = (now - datetime.timedelta(seconds=$QUIET_WINDOW_SECONDS)).isoformat(timespec='seconds')
@@ -45,7 +45,14 @@ recent = c.execute(
 queued = c.execute(
     \"select count(*) from dispatch_items where status = 'queued'\"
 ).fetchone()[0]
-print(f'run={run} recent={recent} queued={queued}')
+# 数据库状态可能滞后于进程：正在跑的 claude -p 一律算忙，宁可多等一轮
+try:
+    # -x 只认可执行名 claude：避免 ssh 包装命令里出现同一串文本而自匹配
+    out = subprocess.run(['pgrep', '-xc', 'claude'], capture_output=True, text=True)
+    proc = int((out.stdout or '0').strip() or 0)
+except Exception:
+    proc = -1
+print(f'run={run} recent={recent} queued={queued} proc={proc}')
 PY"
 }
 
@@ -53,18 +60,20 @@ parse_state() {
   RUNNING="$(echo "$1" | sed -n 's/.*run=\([0-9]*\).*/\1/p')"
   RECENT="$(echo "$1" | sed -n 's/.*recent=\([0-9]*\).*/\1/p')"
   QUEUED="$(echo "$1" | sed -n 's/.*queued=\([0-9]*\).*/\1/p')"
+  PROC="$(echo "$1" | sed -n 's/.*proc=\(-\{0,1\}[0-9]*\).*/\1/p')"
 }
 
 if (( ! FORCE )); then
   echo "[deploy] 检查在途调度项"
   STATE="$(dispatch_state)"
   parse_state "$STATE"
-  if [[ -z "$RUNNING" ]]; then
+  if [[ -z "$RUNNING" || -z "$PROC" ]]; then
     echo "[deploy] ⚠ 读不到调度状态（$STATE），按有风险处理；确认无影响后加 --force"
     exit 2
   fi
-  if (( RUNNING > 0 )); then
-    echo "[deploy] ✘ 有正在执行的调度项：$STATE"
+  # 数据库状态可能滞后于进程：以正在跑的 claude -p 为准，宁可多等一轮
+  if (( RUNNING > 0 || PROC > 0 )); then
+    echo "[deploy] ✘ 有正在执行的调度项或 claude -p 进程：$STATE"
     echo "         重启会杀掉执行器拉起的 claude 进程；等它们结束，或确认无影响后加 --force"
     exit 2
   fi
@@ -105,12 +114,12 @@ if (( ! FORCE )); then
   for ((i = 0; i < 18; i++)); do
     STATE="$(dispatch_state)"
     parse_state "$STATE"
-    if [[ -z "$RUNNING" ]]; then
+    if [[ -z "$RUNNING" || -z "$PROC" ]]; then
       echo "[deploy] ⚠ 读不到调度状态（$STATE），跳过重启；确认后可加 --force 重跑" >&2
       exit 2
     fi
-    if (( RUNNING > 0 )); then
-      echo "[deploy] ✘ 重启前发现执行器已启动：$STATE" >&2
+    if (( RUNNING > 0 || PROC > 0 )); then
+      echo "[deploy] ✘ 重启前发现执行器已启动（或 claude -p 仍在跑）：$STATE" >&2
       echo "         已跳过重启（代码已同步，服务仍在跑旧版本）；等任务结束后重跑本脚本" >&2
       exit 2
     fi
