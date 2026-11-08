@@ -943,3 +943,138 @@ def backfill(conn: sqlite3.Connection, project: dict[str, Any]) -> dict[str, int
     counts.update(backfill_events_and_tokens(conn, project))
     counts["executions"] = backfill_executions(conn, project)
     return counts
+
+
+# ---------------------------------------------------------------------------
+# 会话实时流（主会话 + subagent 的 transcript）
+# ---------------------------------------------------------------------------
+SESSION_STALE_SECONDS = 300
+
+
+def session_files(project: dict[str, Any]) -> list[dict[str, Any]]:
+    """按项目登记的 slug 列出会话 transcript 文件。
+
+    主会话：``<slug>/<session_id>.jsonl``；
+    Subagent：``<slug>/<session_id>/subagents/agent-<agent_id>.jsonl``。
+    """
+    root = projects_root()
+    out: list[dict[str, Any]] = []
+    for slug in project.get("session_slugs") or []:
+        slug_dir = root / str(slug)
+        if not slug_dir.is_dir():
+            continue
+        for path in sorted(slug_dir.glob("*.jsonl")):
+            out.append({"path": path, "session_id": path.stem, "kind": "main",
+                        "agent_id": None, "meta": None})
+        for session_dir in sorted(p for p in slug_dir.iterdir() if p.is_dir()):
+            sub = session_dir / "subagents"
+            if not sub.is_dir():
+                continue
+            for meta_path in sorted(sub.glob("*.meta.json")):
+                transcript = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
+                if not transcript.is_file():
+                    continue
+                agent_id = meta_path.name[len("agent-"):].replace(".meta.json", "") if meta_path.name.startswith("agent-") else None
+                out.append({"path": transcript, "session_id": session_dir.name, "kind": "subagent",
+                            "agent_id": agent_id, "meta": _read_json(meta_path)})
+    return out
+
+
+def _trace_result_text(block: dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content[:1200]
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif item.get("type") == "image":
+                    parts.append("[图片]")
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(p for p in parts if p)[:1200]
+    return ""
+
+
+def _trace_tool_detail(payload: dict[str, Any]) -> str:
+    for key in ("description", "command", "file_path", "pattern", "query", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\n", " ")[:160]
+    return ""
+
+
+def parse_transcript_trace(path: Path, limit: int = 160) -> dict[str, Any]:
+    """把 transcript 还原成时间线：思考 / 文本 / 工具调用+结果。"""
+    events: list[dict[str, Any]] = []
+    pending: dict[str, int] = {}
+    tokens = 0
+    model = None
+    started_at = None
+    last_at = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                ts = rec.get("timestamp")
+                if ts:
+                    started_at = started_at or ts
+                    last_at = ts
+                message = rec.get("message") or {}
+                if not isinstance(message, dict):
+                    continue
+                if message.get("model"):
+                    model = message["model"]
+                usage = message.get("usage") or {}
+                if isinstance(usage, dict):
+                    tokens += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    kind = block.get("type")
+                    if kind == "thinking":
+                        text = str(block.get("thinking") or "").strip()
+                        if text:
+                            events.append({"kind": "thinking", "text": text[:900], "at": ts})
+                    elif kind == "text":
+                        text = str(block.get("text") or "").strip()
+                        if text:
+                            events.append({"kind": "text", "text": text[:900], "at": ts})
+                    elif kind == "tool_use":
+                        pending[str(block.get("id"))] = len(events)
+                        events.append({
+                            "kind": "tool",
+                            "tool": block.get("name"),
+                            "detail": _trace_tool_detail(block.get("input") or {}),
+                            "at": ts,
+                        })
+                    elif kind == "tool_result":
+                        output = _trace_result_text(block)
+                        ok = not block.get("is_error")
+                        idx = pending.get(str(block.get("tool_use_id")))
+                        if idx is not None and idx < len(events):
+                            events[idx]["result"] = output
+                            events[idx]["ok"] = ok
+                        else:
+                            events.append({"kind": "result", "text": output, "ok": ok, "at": ts})
+    except OSError:
+        return {"ok": False, "error": "unreadable"}
+    total = len(events)
+    return {
+        "ok": True,
+        "events": events[-limit:] if total > limit else events,
+        "events_total": total,
+        "truncated": total > limit,
+        "tokens": tokens,
+        "model": model,
+        "started_at": started_at,
+        "last_at": last_at,
+    }

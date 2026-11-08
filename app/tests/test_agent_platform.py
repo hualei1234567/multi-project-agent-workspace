@@ -522,6 +522,20 @@ def test_state_endpoint_isolation_and_legacy_fields(http_server, env, monkeypatc
     assert missing["detail"]["code"] == "project_not_found"
 
 
+def test_state_roster_uses_platform_status_when_no_ai_team(env, http_server, tmp_path):
+    """模式 B：仓库没有 ai-team/status 时，花名册读平台库，默认 idle。"""
+    plain = tmp_path / "plain-repo"
+    plain.mkdir()
+    service.create_project({
+        "code": "plain", "name": "Plain", "repo_root": str(plain),
+        "session_slugs": [],
+    })
+    code, state = _request(http_server, "/api/state?project=plain")
+    assert code == 200
+    assert state["roster"]
+    assert all(item["status"] == "idle" for item in state["roster"])
+
+
 def test_projects_api_contract(http_server):
     code, data = _request(http_server, "/api/projects")
     assert code == 200

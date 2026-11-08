@@ -112,6 +112,8 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/events"),
     ("GET", "/api/projects/{project_id}/timeline"),
     ("GET", "/api/projects/{project_id}/agents/activity"),
+    ("GET", "/api/projects/{project_id}/sessions"),
+    ("GET", "/api/projects/{project_id}/sessions/{session_id}"),
     ("PUT", "/api/projects/{project_id}/favorite"),
     ("DELETE", "/api/projects/{project_id}/favorite"),
     ("POST", "/api/projects/{project_id}/visit"),
@@ -732,6 +734,15 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/agents/activity": {
             "get": project_op("get", "Agent 执行状态与历史：当前状态、最近执行、事件与执行记录",
                               ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/sessions": {
+            "get": project_op("get", "会话列表：主会话与 subagent 的实时状态、最后一步",
+                              ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/sessions/{session_id}": {
+            "get": project_op("get", "会话实时时间线：思考/文本/工具调用+结果",
+                              params=[_param("session_id", "path", required=True), _param("limit", "query")],
+                              ok_schema={"type": "object"}, errors=(404, 409))[2]
         },
         "/api/projects/{project_id}/timeline": {
             "get": project_op("get", "执行时间线：四态（运行中/失败/未验证/成功）由证据推导", params=[_param("state", "query"), _param("limit", "query")])[2]

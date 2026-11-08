@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1344,6 +1345,144 @@ def agent_activity(project_id: str) -> dict[str, Any]:
             },
             "agents": out,
         }
+
+
+# ---------------------------------------------------------------------------
+# 会话实时流（点进会话看 Agent 真正在跑什么）
+# ---------------------------------------------------------------------------
+#: 文件多久没有新写入算「停滞」
+SESSION_STALE_SECONDS = 300
+
+
+def _session_role_map(conn: sqlite3.Connection, project_id: str) -> tuple[dict[str, dict[str, Any]], str | None]:
+    roles: dict[str, dict[str, Any]] = {}
+    owner_id = None
+    for row in conn.execute(
+        "SELECT id, role_key, display_name FROM project_agents WHERE project_id = ?",
+        (project_id,),
+    ):
+        roles[row["id"]] = dict(row)
+        if row["role_key"] == "general-owner":
+            owner_id = row["id"]
+    return roles, owner_id
+
+
+def list_sessions(project_id: str) -> dict[str, Any]:
+    """项目内可查看的会话（主会话 + subagent），带运行中提示与最后一步。"""
+    with store.session() as conn:
+        project = _require_project(conn, project_id)
+        roles, owner_id = _session_role_map(conn, project_id)
+    now = time.time()
+    items: list[dict[str, Any]] = []
+    for item in sources.session_files(project):
+        path = item["path"]
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        age = now - stat.st_mtime
+        trace = sources.parse_transcript_trace(path, limit=1)
+        agent_id = item.get("agent_id") or owner_id
+        role = roles.get(agent_id or "", {})
+        finished = bool((item.get("meta") or {}).get("finished"))
+        if finished:
+            status, status_text = "done", "已完成"
+        elif age > SESSION_STALE_SECONDS:
+            status, status_text = "stalled", "疑似停滞"
+        else:
+            status, status_text = "running", "运行中"
+        last_event = (trace.get("events") or [{}])[-1]
+        items.append({
+            "session_id": item["session_id"],
+            "kind": item["kind"],
+            "agent_id": agent_id,
+            "agent_name": role.get("display_name") or (item.get("meta") or {}).get("agentType") or "未归属",
+            "role_key": role.get("role_key"),
+            "description": (item.get("meta") or {}).get("description") or "",
+            "path": str(path),
+            "status": status,
+            "status_text": status_text,
+            "started_at": trace.get("started_at"),
+            "last_event_at": store.from_mtime(stat.st_mtime),
+            "idle_seconds": int(age),
+            "events_total": trace.get("events_total") or 0,
+            "tokens": trace.get("tokens") or 0,
+            "model": trace.get("model"),
+            "last_step": (
+                last_event.get("tool") or last_event.get("kind") or ""
+            ),
+            "last_detail": last_event.get("detail") or last_event.get("text") or "",
+        })
+    items.sort(key=lambda x: str(x.get("last_event_at") or ""), reverse=True)
+    live = sum(1 for x in items if x["status"] == "running")
+    return {
+        "project_id": project_id,
+        "generated_at": store.now_iso(),
+        "total": len(items),
+        "running": live,
+        "items": items,
+    }
+
+
+def session_trace(project_id: str, session_id: str, *, limit: int = 160) -> dict[str, Any]:
+    """单个会话的实时时间线；结构与 ``/api/agent/{id}`` 一致，前端复用同一个面板。"""
+    limit = max(20, min(int(limit or 160), 400))
+    with store.session() as conn:
+        project = _require_project(conn, project_id)
+        roles, owner_id = _session_role_map(conn, project_id)
+    matches = [
+        item for item in sources.session_files(project)
+        if item["session_id"] == session_id
+        and (item["kind"] == "main" or True)
+    ]
+    if not matches:
+        raise PlatformError("not_found", 404, "会话不存在")
+    # 主会话与 subagent 可能同 session_id：优先主会话，其次最近写入的
+    def _mtime(item):
+        try:
+            return item["path"].stat().st_mtime
+        except OSError:
+            return 0
+    matching = [x for x in matches if x["kind"] == "main"] or matches
+    item = max(matching, key=_mtime)
+    path = item["path"]
+    trace = sources.parse_transcript_trace(path, limit=limit)
+    if not trace.get("ok"):
+        raise PlatformError("unreadable", 409, "会话文件不可读")
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    age = (time.time() - stat.st_mtime) if stat else None
+    finished = bool((item.get("meta") or {}).get("finished"))
+    if finished:
+        status, status_text = "done", "已完成"
+    elif age is not None and age > SESSION_STALE_SECONDS:
+        status, status_text = "stalled", "疑似停滞"
+    else:
+        status, status_text = "running", "运行中"
+    agent_id = item.get("agent_id") or owner_id
+    role = roles.get(agent_id or "", {})
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "kind": item["kind"],
+        "agent_id": agent_id,
+        "description": (item.get("meta") or {}).get("description")
+        or role.get("display_name") or item["kind"],
+        "agent_type": (item.get("meta") or {}).get("agentType")
+        or role.get("role_key") or item["kind"],
+        "status": status,
+        "status_text": status_text,
+        "started_at": trace.get("started_at"),
+        "last_event_at": store.from_mtime(stat.st_mtime) if stat else trace.get("last_at"),
+        "idle_seconds": int(age) if age is not None else None,
+        "tokens": trace.get("tokens") or 0,
+        "events_total": trace.get("events_total") or 0,
+        "truncated": bool(trace.get("truncated")),
+        "events": trace.get("events") or [],
+        "model": trace.get("model"),
+    }
 
 
 def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:

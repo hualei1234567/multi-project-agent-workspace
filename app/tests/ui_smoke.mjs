@@ -691,6 +691,27 @@ async function main() {
     await page.locator("#drawer-close").click().catch(() => {});
     await settle(page, 300);
 
+    // ------------------------------------------------ 8.7) 实时会话
+    const sessApi = await fetch(`${BASE}/api/projects/material/sessions`).then(r => r.json()).catch(() => ({}));
+    check(typeof sessApi.total === "number", "会话接口返回总数", String(sessApi.total));
+    await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="sessions-list"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const sessText = await page.locator('[data-testid="sessions-list"]').innerText().catch(() => "");
+    if (sessApi.total > 0) {
+      await page.locator('[data-testid="session-row"]').first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+      const rows = await page.locator('[data-testid="session-row"]').count();
+      check(rows > 0, "会话列表渲染出真实会话", `rows=${rows}`);
+      await page.locator('[data-testid="session-row"]').first().click();
+      await page.locator("#trace.show").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+      await page.waitForFunction(() => (document.querySelector("#trace-body")?.innerText || "").trim().length > 0,
+        null, { timeout: 15000 }).catch(() => {});
+      const traceText = await page.locator("#trace-body").innerText().catch(() => "");
+      check(traceText.trim().length > 0, "点开会话能看到真实执行流", traceText.replace(/\s+/g, " ").slice(0, 60));
+      await page.locator("#trace-close").click().catch(() => {});
+    } else {
+      check(/没有可查看的会话|暂无/.test(sessText), "无会话时给出明确说明", sessText.replace(/\s+/g, " ").slice(0, 60));
+    }
+
     // ------------------------------------------------ 8.6) 主题化下拉
     await page.goto(`${BASE}/#/portfolio`, { waitUntil: "domcontentloaded" });
     await settle(page, 800);

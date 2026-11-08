@@ -1180,6 +1180,29 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   .nsel-btn { min-height: 36px; }
 }
 
+
+/* ---------- 实时会话 ---------- */
+.sess-list { display: flex; flex-direction: column; gap: 6px; }
+.sess-row { display: grid; grid-template-columns: 8px 120px 76px 84px 1fr auto auto; gap: 10px; align-items: center;
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+  color: var(--fg); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, transform .12s ease; }
+.sess-row:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.sess-row:active { transform: translateY(1px); }
+.sess-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-kind { color: var(--muted); font-size: 11.5px; }
+.sess-id { color: var(--muted); font-size: 11px; }
+.sess-step { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-meta { color: var(--muted); font-size: 11.5px; }
+.sess-state { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.sess-state.running { color: var(--accent); border-color: currentColor; }
+.sess-state.stalled { color: var(--warn, #d29922); border-color: currentColor; }
+.sess-state.done { color: var(--ok, #3fb950); border-color: currentColor; }
+@media (max-width: 900px) {
+  .sess-row { grid-template-columns: 8px 1fr auto; }
+  .sess-kind, .sess-id, .sess-step, .sess-meta { display: none; }
+}
+
 </style>
 </head>
 <body>
@@ -3001,6 +3024,68 @@ function renderExecutionsPage(el) {
 
 /* ---------- Agent 页 ---------- */
 const AGENT_ACT = { data: null, projectId: null, at: 0, busy: false, error: null };
+const SESS = { data: null, projectId: null, at: 0, busy: false, error: null };
+
+async function loadSessions(force = false) {
+  const p = APP.currentProject;
+  if (!p) return;
+  const fresh = SESS.projectId === p.id && Date.now() - SESS.at < 5000;
+  if (!force && fresh) return;
+  if (SESS.busy) return;
+  SESS.busy = true;
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/sessions`);
+    if (APP.currentProject?.id !== p.id) return;
+    SESS.data = d;
+    SESS.projectId = p.id;
+    SESS.at = Date.now();
+    SESS.error = null;
+  } catch (e) {
+    if (APP.currentProject?.id !== p.id) return;
+    SESS.error = errText(e) || "会话列表不可用";
+    SESS.data = null;
+  } finally {
+    SESS.busy = false;
+    paintSessions();
+  }
+}
+
+function sessionStatusDot(status) {
+  const cls = { running: "live active", stalled: "risk", done: "active" }[status] || "paused";
+  return `<span class="pdot ${cls}"></span>`;
+}
+
+function paintSessions() {
+  const box = $("#sessions-list");
+  if (!box) return;
+  const counter = $("#sessions-count");
+  if (SESS.error) {
+    box.innerHTML = `<div class="form-err">${esc(SESS.error)}</div>`;
+    if (counter) counter.textContent = "";
+    return;
+  }
+  const d = SESS.data;
+  if (!d) { box.innerHTML = skeletonBox(90); return; }
+  if (counter) counter.textContent = `${d.running || 0} 个运行中 / ${d.total || 0}`;
+  if (!d.total) {
+    box.innerHTML = emptyBox("没有可查看的会话", "该项目名下还没有 Claude 会话记录（检查 session_slugs 是否指向真实会话目录）");
+    return;
+  }
+  box.innerHTML = (d.items || []).map(it => `
+    <button type="button" class="sess-row" data-session="${esc(it.session_id)}" data-testid="session-row"
+      title="点开看这个会话正在跑什么">
+      ${sessionStatusDot(it.status)}
+      <span class="sess-agent">${esc(it.agent_name || "未归属")}</span>
+      <span class="sess-kind">${it.kind === "main" ? "主会话" : "Subagent"}</span>
+      <span class="sess-id mono">${esc(String(it.session_id).slice(0, 8))}</span>
+      <span class="sess-step">${it.last_step ? `最后一步 ${esc(it.last_step)}` : "暂无步骤"}${it.last_detail ? ` · ${esc(String(it.last_detail).slice(0, 60))}` : ""}</span>
+      <span class="sess-meta">事件 ${it.events_total ?? 0} · ${esc(it.idle_seconds != null ? `${it.idle_seconds}s 前` : "—")}</span>
+      <span class="sess-state ${esc(it.status)}">${esc(it.status_text)}</span>
+    </button>`).join("");
+  $$("#sessions-list .sess-row").forEach(row => {
+    row.onclick = () => openSessionTrace(row.dataset.session);
+  });
+}
 
 function agentRoleKey(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -3103,13 +3188,19 @@ function renderAgentsPage(el) {
       <div class="roster" id="roster"></div>
     </section>
     <section>
+      <div class="sec-head"><h2>实时会话</h2><span class="desc">点开看 Agent 真正在跑什么 · 5 秒刷新</span><span class="count" id="sessions-count"></span></div>
+      <div class="panel"><div class="panel-body"><div class="sess-list" id="sessions-list" data-testid="sessions-list"></div></div></div>
+    </section>
+    <section>
       <div class="sec-head"><h2>执行记录</h2><span class="desc">最近运行的 Subagent · 点击展开执行流</span><span class="count" id="agent-count"></span></div>
       <div class="agents" id="agents"></div>
       <button class="more" id="agents-more" style="display:none"></button>
     </section>`;
   renderRoster(roster);
   renderAgents(agents);
+  paintSessions();
   loadAgentActivity();
+  loadSessions();
 }
 
 function _unusedRenderAgentsPage(el) {
@@ -5055,6 +5146,20 @@ function openRole(roleName) {
           <span class="lb">${esc(ev.type_label)}${ev.tool ? ` · ${esc(ev.tool)}` : ""}</span>
           <span class="dt"><span class="tl-state ${esc(ev.state)}">${esc(ev.state_label)}</span> ${esc(ev.message || "—")}</span>
         </li>`).join("")}</ul>` : `<div class="empty">没有采集到该 Agent 的事件</div>`}
+        ${(() => {
+          const mine = (SESS.data && SESS.projectId === APP.currentProject?.id)
+            ? (SESS.data.items || []).filter(it => agentRoleKey(it.role_key || it.agent_name) === agentRoleKey(roleName))
+            : [];
+          return mine.length ? `<div class="sub-title" style="margin:12px 0 6px">实时会话（${mine.length}）</div>
+            <div class="sess-list">${mine.map(it => `
+              <button type="button" class="sess-row" data-session="${esc(it.session_id)}">
+                ${sessionStatusDot(it.status)}
+                <span class="sess-agent">${esc(it.agent_name || "未归属")}</span>
+                <span class="sess-id mono">${esc(String(it.session_id).slice(0, 8))}</span>
+                <span class="sess-step">${it.last_step ? esc(it.last_step) : "暂无步骤"}</span>
+                <span class="sess-state ${esc(it.status)}">${esc(it.status_text)}</span>
+              </button>`).join("")}</div>` : "";
+        })()}
         ${exs.length ? `<ul class="dlv-hist" style="margin-top:8px">${exs.map(ex => `<li>
           <span class="at mono">${esc(ago(ex.finished_at || ex.started_at))}</span>
           <span class="lb">${esc(ex.status || "unknown")}</span>
@@ -5075,6 +5180,9 @@ function openRole(roleName) {
     </div>`;
   $$("#drawer-body .list-item[data-agent]").forEach(item => {
     item.onclick = () => openTrace(item.dataset.agent);
+  });
+  $$("#drawer-body .sess-row[data-session]").forEach(item => {
+    item.onclick = () => openSessionTrace(item.dataset.session);
   });
   mask.classList.add("show"); drawer.classList.add("show"); drawer.setAttribute("aria-hidden", "false");
   $("#drawer-close").focus();
@@ -5103,7 +5211,7 @@ let traceTimer = null;
 function stopTrace() {
   if (traceTimer) { clearInterval(traceTimer); traceTimer = null; }
   traceEl.classList.remove("show"); traceEl.setAttribute("aria-hidden", "true");
-  APP.traceAgentId = null; APP.traceProjectId = null;
+  APP.traceKey = null; APP.traceKind = null; APP.traceId = null; APP.traceProjectId = null;
   if (!drawer.classList.contains("show") && !modal.classList.contains("show")) mask.classList.remove("show");
 }
 $("#trace-close").onclick = () => { stopTrace(); restoreFocus(); };
@@ -5138,43 +5246,63 @@ function renderTrace(d) {
   }
 }
 
-async function loadTrace(agentId) {
-  if (!agentId || APP.traceAgentId !== agentId) return;
+async function loadTracePanel() {
+  const kind = APP.traceKind || "agent";
+  const id = APP.traceId;
+  if (!id) return;
+  const pid = APP.traceProjectId;
+  const url = kind === "session"
+    ? `/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`
+    : `/api/agent/${encodeURIComponent(id)}`;
+  const key = `${kind}:${id}`;
   try {
-    const res = await apiFetch(`/api/agent/${encodeURIComponent(agentId)}`, { cache: "no-store" });
+    const res = await apiFetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
     if (!d.ok) throw new Error(d.error || "读取失败");
-    if (APP.traceAgentId !== agentId) return;
+    if (`${APP.traceKind}:${APP.traceId}` !== key) return;
     renderTrace(d);
-    if (d.status !== "running" && traceTimer) { clearInterval(traceTimer); traceTimer = null; }
+    // 会话面板保持轮询：用户点开就是为了看实时；Agent 面板跑完即停
+    if (kind !== "session" && d.status !== "running" && traceTimer) {
+      clearInterval(traceTimer); traceTimer = null;
+    }
   } catch (e) {
-    if (APP.traceAgentId !== agentId) return;
+    if (`${APP.traceKind}:${APP.traceId}` !== key) return;
     traceBody.innerHTML = `<div class="banner">读取失败：${esc(e.message)}</div>`;
   }
 }
 
-function openTrace(agentId) {
-  if (!agentId) return;
-  const projectId = APP.currentProject?.id || "";
-  if (APP.traceAgentId === agentId && traceEl.classList.contains("show")) return;
+function openTracePanel(kind, id, title) {
+  if (!id) return;
+  const key = `${kind}:${id}`;
+  if (APP.traceKey === key && traceEl.classList.contains("show")) return;
   rememberFocus();
   if (traceTimer) { clearInterval(traceTimer); traceTimer = null; }
-  APP.traceAgentId = agentId;
-  APP.traceProjectId = projectId;
+  APP.traceKey = key;
+  APP.traceKind = kind;
+  APP.traceId = id;
+  APP.traceProjectId = APP.currentProject?.id || "";
   traceBody.dataset.fresh = "1";
   traceBody.innerHTML = `<div class="skeleton" style="height:70px"></div>`;
-  $("#trace-title").textContent = "执行流";
+  $("#trace-title").textContent = title || (kind === "session" ? "实时会话" : "执行流");
   $("#trace-badge").innerHTML = "";
   mask.classList.add("show");
   traceEl.classList.add("show"); traceEl.setAttribute("aria-hidden", "false");
-  loadTrace(agentId);
+  loadTracePanel();
   traceTimer = setInterval(() => {
     if (APP.paused || document.hidden) return;
-    if (!APP.traceAgentId || APP.traceProjectId !== (APP.currentProject?.id || "")) { stopTrace(); return; }
-    loadTrace(agentId);
+    if (!APP.traceKey || APP.traceProjectId !== (APP.currentProject?.id || "")) { stopTrace(); return; }
+    loadTracePanel();
   }, 1500);
   $("#trace-close").focus();
+}
+
+function openTrace(agentId) {
+  openTracePanel("agent", agentId, "执行流");
+}
+
+function openSessionTrace(sessionId) {
+  openTracePanel("session", sessionId, "实时会话");
 }
 
 /* ---------- 本地文件 ---------- */
@@ -6214,6 +6342,9 @@ function enhanceSelects(root = document) {
   loadOverview();
   scheduleStatePolling();
   setInterval(() => { if (canPoll()) pollPlatform(); }, 15000);
+  setInterval(() => {
+    if (ROUTE.kind === "project" && ROUTE.tab === "agents" && canPoll()) loadSessions();
+  }, 5000);
   setInterval(updateUpdated, 5000);
 })();
 </script>

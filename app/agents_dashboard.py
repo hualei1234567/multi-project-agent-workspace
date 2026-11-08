@@ -1177,7 +1177,9 @@ def build_state_for_project(project_id: str) -> dict[str, Any]:
                 "tasks_ready": fallback["stats"]["tasks_ready"],
                 "tasks_done": fallback["stats"]["tasks_done"],
             })
-        if not state["statuses"] and fallback["roster"]:
+        # 平台纳管模式 B：仓库没有 ai-team/status 自报目录时，
+        # 花名册以平台库为准（执行器会写 working/idle），避免扫描不到会话就显示 offline。
+        if not (repo_root / "ai-team" / "status").is_dir() and fallback["roster"]:
             state["roster"] = fallback["roster"]
             state["stats"]["agents_running"] = fallback["stats"]["agents_running"]
             state["stats"]["agents_total"] = fallback["stats"]["agents_total"]
@@ -2525,6 +2527,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["agents", "activity"]:
                 self._platform(platform_service.agent_activity, project_id)
+                return
+            if rest == ["sessions"]:
+                self._platform(platform_service.list_sessions, project_id)
+                return
+            if len(rest) == 2 and rest[0] == "sessions":
+                self._platform(
+                    platform_service.session_trace, project_id, rest[1],
+                    limit=int((query.get("limit") or ["160"])[0]),
+                )
                 return
             if rest == ["timeline"]:
                 self._platform(
