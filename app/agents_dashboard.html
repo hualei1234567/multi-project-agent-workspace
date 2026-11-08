@@ -1411,6 +1411,18 @@ const ago = (iso) => {
   if (s < 86400) return `${Math.round(s/3600)} 小时前`;
   return `${Math.round(s/86400)} 天前`;
 };
+const fmtIdle = (sec) => {
+  if (sec == null) return "—";
+  const n = Math.max(0, Math.round(Number(sec)));
+  if (n < 60) return `${n} 秒前`;
+  if (n < 3600) return `${Math.round(n / 60)} 分钟前`;
+  if (n < 86400) {
+    const h = Math.floor(n / 3600), m = Math.round((n % 3600) / 60);
+    return m ? `${h} 小时 ${m} 分钟前` : `${h} 小时前`;
+  }
+  const d = Math.floor(n / 86400), h = Math.round((n % 86400) / 3600);
+  return h ? `${d} 天 ${h} 小时前` : `${d} 天前`;
+};
 const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
@@ -3459,7 +3471,7 @@ function paintSessions() {
       <span class="sess-kind">${it.kind === "main" ? "主会话" : "Subagent"}</span>
       <span class="sess-id mono">${esc(String(it.session_id).slice(0, 8))}</span>
       <span class="sess-step">${it.last_step ? `最后一步 ${esc(it.last_step)}` : "暂无步骤"}${it.last_detail ? ` · ${esc(String(it.last_detail).slice(0, 60))}` : ""}</span>
-      <span class="sess-meta">事件 ${it.events_total ?? 0} · ${esc(it.idle_seconds != null ? `${it.idle_seconds}s 前` : "—")}</span>
+      <span class="sess-meta">事件 ${it.events_total ?? 0} · ${esc(fmtIdle(it.idle_seconds))}${it.worktree ? ` · ${esc(it.worktree)}` : ""}</span>
       <span class="sess-state ${esc(it.status)}">${esc(it.status_text)}</span>
     </button>`).join("");
   $$("#sessions-list .sess-row").forEach(row => {

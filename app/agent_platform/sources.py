@@ -953,8 +953,25 @@ def backfill(conn: sqlite3.Connection, project: dict[str, Any]) -> dict[str, int
 SESSION_STALE_SECONDS = 300
 
 
+def worktree_paths(project: dict[str, Any]) -> list[Path]:
+    """项目的 Git worktree 目录（``~/agent-team/<code>-team/worktrees/*``）。
+
+    执行器是在这些 worktree 里跑 claude 的，它们的会话 transcript 也按各自
+    工作目录的 slug 落盘；不扫这些目录，「实时会话」就只剩主会话。
+    """
+    from . import config as config_module
+
+    code = str(project.get("id") or project.get("code") or "").strip()
+    if not code:
+        return []
+    base = config_module.team_dir(code) / "worktrees"
+    if not base.is_dir():
+        return []
+    return sorted(p for p in base.iterdir() if p.is_dir())
+
+
 def project_slugs(project: dict[str, Any]) -> list[str]:
-    """配置里的 slug + 由 repo_root 推导的本机 slug。
+    """配置里的 slug + 由 repo_root 推导的本机 slug + 各 worktree 的 slug。
 
     配置常从别的机器抄来（Mac 的 ``-Users-hualei-*`` 到服务器上并不存在），
     只按配置扫会得到 0 个会话，所以扫描时始终并上本机推导值。
@@ -963,6 +980,10 @@ def project_slugs(project: dict[str, Any]) -> list[str]:
     repo_root = str(project.get("repo_root") or "").strip()
     if repo_root:
         derived = repo_root.replace("/", "-")
+        if derived not in slugs:
+            slugs.append(derived)
+    for path in worktree_paths(project):
+        derived = str(path).replace("/", "-")
         if derived not in slugs:
             slugs.append(derived)
     return slugs
@@ -976,13 +997,16 @@ def session_files(project: dict[str, Any]) -> list[dict[str, Any]]:
     """
     root = projects_root()
     out: list[dict[str, Any]] = []
+    wt_slugs = {str(p).replace("/", "-"): p for p in worktree_paths(project)}
     for slug in project_slugs(project):
         slug_dir = root / str(slug)
         if not slug_dir.is_dir():
             continue
+        wt = wt_slugs.get(str(slug))
         for path in sorted(slug_dir.glob("*.jsonl")):
             out.append({"path": path, "session_id": path.stem, "kind": "main",
-                        "agent_id": None, "meta": None})
+                        "agent_id": None, "meta": None,
+                        "worktree": wt.name if wt else None})
         for session_dir in sorted(p for p in slug_dir.iterdir() if p.is_dir()):
             sub = session_dir / "subagents"
             if not sub.is_dir():

@@ -1387,11 +1387,22 @@ def _session_role_map(conn: sqlite3.Connection, project_id: str) -> tuple[dict[s
     return roles, owner_id
 
 
+def _role_by_key(conn: sqlite3.Connection, project_id: str) -> dict[str, dict[str, Any]]:
+    return {
+        str(row["role_key"]): dict(row)
+        for row in conn.execute(
+            "SELECT id, role_key, display_name FROM project_agents WHERE project_id = ?",
+            (project_id,),
+        )
+    }
+
+
 def list_sessions(project_id: str) -> dict[str, Any]:
     """项目内可查看的会话（主会话 + subagent），带运行中提示与最后一步。"""
     with store.session() as conn:
         project = _require_project(conn, project_id)
         roles, owner_id = _session_role_map(conn, project_id)
+        roles_by_key = _role_by_key(conn, project_id)
     now = time.time()
     items: list[dict[str, Any]] = []
     for item in sources.session_files(project):
@@ -1404,6 +1415,13 @@ def list_sessions(project_id: str) -> dict[str, Any]:
         trace = sources.parse_transcript_trace(path, limit=1)
         agent_id = item.get("agent_id") or owner_id
         role = roles.get(agent_id or "", {})
+        wt_name = item.get("worktree")
+        wt_role_key = None
+        if wt_name:
+            wt_role_key = sources.WORKTREE_ROLE_BY_DIR.get(wt_name) or sources._norm_role(wt_name)
+            # worktree 里的会话属于在那个 worktree 干活的角色，不是总负责人
+            role = roles_by_key.get(str(wt_role_key), role) or role
+            agent_id = role.get("id") or agent_id
         finished = bool((item.get("meta") or {}).get("finished"))
         if finished:
             status, status_text = "done", "已完成"
@@ -1415,6 +1433,8 @@ def list_sessions(project_id: str) -> dict[str, Any]:
         items.append({
             "session_id": item["session_id"],
             "kind": item["kind"],
+            "worktree": wt_name,
+            "role_key_hint": wt_role_key,
             "agent_id": agent_id,
             "agent_name": role.get("display_name") or (item.get("meta") or {}).get("agentType") or "未归属",
             "role_key": role.get("role_key"),
@@ -1433,7 +1453,9 @@ def list_sessions(project_id: str) -> dict[str, Any]:
             ),
             "last_detail": last_event.get("detail") or last_event.get("text") or "",
         })
+    # 先按最近活动倒序，再稳定地把「运行中」提到最前：用户先关心现在谁在跑
     items.sort(key=lambda x: str(x.get("last_event_at") or ""), reverse=True)
+    items.sort(key=lambda x: 0 if x["status"] == "running" else 1)
     live = sum(1 for x in items if x["status"] == "running")
     return {
         "project_id": project_id,
