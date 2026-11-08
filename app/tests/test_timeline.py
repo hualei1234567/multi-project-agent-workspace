@@ -209,6 +209,35 @@ def test_agent_summary_uses_latest_event(env):
     assert entry["last_activity_at"] == tl["items"][0]["occurred_at"]
 
 
+def test_execution_records_appear_in_timeline(env):
+    """真实执行记录必须进时间线：否则「有执行、时间线却全未验证」。"""
+    conn = store.connect()
+    agent = conn.execute("SELECT id, role_key FROM project_agents ORDER BY role_key LIMIT 1").fetchone()
+    for eid, status, started, finished in (
+        ("ex-ok", "succeeded", _iso(30), _iso(25)),
+        ("ex-fail", "failed", _iso(20), _iso(18)),
+        ("ex-run", "running", _iso(3), None),
+    ):
+        conn.execute(
+            "INSERT INTO executions (id, project_id, agent_id, session_id, status, started_at,"
+            " finished_at, summary, source) VALUES (?, 'default', ?, ?, ?, ?, ?, 'run it', 'dispatcher')",
+            (eid, agent["role_key"], f"s-{eid}", status, started, finished),
+        )
+    conn.close()
+
+    tl = service.execution_timeline("default")
+    by_id = {item["id"]: item for item in tl["items"]}
+    assert by_id["exec-ex-ok"]["state"] == "ok"
+    assert by_id["exec-ex-fail"]["state"] == "failed"
+    assert by_id["exec-ex-run"]["state"] == "running"
+    assert by_id["exec-ex-ok"]["type_label"] == "执行记录"
+    assert by_id["exec-ex-ok"]["agent_name"] == agent["role_key"] or by_id["exec-ex-ok"]["agent_id"] == agent["id"]
+    assert tl["counts"] == {"running": 1, "failed": 1, "unverified": 0, "ok": 1}
+    # executions.agent_id 存的是 role_key，也要归到同一个 Agent 卡片
+    card = next(a for a in tl["agents"] if a["agent_id"] == agent["id"])
+    assert card["counts"]["ok"] == 1 and card["counts"]["failed"] == 1
+
+
 def test_agent_activity_reports_state_and_history(env):
     conn = store.connect()
     try:

@@ -1575,6 +1575,9 @@ def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[
 # 执行时间线（复用 agent_events，四态由证据推导）
 # ---------------------------------------------------------------------------
 #: 执行状态口径统一在 ``activity`` 模块，这里只保留旧名字给既有调用方。
+#: executions.status → 四态。执行记录是最硬的证据：调度器/transcript 落库的真实运行结果。
+_EXECUTION_STATE = {"succeeded": "ok", "failed": "failed", "running": "running"}
+_EXECUTION_SOURCE_LABEL = {"dispatcher": "调度器", "transcript": "会话"}
 #: 采集侧占位/缺失的 Agent 标识，页面统一显示「未归属」，不要把 "unknown" 当角色名。
 _UNKNOWN_AGENT_IDS = {"", "unknown", "none", "null", "n/a", "unassigned"}
 TIMELINE_RUNNING_MINUTES = activity.RUNNING_MINUTES
@@ -1618,11 +1621,20 @@ def execution_timeline(
         # 自报状态来自 status 文件（project_agents.metadata_json.self_report）：
         # 它只是回显「Agent 说自己怎么样」，不作为成功证据。
         reports: dict[str, dict[str, Any]] = {}
+        alias: dict[str, str] = {}
+        names: dict[str, str] = {}
+        roles: dict[str, str] = {}
         for row in conn.execute(
-            "SELECT id, status, last_heartbeat_at, metadata_json FROM project_agents"
-            " WHERE project_id = ?",
+            "SELECT id, role_key, display_name, status, last_heartbeat_at, metadata_json"
+            " FROM project_agents WHERE project_id = ?",
             (project_id,),
         ):
+            names[row["id"]] = row["display_name"] or row["role_key"]
+            roles[row["id"]] = row["role_key"]
+            alias[row["id"]] = row["id"]
+            alias[row["role_key"]] = row["id"]
+            alias[_norm_role_key(row["role_key"])] = row["id"]
+            alias[_norm_role_key(row["display_name"])] = row["id"]
             sr = store.loads_json(row["metadata_json"], {}).get("self_report") or {}
             if not sr:
                 continue
@@ -1635,9 +1647,7 @@ def execution_timeline(
                 "reported_at": row["last_heartbeat_at"],
                 "agent_status": row["status"],
             }
-        counts = {key: 0 for key in TIMELINE_STATES}
         items: list[dict[str, Any]] = []
-        agent_map: dict[str, dict[str, Any]] = {}
         for row in rows:
             event = dict(row)
             event["state"] = _event_state(event, fresh_cutoff)
@@ -1646,17 +1656,59 @@ def execution_timeline(
             event["reported_label"] = activity.reported_label(event.get("reported_state"))
             if str(event.get("agent_id") or "").strip().lower() in _UNKNOWN_AGENT_IDS:
                 event["agent_name"] = event["agent_name"] or "未归属"
-            counts[event["state"]] += 1
             items.append(event)
-            # items 已按时间倒序：每个 Agent 的第一条就是它的最近一次事件
+
+        # 真实执行记录也是证据：调度器与 transcript 落库的每次运行都要进时间线，
+        # 否则「有 45 条执行、时间线却 0 成功」。转成与事件同形的条目。
+        for row in conn.execute(
+            "SELECT id, agent_id, task_id, session_id, status, started_at, finished_at,"
+            " duration_ms, summary, error_summary, source FROM executions"
+            " WHERE project_id = ? ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 300",
+            (project_id,),
+        ):
+            raw = str(row["agent_id"] or "").strip()
+            agent_id = alias.get(raw) or alias.get(_norm_role_key(raw))
+            if not agent_id and raw.lower() not in _UNKNOWN_AGENT_IDS:
+                agent_id = raw
+            exec_state = _EXECUTION_STATE.get(str(row["status"] or "").lower(), "unverified")
+            message = str(row["summary"] or "").strip()
+            if row["error_summary"]:
+                message = f"{message}｜错误：{row['error_summary']}".strip("｜")
+            items.append({
+                "id": f"exec-{row['id']}",
+                "agent_id": agent_id,
+                "agent_name": names.get(agent_id or "") or (raw if agent_id else "未归属"),
+                "role_key": roles.get(agent_id or ""),
+                "session_id": row["session_id"],
+                "task_id": row["task_id"],
+                "event_type": "execution",
+                "type_label": "执行记录",
+                # 来源短标签：调度器拉起的运行 vs transcript 归集的运行
+                "tool": _EXECUTION_SOURCE_LABEL.get(str(row["source"] or ""), row["source"]),
+                "ok": 1 if exec_state == "ok" else (0 if exec_state == "failed" else None),
+                "reported_state": None,
+                "reported_label": None,
+                "occurred_at": row["finished_at"] or row["started_at"],
+                "state": exec_state,
+                "state_label": TIMELINE_STATE_LABEL[exec_state],
+                "source": row["source"],
+                "duration_ms": row["duration_ms"],
+                "message": message[:600],
+            })
+
+        items.sort(key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
+        items = items[:500]
+
+        counts = {key: 0 for key in TIMELINE_STATES}
+        agent_map: dict[str, dict[str, Any]] = {}
+        for event in items:
+            counts[event["state"]] += 1
             key = event["agent_id"] or "unassigned"
             entry = agent_map.get(key)
             if entry is None:
                 entry = {
                     "agent_id": event["agent_id"],
-                    "agent_name": event["agent_name"] or event["role_key"]
-                    or (None if str(event["agent_id"] or "").strip().lower() in _UNKNOWN_AGENT_IDS
-                        else event["agent_id"]) or "未归属",
+                    "agent_name": event["agent_name"] or event["role_key"] or "未归属",
                     "role_key": event["role_key"],
                     "state": event["state"],
                     "state_label": event["state_label"],
