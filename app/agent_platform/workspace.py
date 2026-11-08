@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import store
+from . import activity, store
 
 LOCAL_OWNER = "local-owner"
 
@@ -113,6 +113,48 @@ def _projects(conn: sqlite3.Connection, ids: list[str]) -> dict[str, dict[str, A
 # 项目组合
 # ---------------------------------------------------------------------------
 
+#: 组合页看执行健康的窗口
+EXEC_WINDOW_HOURS = 24
+#: 未验证占比达到多少且样本足够时计入关注
+UNVERIFIED_RATIO = 0.5
+UNVERIFIED_MIN_SAMPLE = 3
+
+
+def _execution_health(conn: sqlite3.Connection, project_id: str, now: datetime) -> dict[str, Any]:
+    """近 24 小时的执行健康：四态计数 + 最近一次状态。
+
+    只看执行证据事件（与时间线同口径），没有事件时 ``total=0``，页面上不显示这一行。
+    """
+    since = (now - timedelta(hours=EXEC_WINDOW_HOURS)).isoformat(timespec="seconds")
+    cutoff = activity.fresh_cutoff(now)
+    marks = ",".join("?" for _ in activity.EVENT_TYPES)
+    counts = {key: 0 for key in activity.STATES}
+    last_state = None
+    last_at = None
+    total = 0
+    for row in conn.execute(
+        f"SELECT event_type, ok, occurred_at FROM agent_events"
+        f" WHERE project_id = ? AND event_type IN ({marks}) AND occurred_at >= ?"
+        f" ORDER BY occurred_at DESC LIMIT 500",
+        (project_id, *activity.EVENT_TYPES, since),
+    ):
+        total += 1
+        item = dict(row)
+        state = activity.event_state(item, cutoff)
+        counts[state] += 1
+        if last_state is None:
+            last_state = state
+            last_at = item["occurred_at"]
+    return {
+        "window_hours": EXEC_WINDOW_HOURS,
+        "total": total,
+        "counts": counts,
+        "last_state": last_state,
+        "last_state_label": activity.LABELS.get(last_state or "", None),
+        "last_at": last_at,
+    }
+
+
 def portfolio(conn: sqlite3.Connection | None = None,
               principal_id: str | None = None) -> dict[str, Any]:
     """项目组合视图：每个项目一条健康快照。
@@ -159,6 +201,10 @@ def portfolio(conn: sqlite3.Connection | None = None,
             candidates = [x for x in (meta.get("updated_at"), last_event_at) if x]
             last_active_at = max(candidates) if candidates else None
             idle_days = _age_days(last_active_at)
+            execution = _execution_health(conn, pid, _now())
+            exec_counts = execution["counts"]
+            exec_failed = exec_counts.get("failed", 0)
+            exec_unverified = exec_counts.get("unverified", 0)
 
             # 显式风险规则（可解释，不隐藏权重）
             reasons: list[str] = []
@@ -170,7 +216,15 @@ def portfolio(conn: sqlite3.Connection | None = None,
                 reasons.append(f"{pending_approvals} 个审批待处理")
             if idle_days is not None and idle_days >= STALE_DAYS and total:
                 reasons.append(f"{idle_days:.0f} 天无活动")
-            if blocked or pending_approvals:
+            if exec_failed:
+                reasons.append(f"近 {EXEC_WINDOW_HOURS} 小时 {exec_failed} 次执行失败")
+            if (
+                execution["total"] >= UNVERIFIED_MIN_SAMPLE
+                and exec_unverified / max(1, execution["total"]) >= UNVERIFIED_RATIO
+            ):
+                ratio = round(exec_unverified / execution["total"] * 100)
+                reasons.append(f"近 {EXEC_WINDOW_HOURS} 小时 {ratio}% 执行未验证")
+            if blocked or pending_approvals or exec_failed:
                 risk = "high"
             elif reasons:
                 risk = "medium"
@@ -196,6 +250,7 @@ def portfolio(conn: sqlite3.Connection | None = None,
                 },
                 "pending_deliveries": pending_deliveries,
                 "pending_approvals": pending_approvals,
+                "execution": execution,
                 "risk": risk,
                 "risk_reasons": reasons,
                 "data_quality": (
@@ -215,9 +270,11 @@ def portfolio(conn: sqlite3.Connection | None = None,
                 "blocked_tasks": sum(x["tasks"]["blocked"] for x in items),
                 "pending_deliveries": sum(x["pending_deliveries"] for x in items),
                 "pending_approvals": sum(x["pending_approvals"] for x in items),
+                "execution_failed": sum(x["execution"]["counts"].get("failed", 0) for x in items),
+                "execution_unverified": sum(x["execution"]["counts"].get("unverified", 0) for x in items),
             },
             "projects": items,
-            "note": "风险等级由显式规则推出（阻塞/待验收/待审批/久无活动），"
+            "note": "风险等级由显式规则推出（阻塞/待验收/待审批/久无活动/执行失败或未验证），"
                     "综合健康度权重待 P4-M0 由业务 Owner 冻结。",
         }
     finally:
@@ -374,7 +431,7 @@ def _notification_items(conn: sqlite3.Connection, ids: list[str],
             "resource_type": "delivery",
             "resource_id": r["id"],
             "created_at": r["created_at"],
-            "link": f"#/p/{r['project_id']}/deliveries",
+            "link": f"#/p/{r['project_id']}/deliveries?focus={r['id']}",
         })
 
     for r in conn.execute(
@@ -401,7 +458,8 @@ def _notification_items(conn: sqlite3.Connection, ids: list[str],
 
     for r in conn.execute(
         f"""
-        SELECT e.id, e.project_id, p.code AS project_code, e.event_type, e.message, e.occurred_at
+        SELECT e.id, e.project_id, p.code AS project_code, e.event_type, e.message,
+               e.session_id, e.occurred_at
         FROM agent_events e JOIN agent_projects p ON p.id = e.project_id
         WHERE e.project_id IN ({marks}) AND e.ok = 0
         ORDER BY e.occurred_at DESC LIMIT ?
@@ -417,8 +475,9 @@ def _notification_items(conn: sqlite3.Connection, ids: list[str],
             "project_code": r["project_code"],
             "resource_type": "event",
             "resource_id": r["id"],
+            "session_id": r["session_id"],
             "created_at": r["occurred_at"],
-            "link": f"#/p/{r['project_id']}/executions",
+            "link": f"#/p/{r['project_id']}/executions?state=failed",
         })
 
     items.sort(key=lambda x: x["created_at"] or "", reverse=True)

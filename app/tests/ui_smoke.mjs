@@ -408,6 +408,20 @@ async function main() {
       check(true, "当前没有未读消息（跳过已读交互）", "empty");
     }
 
+    // 消息中心：执行异常可直接打开实时会话（有则点，无则跳过）
+    const liveBtns = page.locator("[data-live-session]");
+    if (await liveBtns.count()) {
+      await liveBtns.first().click();
+      await page.locator("#trace.show").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+      await page.waitForFunction(() => (document.querySelector("#trace-body")?.innerText || "").trim().length > 0,
+        null, { timeout: 15000 }).catch(() => {});
+      const liveText = await page.locator("#trace-body").innerText().catch(() => "");
+      check(liveText.trim().length > 0, "消息中心可打开实时会话", liveText.replace(/\s+/g, " ").slice(0, 50));
+      await page.locator("#trace-close").click().catch(() => {});
+    } else {
+      check(true, "当前没有带会话的执行异常消息（跳过）", "empty");
+    }
+
     // 全局搜索：服务端权限过滤 + 分组
     await page.goto(`${BASE}/#/search?q=material`, { waitUntil: "domcontentloaded" });
     await settle(page, 900);
@@ -681,6 +695,12 @@ async function main() {
     const actStrip = (await page.locator('[data-testid="agent-activity"]').innerText().catch(() => "")).replace(/\s+/g, " ");
     check(/运行中/.test(actStrip) && /失败/.test(actStrip) && /未验证/.test(actStrip) && /无记录/.test(actStrip),
       "Agent 页展示执行状态汇总", actStrip.slice(0, 90));
+    const detailStyle = await page.locator(".role-detail").first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { ws: cs.whiteSpace, overflow: cs.overflow, clamp: cs.webkitLineClamp };
+    }).catch(() => ({}));
+    check(detailStyle.ws === "normal" && detailStyle.overflow !== "hidden" && (detailStyle.clamp === "none" || detailStyle.clamp === ""),
+      "角色说明完整换行不截断", JSON.stringify(detailStyle));
     const execLines = await page.locator('[data-testid^="role-exec-"]').count();
     check(execLines >= 1, "角色卡片显示执行状态行", `count=${execLines}`);
     // 打开角色抽屉：必须有执行历史区块
@@ -690,6 +710,39 @@ async function main() {
     check(hist.includes("执行历史"), "角色抽屉展示执行历史", hist.replace(/\s+/g, " ").slice(0, 70));
     await page.locator("#drawer-close").click().catch(() => {});
     await settle(page, 300);
+
+    // ------------------------------------------------ 8.55) 交付保存视图 + focus 直达
+    await page.goto(`${BASE}/#/p/${code}/deliveries`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="dlv-view-name"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    await page.locator('.dlv-stage[data-stage="rejected"]').click();
+    await sleep(500);
+    await page.locator('[data-testid="dlv-view-name"]').fill("冒烟交付返工");
+    await page.locator('[data-testid="dlv-view-save"]').click();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("#dlv-views option")).some(o => o.textContent === "冒烟交付返工"),
+      null, { timeout: 8000 }).catch(() => {});
+    const dlvViews = await page.locator("#dlv-views option").allInnerTexts().catch(() => []);
+    check(dlvViews.includes("冒烟交付返工"), "交付保存视图出现在下拉", dlvViews.join("/"));
+    await page.locator("#dlv-views").selectOption({ label: "冒烟交付返工" });
+    await sleep(500);
+    check(new URL(page.url()).hash.includes("stage=rejected"), "套用交付视图恢复环节筛选", new URL(page.url()).hash);
+    await page.locator('[data-testid="dlv-view-del"]').click();
+    await page.waitForFunction(() => !Array.from(document.querySelectorAll("#dlv-views option")).some(o => o.textContent === "冒烟交付返工"),
+      null, { timeout: 8000 }).catch(() => {});
+    const dlvAfter = await page.locator("#dlv-views option").allInnerTexts().catch(() => []);
+    check(!dlvAfter.includes("冒烟交付返工"), "删除交付视图", dlvAfter.join("/"));
+
+    // 消息里的交付通知带 focus，进页面直接打开详情
+    await page.goto(`${BASE}/#/p/${code}/deliveries?focus=${dlvId}`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="delivery-checks"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => {
+      const el = document.querySelector("#modal-body");
+      const text = el ? el.innerText : "";
+      return text.includes("冒烟交付物") || text.includes("验收自动完成");
+    }, null, { timeout: 15000 }).catch(() => {});
+    const focused = await page.locator("#modal-body").innerText().catch(() => "");
+    check(focused.includes("冒烟交付物") || focused.includes("验收自动完成"), "focus 参数直达交付详情", focused.replace(/\s+/g, " ").slice(0, 60));
+    await page.locator("#modal-close").click().catch(() => {});
 
     // ------------------------------------------------ 8.7) 实时会话
     const sessApi = await fetch(`${BASE}/api/projects/material/sessions`).then(r => r.json()).catch(() => ({}));

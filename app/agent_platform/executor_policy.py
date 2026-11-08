@@ -62,7 +62,9 @@ ALLOWED_BASH_PREFIXES: tuple[str, ...] = (
     ".venv/bin/python", ".venv/bin/pytest", ".venv/bin/ruff",
     "backend/.venv/bin/python", "backend/.venv/bin/pytest", "backend/.venv/bin/ruff",
     "ruff check", "ruff format --check",
-    "npm run build", "npm run lint", "npm run test", "npm ci", "npx tsc", "npx vitest run",
+    "npm run build", "npm run lint", "npm run test", "npm ci",
+    "npm --prefix apps/web run", "npm --prefix apps/web test", "npm --prefix apps/web exec",
+    "npx tsc", "npx vitest run",
     "go build", "go test",
 )
 

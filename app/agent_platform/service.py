@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import sources, store, templates
+from . import activity, sources, store, templates
 
 #: 只有在**没有任何纳管配置**时才使用的占位项目（测试 / 裸环境）。
 #: 配了 config/projects.json 时不会创建它。
@@ -1506,41 +1506,18 @@ def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[
 # ---------------------------------------------------------------------------
 # 执行时间线（复用 agent_events，四态由证据推导）
 # ---------------------------------------------------------------------------
-#: 最近多少分钟内的事件算「运行中」；超过窗口又没有明确结果的一律「未验证」。
-TIMELINE_RUNNING_MINUTES = 15
-TIMELINE_STATES = ("running", "failed", "unverified", "ok")
-TIMELINE_STATE_LABEL = {
-    "running": "运行中",
-    "failed": "失败",
-    "unverified": "未验证",
-    "ok": "成功",
-}
-_EVENT_TYPE_LABEL = {
-    "subagent_run": "Subagent 运行",
-    "session_activity": "会话活动",
-    "status_report": "状态自报",
-    "tool_use": "工具调用",
-    "tool_result": "工具结果",
-}
+#: 执行状态口径统一在 ``activity`` 模块，这里只保留旧名字给既有调用方。
+TIMELINE_RUNNING_MINUTES = activity.RUNNING_MINUTES
+TIMELINE_STATES = activity.STATES
+TIMELINE_STATE_LABEL = activity.LABELS
+_EVENT_TYPE_LABEL = activity.EVENT_TYPE_LABELS
 #: 只把「执行证据」纳入时间线。项目/任务创建这类生命周期事件不代表有谁跑过，
 #: 混进来会让「未运行」的项目看起来像执行成功。
-TIMELINE_EVENT_TYPES = tuple(_EVENT_TYPE_LABEL)
+TIMELINE_EVENT_TYPES = activity.EVENT_TYPES
 
 
 def _event_state(event: dict[str, Any], fresh_cutoff: str) -> str:
-    """单个事件的状态。只有 ``ok=1`` 才算成功；缺证据一律「未验证」。"""
-    ok = event.get("ok")
-    fresh = str(event.get("occurred_at") or "") >= fresh_cutoff
-    if event.get("event_type") == "subagent_run":
-        if ok == 1:
-            return "ok"
-        if ok == 0:
-            # finished=false：近期还在跑，超窗口就说明没跑完也没有结论
-            return "running" if fresh else "unverified"
-    if ok is None:
-        # 状态自报 / 会话活动本身不携带结果，只能说明「有动静」
-        return "running" if fresh else "unverified"
-    return "ok" if ok else "failed"
+    return activity.event_state(event, fresh_cutoff)
 
 
 def execution_timeline(

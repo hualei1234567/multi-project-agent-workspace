@@ -184,3 +184,32 @@ def test_saved_view_rejects_bad_input(conn):
             workspace.save_view(conn, "local-owner", payload)
     with pytest.raises(workspace.ViewError):
         workspace.list_views(conn, "local-owner", "nope")
+
+
+def test_portfolio_risk_includes_execution_failures(conn):
+    # 近 24 小时有执行失败 → 高风险，且原因可读
+    conn.execute(
+        "INSERT INTO agent_events (id, project_id, event_type, message, tool, ok, occurred_at)"
+        " VALUES ('ev-fail', 'p2', 'tool_use', '构建失败', 'Bash', 0, ?)",
+        (NOW,),
+    )
+    data = workspace.portfolio(conn, "local-owner")
+    p2 = next(x for x in data["projects"] if x["id"] == "p2")
+    assert p2["execution"]["total"] == 1
+    assert p2["execution"]["counts"]["failed"] == 1
+    assert p2["risk"] == "high"
+    assert any("执行失败" in r for r in p2["risk_reasons"])
+    assert data["summary"]["execution_failed"] == 1
+
+
+def test_portfolio_flags_mostly_unverified_execution(conn):
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO agent_events (id, project_id, event_type, message, tool, ok, occurred_at)"
+            " VALUES (?, 'p2', 'status_report', '有动静', NULL, NULL, ?)",
+            (f"ev-unv-{i}", NOW),
+        )
+    p2 = next(x for x in workspace.portfolio(conn, "local-owner")["projects"] if x["id"] == "p2")
+    assert p2["execution"]["counts"]["unverified"] == 3
+    assert p2["risk"] in {"medium", "high"}
+    assert any("未验证" in r for r in p2["risk_reasons"])

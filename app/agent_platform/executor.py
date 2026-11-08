@@ -186,7 +186,8 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
     with store.write_tx(conn):
         conn.execute(
             "UPDATE dispatch_items SET status='running', attempt=attempt+1,"
-            " started_at=?, updated_at=? WHERE id=?",
+            " started_at=?, finished_at=NULL, exit_code=NULL, error_code=NULL,"
+            " error_summary=NULL, updated_at=? WHERE id=?",
             (started, started, item_id),
         )
         _set_agent_status(conn, item["agent_id"], "working", item["task_id"])
