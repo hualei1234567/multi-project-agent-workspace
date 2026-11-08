@@ -919,6 +919,49 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 @media (pointer: coarse) {
   .btn:hover, .sb-proj:hover { background: inherit; }
 }
+/* ---------- 工作空间视图（我的工作 / 项目组合 / 消息中心） ---------- */
+.ws-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 4px 0 16px; }
+.ws-metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.ws-metric b { font-size: 22px; font-weight: 650; }
+.ws-metric span { font-size: 12px; color: var(--muted); }
+.ws-metric.risk b { color: var(--risk, #e5534b); }
+.ws-metric.warn b { color: var(--warn, #d29922); }
+.ws-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+.ws-panel h3 { margin: 0 0 10px; font-size: 13.5px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+.ws-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ws-row { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-radius: 8px; flex-wrap: wrap; }
+.ws-row + .ws-row { border-top: 1px solid var(--line); }
+.ws-row.read { opacity: .62; }
+.ws-empty { padding: 10px 6px; color: var(--muted); font-size: 13px; }
+.ws-link { color: var(--fg); text-decoration: none; font-size: 13.5px; }
+.ws-link:hover { color: var(--accent); }
+.ws-sub { margin-left: auto; font-size: 12px; color: var(--muted); }
+.ws-tag { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.ws-tag.warn { color: var(--warn, #d29922); border-color: currentColor; }
+.ws-tag.risk { color: var(--risk, #e5534b); border-color: currentColor; }
+.ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.ws-dot.important { background: var(--warn, #d29922); }
+.ws-dot.critical { background: var(--risk, #e5534b); }
+.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.ws-proj { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; cursor: pointer; }
+.ws-proj:hover { border-color: var(--line-strong); }
+.ws-proj-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ws-proj-code { font-size: 12px; color: var(--muted); margin: 2px 0 10px; }
+.ws-bar { height: 5px; border-radius: 999px; background: var(--line); overflow: hidden; margin-bottom: 10px; }
+.ws-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.ws-proj-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.ws-risk { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.ws-risk.high { color: var(--risk, #e5534b); }
+.ws-risk.medium { color: var(--warn, #d29922); }
+.ws-risk.low { color: var(--ok, #3fb950); }
+.ws-reasons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.ws-reasons span { border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px; }
+.ws-note { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.ws-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.sb-badge[hidden] { display: none; }
+.sb-badge { margin-left: auto; font-size: 10.5px; min-width: 17px; height: 17px; border-radius: 999px; background: var(--risk, #e5534b); color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; }
+.btn.tiny { padding: 2px 8px; font-size: 11.5px; }
+
 </style>
 </head>
 <body>
@@ -932,6 +975,9 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
       <button class="sb-collapse" id="btn-collapse" title="折叠侧栏" aria-label="折叠侧栏">‹</button>
     </div>
     <nav class="sb-nav">
+      <a class="sb-link" id="nav-work" href="#/work"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M4 12h16M4 17.5h10"/><circle cx="19.5" cy="17.5" r="1.6"/></svg></span><span class="sb-hide">我的工作</span></a>
+      <a class="sb-link" id="nav-portfolio" href="#/portfolio"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><rect x="7" y="12" width="3" height="4"/><rect x="12" y="8.5" width="3" height="7.5"/><rect x="17" y="10.5" width="3" height="5.5"/></svg></span><span class="sb-hide">项目组合</span></a>
+      <a class="sb-link" id="nav-inbox" href="#/inbox"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13l2.5-7h11L20 13v5H4z"/><path d="M4 13h5l1 2h4l1-2h5"/></svg></span><span class="sb-hide">消息中心</span><span class="sb-badge" id="nav-inbox-badge" hidden></span></a>
       <a class="sb-link" id="nav-platform" href="#/"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/></svg></span><span class="sb-hide">平台总览</span></a>
       <a class="sb-link" id="nav-projects" href="#/projects"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7h6l2 2h10v10H3z"/></svg></span><span class="sb-hide">全部项目</span></a>
       <a class="sb-link" id="nav-favorites" href="#/favorites"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></span><span class="sb-hide">我的收藏</span></a>
@@ -1030,7 +1076,7 @@ const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
 const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "docs", "settings"];
 const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", docs: "文档配置", settings: "项目设置" };
-const PLATFORM_KINDS = ["platform", "projects", "favorites", "recent"];
+const PLATFORM_KINDS = ["platform", "work", "portfolio", "inbox", "projects", "favorites", "recent"];
 const FAV_KEY = "agws-favorites";
 const RECENT_KEY = "agws-recent";
 const PROJECT_COLORS = ["#3b6fd8", "#7b5cff", "#12b76a", "#f79009", "#e0559a", "#2bb3c0", "#5b8def", "#a06bff"];
@@ -1395,6 +1441,9 @@ function parseRoute() {
   const path = hit[0] || "/";
   const params = new URLSearchParams(hit.slice(1).join("?"));
   if (path === "/" || path === "") return { kind: "platform", params };
+  if (path === "/work") return { kind: "work", params };
+  if (path === "/portfolio") return { kind: "portfolio", params };
+  if (path === "/inbox") return { kind: "inbox", params };
   if (path === "/projects") return { kind: "projects", params };
   if (path === "/favorites") return { kind: "favorites", params };
   if (path === "/recent") return { kind: "recent", params };
@@ -1425,7 +1474,7 @@ function navigate(hash, replace = false) {
 }
 
 function updateSidebar() {
-  const navMap = { platform: "#nav-platform", projects: "#nav-projects", favorites: "#nav-favorites", recent: "#nav-recent", audit: "#nav-audit" };
+  const navMap = { platform: "#nav-platform", work: "#nav-work", portfolio: "#nav-portfolio", inbox: "#nav-inbox", projects: "#nav-projects", favorites: "#nav-favorites", recent: "#nav-recent", audit: "#nav-audit" };
   Object.entries(navMap).forEach(([kind, sel]) => {
     const el = $(sel);
     if (!el) return;
@@ -1561,6 +1610,7 @@ function renderSidebar() {
   updateResourcePool();
 }
 
+
 /* ---------- 平台总览 ---------- */
 function platformNumbers() {
   const ov = APP.overview || {};
@@ -1577,7 +1627,183 @@ function platformNumbers() {
   };
 }
 
+
+/* ---------- 工作空间：我的工作 / 项目组合 / 消息中心 ---------- */
+const WS = { work: null, portfolio: null, inbox: null, error: {}, busy: {} };
+
+const WS_META = {
+  work: ["我的工作", "可见范围内的任务、审批、待验收交付与最近执行；全部读取既有事实源，不复制业务状态。", "/api/workspace/my"],
+  portfolio: ["项目组合", "逐项目健康快照。风险等级由显式规则推出（阻塞 / 待验收 / 待审批 / 久无活动）。", "/api/workspace/portfolio"],
+  inbox: ["消息中心", "审批、交付、阻塞任务与执行异常的统一收件箱；已读只是个人偏好，不改业务状态。", "/api/workspace/notifications"],
+};
+
+async function loadWorkspaceData(kind, force = false) {
+  if (WS[kind] && !force) return WS[kind];
+  if (WS.busy[kind]) return null;
+  WS.busy[kind] = true;
+  try {
+    WS[kind] = await fetchJSON(WS_META[kind][2]);
+    WS.error[kind] = null;
+  } catch (e) {
+    WS.error[kind] = e.message || "加载失败";
+  } finally {
+    WS.busy[kind] = false;
+  }
+  return WS[kind];
+}
+
+function wsStateBox(kind) {
+  if (WS.error[kind]) return emptyBox("加载失败", WS.error[kind]);
+  return emptyBox("加载中…", "正在读取平台数据");
+}
+
+function riskBadge(risk) {
+  const map = { high: ["高风险", "risk"], medium: ["关注", "paused"], low: ["正常", "active"] };
+  const [text, cls] = map[risk] || ["未知", "paused"];
+  return `<span class="ws-risk ${cls}">${text}</span>`;
+}
+
+function wsMetric(label, value, cls = "") {
+  return `<div class="ws-metric ${cls}"><b>${esc(String(value))}</b><span>${esc(label)}</span></div>`;
+}
+
+function renderWorkspacePage(kind) {
+  const el = $("#view");
+  const [title, desc] = WS_META[kind];
+  el.innerHTML = `
+    <div class="page-head"><div><h2>${esc(title)}</h2><p class="desc">${esc(desc)}</p></div>
+      <button class="btn ghost" id="ws-refresh">刷新</button></div>
+    <div id="ws-body">${wsStateBox(kind)}</div>`;
+  $("#ws-refresh").onclick = async () => { await loadWorkspaceData(kind, true); paintWorkspace(kind); };
+  const cached = WS[kind];
+  if (cached) paintWorkspace(kind);
+  loadWorkspaceData(kind).then(() => paintWorkspace(kind));
+}
+
+function paintWorkspace(kind) {
+  const body = $("#ws-body");
+  if (!body) return;
+  const data = WS[kind];
+  if (!data) { body.innerHTML = wsStateBox(kind); return; }
+  if (kind === "work") body.innerHTML = workHTML(data);
+  else if (kind === "portfolio") body.innerHTML = portfolioHTML(data);
+  else body.innerHTML = inboxHTML(data);
+  if (kind === "inbox") {
+    const badge = $("#nav-inbox-badge");
+    if (badge) {
+      const n = data.unread || 0;
+      badge.textContent = n > 99 ? "99+" : String(n);
+      badge.hidden = n === 0;
+    }
+    $$("[data-mark-read]").forEach(btn => {
+      btn.onclick = async () => {
+        await fetchJSON("/api/workspace/notifications/read", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keys: [btn.dataset.markRead] }),
+        });
+        await loadWorkspaceData("inbox", true);
+        paintWorkspace("inbox");
+      };
+    });
+    const all = $("#ws-mark-all");
+    if (all) all.onclick = async () => {
+      const keys = (WS.inbox.items || []).filter(i => !i.read).map(i => i.key);
+      if (!keys.length) return;
+      await fetchJSON("/api/workspace/notifications/read", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys }),
+      });
+      await loadWorkspaceData("inbox", true);
+      paintWorkspace("inbox");
+    };
+  }
+}
+
+function workHTML(d) {
+  const c = d.counts || {};
+  const rows = (items, empty) => items.length
+    ? items.map(i => `<li class="ws-row">${i}</li>`).join("")
+    : `<li class="ws-empty">${esc(empty)}</li>`;
+  const taskRow = t => `<a class="ws-link" href="#/p/${encodeURIComponent(t.project_id)}/tasks">${esc(t.title)}</a>
+      <span class="ws-tag">${esc(t.status)}</span><span class="ws-sub">${esc(t.project_code || "")} · ${esc(ago(t.updated_at))}</span>`;
+  const apprRow = a => `<a class="ws-link" href="#/p/${encodeURIComponent(a.project_id)}/approvals">${esc(a.resource_type)} ${esc(a.resource_id)} · ${esc(a.action)}</a>
+      <span class="ws-tag warn">待审批</span><span class="ws-sub">${esc(a.project_code || "")} · ${esc(ago(a.created_at))}</span>`;
+  const delRow = x => `<a class="ws-link" href="#/p/${encodeURIComponent(x.project_id)}/deliveries">${esc(x.title)}</a>
+      <span class="ws-tag">${esc(x.status)}</span><span class="ws-sub">${esc(x.project_code || "")} · ${esc(ago(x.created_at))}</span>`;
+  const execRow = e => `<span class="ws-link">${esc(e.agent_id || "—")}</span>
+      <span class="ws-tag ${e.status === "failed" ? "risk" : ""}">${esc(e.status || "—")}</span>
+      <span class="ws-sub">${esc(e.project_code || "")} · ${esc(ago(e.started_at))}</span>`;
+  return `
+    <div class="ws-metrics">
+      ${wsMetric("进行中/待验收任务", c.tasks ?? "—")}
+      ${wsMetric("阻塞任务", c.blocked_tasks ?? "—", c.blocked_tasks ? "risk" : "")}
+      ${wsMetric("待审批", c.approvals ?? "—", c.approvals ? "warn" : "")}
+      ${wsMetric("待验收交付", c.deliveries ?? "—")}
+    </div>
+    <section class="ws-panel"><h3>我的任务</h3><ul>${rows(d.tasks.map(taskRow), "暂无进行中的任务")}</ul></section>
+    <section class="ws-panel"><h3>待我审批</h3><ul>${rows(d.approvals.map(apprRow), "没有待审批事项")}</ul></section>
+    <section class="ws-panel"><h3>待我验收的交付</h3><ul>${rows(d.deliveries.map(delRow), "没有待验收交付")}</ul></section>
+    <section class="ws-panel"><h3>最近执行</h3><ul>${rows(d.executions.map(execRow), "暂无执行记录")}</ul></section>`;
+}
+
+function portfolioHTML(d) {
+  const cards = (d.projects || []).map(p => {
+    const t = p.tasks || {};
+    const pct = t.completion == null ? null : Math.round(t.completion * 100);
+    const reasons = (p.risk_reasons || []).length
+      ? `<div class="ws-reasons">${p.risk_reasons.map(r => `<span>${esc(r)}</span>`).join("")}</div>` : "";
+    return `<article class="ws-proj" data-enter="1" data-pid="${esc(p.id)}">
+      <div class="ws-proj-head"><b>${esc(p.name)}</b>${riskBadge(p.risk)}</div>
+      <div class="ws-proj-code">${esc(p.code || "")} · ${esc(p.status || "")}</div>
+      <div class="ws-bar"><i style="width:${pct == null ? 0 : pct}%"></i></div>
+      <div class="ws-proj-stats">
+        <span>完成 ${t.done ?? "—"}/${t.total ?? "—"}</span>
+        <span>阻塞 ${t.blocked ?? "—"}</span>
+        <span>待验收 ${p.pending_deliveries ?? "—"}</span>
+        <span>待审批 ${p.pending_approvals ?? "—"}</span>
+      </div>
+      <div class="ws-sub">最近活动 ${p.last_active_at ? esc(ago(p.last_active_at)) : "无记录"}
+        ${p.data_quality === "stale" ? '<span class="ws-tag warn">数据陈旧</span>' : ""}</div>
+      ${reasons}
+    </article>`;
+  }).join("");
+  const s = d.summary || {};
+  return `
+    <div class="ws-metrics">
+      ${wsMetric("项目数", d.project_count ?? "—")}
+      ${wsMetric("高风险", s.risk_high ?? "—", s.risk_high ? "risk" : "")}
+      ${wsMetric("阻塞任务", s.blocked_tasks ?? "—", s.blocked_tasks ? "risk" : "")}
+      ${wsMetric("待验收交付", s.pending_deliveries ?? "—")}
+      ${wsMetric("待审批", s.pending_approvals ?? "—")}
+    </div>
+    ${d.note ? `<p class="ws-note">${esc(d.note)}</p>` : ""}
+    <div class="ws-grid">${cards || emptyBox("暂无项目", "还没有可见的项目")}</div>`;
+}
+
+function inboxHTML(d) {
+  const items = d.items || [];
+  const rows = items.map(i => `
+    <li class="ws-row ${i.read ? "read" : "unread"}">
+      <span class="ws-dot ${esc(i.level)}" aria-hidden="true"></span>
+      <a class="ws-link" href="${esc(i.link)}">${esc(i.title)}</a>
+      <span class="ws-tag">${esc(i.type)}</span>
+      <span class="ws-sub">${esc(i.project_code || "")} · ${esc(ago(i.created_at))}</span>
+      ${i.read ? "" : `<button class="btn ghost tiny" data-mark-read="${esc(i.key)}">标为已读</button>`}
+    </li>`).join("");
+  return `
+    <div class="ws-metrics">
+      ${wsMetric("未读", d.unread ?? "—", d.unread ? "warn" : "")}
+      ${wsMetric("全部", d.count ?? "—")}
+    </div>
+    <div class="ws-toolbar"><button class="btn ghost" id="ws-mark-all">全部标为已读</button></div>
+    <section class="ws-panel"><ul>${rows || `<li class="ws-empty">收件箱是空的</li>`}</ul></section>`;
+}
+
 function renderPlatform(mode = ROUTE.kind) {
+  if (mode === "work" || mode === "portfolio" || mode === "inbox") {
+    renderWorkspacePage(mode);
+    return;
+  }
   const n = platformNumbers();
   const base = APP.projects.filter(p => matchesProject(p) && matchesProjectQuery(p));
   let list = base;

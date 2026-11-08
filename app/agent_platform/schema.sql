@@ -978,3 +978,30 @@ CREATE TABLE IF NOT EXISTS capability_grants (
 
 CREATE INDEX IF NOT EXISTS idx_capability_grants_target
   ON capability_grants(target_project_id, revoked_at);
+
+-- ---------------------------------------------------------------------------
+-- v13（体验层）：消息已读状态 + 个人保存视图
+-- 只存个人偏好，不复制任何业务事实（任务/审批/交付状态仍在各自权威表）
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notification_states (
+  id               TEXT PRIMARY KEY,
+  principal_id     TEXT NOT NULL,
+  notification_key TEXT NOT NULL,          -- <type>:<source_id>，例如 approval:abc
+  state            TEXT NOT NULL DEFAULT 'read',  -- read / unread / snoozed / pinned
+  updated_at       TEXT NOT NULL,
+  UNIQUE(principal_id, notification_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_states_principal
+  ON notification_states(principal_id, state);
+
+CREATE TABLE IF NOT EXISTS saved_views (
+  id            TEXT PRIMARY KEY,
+  principal_id  TEXT NOT NULL,
+  scope         TEXT NOT NULL,             -- portfolio / tasks / deliveries
+  name          TEXT NOT NULL,
+  filters_json  TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE(principal_id, scope, name)
+);

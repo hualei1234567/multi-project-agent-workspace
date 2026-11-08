@@ -111,6 +111,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("DELETE", "/api/projects/{project_id}/favorite"),
     ("POST", "/api/projects/{project_id}/visit"),
     ("GET", "/api/me/recent-projects"),
+    ("GET", "/api/workspace/portfolio"),
+    ("GET", "/api/workspace/my"),
+    ("GET", "/api/workspace/notifications"),
+    ("POST", "/api/workspace/notifications/read"),
+    ("GET", "/api/search"),
     ("GET", "/api/audit-logs"),
     ("GET", "/api/team-templates"),
     ("POST", "/api/team-templates"),
@@ -731,6 +736,43 @@ def _paths() -> dict[str, Any]:
         "/api/agent-platform/overview": {
             "get": _operation("平台总览", tags=["platform"], ok_schema={"type": "object"}, errors=())
         },
+        "/api/workspace/portfolio": {
+            "get": _operation(
+                "项目组合视图：逐项目健康快照（任务完成、阻塞、待验收交付、待审批、数据新鲜度）",
+                tags=["workspace"], ok_schema={"type": "object"}, errors=(),
+            )
+        },
+        "/api/workspace/my": {
+            "get": _operation(
+                "我的工作台：可见范围内的任务、审批、待验收交付与最近执行",
+                tags=["workspace"], params=[_param("limit", typ="integer")],
+                ok_schema={"type": "object"}, errors=(),
+            )
+        },
+        "/api/workspace/notifications": {
+            "get": _operation(
+                "统一消息中心：审批 / 交付 / 阻塞任务 / 执行异常聚合，附个人已读状态",
+                tags=["workspace"],
+                params=[_param("status"), _param("project"), _param("limit", typ="integer")],
+                ok_schema={"type": "object"}, errors=(),
+            )
+        },
+        "/api/workspace/notifications/read": {
+            "post": _operation(
+                "标记消息已读/未读（只写个人偏好，不改业务状态）",
+                tags=["workspace"], body={"type": "object"},
+                ok_schema={"type": "object"}, errors=(400, 422),
+            )
+        },
+        "/api/search": {
+            "get": _operation(
+                "全局搜索：服务端按可见项目过滤后再匹配 project/task/agent/delivery/workflow/knowledge/release",
+                tags=["workspace"],
+                params=[_param("q", required=True), _param("types"), _param("project"),
+                        _param("limit", typ="integer")],
+                ok_schema={"type": "object"}, errors=(400,),
+            )
+        },
         "/api/agent/{agent_id}": {
             "get": _operation("Agent 执行轨迹", tags=["agent"], params=[_param("agent_id", "path", required=True)], ok_schema={"type": "object"}, errors=(404,))
         },
@@ -745,7 +787,7 @@ def build_openapi() -> dict[str, Any]:
         "servers": [{"url": "http://127.0.0.1:8099"}],
         "tags": [
             {"name": "meta"}, {"name": "state"}, {"name": "project"}, {"name": "template"},
-            {"name": "agent"}, {"name": "audit"}, {"name": "preference"}, {"name": "platform"},
+            {"name": "agent"}, {"name": "audit"}, {"name": "preference"}, {"name": "platform"}, {"name": "workspace"},
         ],
         "paths": _paths(),
         "components": {"schemas": _schemas()},

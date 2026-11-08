@@ -125,6 +125,12 @@ V12_TABLES = (
     "capability_grants",
 )
 
+#: v13（体验层）：消息已读状态与个人保存视图，只存个人偏好，不复制业务事实。
+V13_TABLES = (
+    "notification_states",
+    "saved_views",
+)
+
 #: v10（四期 M6）：业务价值域。
 V10_TABLES = (
     "outcome_metric_definitions",
@@ -368,6 +374,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         12,
         tables=V12_TABLES,
         description="四期 M8 P1 能力目录：上架与授权",
+    ),
+    MigrationStep(
+        13,
+        tables=V13_TABLES,
+        description="体验层：消息已读状态 + 个人保存视图",
     ),
 )
 

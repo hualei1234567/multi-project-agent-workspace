@@ -64,6 +64,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
+    from agent_platform import workspace as workspace_service
     from agent_platform.p4 import autonomy as autonomy_service
     from agent_platform.p4 import catalog as catalog_service
     from agent_platform.p4 import evaluation as evaluation_service
@@ -87,6 +88,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
+    from app.agent_platform import workspace as workspace_service
     from app.agent_platform.p4 import autonomy as autonomy_service
     from app.agent_platform.p4 import catalog as catalog_service
     from app.agent_platform.p4 import evaluation as evaluation_service
@@ -1951,6 +1953,17 @@ class Handler(BaseHTTPRequestHandler):
             "detail": {"code": exc.code, "message": exc.message},
         })
 
+
+    def _principal_id(self) -> str:
+        """当前请求的主体 id；鉴权关闭时一律按本机所有者处理。"""
+        principal = getattr(self, "principal", None)
+        pid = getattr(principal, "id", None)
+        if pid:
+            return str(pid)
+        if isinstance(principal, dict) and principal.get("id"):
+            return str(principal["id"])
+        return "local-owner"
+
     def _platform(self, fn, *args, **kwargs) -> None:
         try:
             self._json(200, fn(*args, **kwargs))
@@ -2060,6 +2073,22 @@ class Handler(BaseHTTPRequestHandler):
                     lambda: {"project": self._public_project(platform_service.create_project(payload))},
                 )
                 self._json(200, response)
+                return
+            if path == "/api/workspace/notifications/read":
+                payload = self._body()
+                keys = payload.get("keys") or ([payload["key"]] if payload.get("key") else [])
+                principal_id = self._principal_id()
+
+                def _mark():
+                    conn = platform_store.connect()
+                    try:
+                        return workspace_service.mark_notifications(
+                            conn, principal_id, keys, payload.get("state") or "read"
+                        )
+                    finally:
+                        conn.close()
+
+                self._platform(_mark)
                 return
             if path == "/api/team-templates":
                 payload = self._body()
@@ -2303,6 +2332,32 @@ class Handler(BaseHTTPRequestHandler):
             self._platform(
                 platform_service.recent_projects,
                 (query.get("limit") or ["20"])[0],
+            )
+        elif path == "/api/workspace/portfolio":
+            self._platform(workspace_service.portfolio, principal_id=self._principal_id())
+        elif path == "/api/workspace/my":
+            self._platform(
+                workspace_service.my_work,
+                principal_id=self._principal_id(),
+                limit=int((query.get("limit") or ["20"])[0]),
+            )
+        elif path == "/api/workspace/notifications":
+            self._platform(
+                workspace_service.notifications,
+                principal_id=self._principal_id(),
+                status=(query.get("status") or ["all"])[0],
+                project_id=(query.get("project") or [None])[0],
+                limit=int((query.get("limit") or ["100"])[0]),
+            )
+        elif path == "/api/search":
+            raw_types = (query.get("types") or [""])[0]
+            self._platform(
+                workspace_service.search,
+                q=(query.get("q") or [""])[0],
+                types=[t.strip() for t in raw_types.split(",") if t.strip()] or None,
+                project_id=(query.get("project") or [None])[0],
+                limit=int((query.get("limit") or ["30"])[0]),
+                principal_id=self._principal_id(),
             )
         elif path == "/api/audit-logs":
             self._platform(
