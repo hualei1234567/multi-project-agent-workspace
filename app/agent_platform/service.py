@@ -1418,7 +1418,7 @@ def list_sessions(project_id: str) -> dict[str, Any]:
         wt_name = item.get("worktree")
         wt_role_key = None
         if wt_name:
-            wt_role_key = sources.WORKTREE_ROLE_BY_DIR.get(wt_name) or sources._norm_role(wt_name)
+            wt_role_key = sources.role_for_worktree(wt_name)
             # worktree 里的会话属于在那个 worktree 干活的角色，不是总负责人
             role = roles_by_key.get(str(wt_role_key), role) or role
             agent_id = role.get("id") or agent_id

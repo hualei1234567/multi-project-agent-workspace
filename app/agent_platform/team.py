@@ -62,13 +62,20 @@ def _run(args: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProces
     )
 
 
-def _agents(cwd: Path) -> tuple[list[dict[str, Any]], str | None]:
-    """读取本机真实 Claude Code 会话（含交互式与后台）。"""
+def _agents(cwd: Path, *, include_finished: bool = False) -> tuple[list[dict[str, Any]], str | None]:
+    """读取本机真实 Claude Code 会话（含交互式与后台）。
+
+    ``include_finished`` 时带上已结束的后台会话：托管会话跑完一轮就会退出，
+    但会话本身可继续，不能因此显示「不存在」。
+    """
     binary = _claude()
     if not binary:
         return [], "未找到 claude CLI"
+    args = [binary, "agents", "--json"]
+    if include_finished:
+        args.append("--all")
     try:
-        proc = _run([binary, "agents", "--json"], cwd, QUERY_TIMEOUT_S)
+        proc = _run(args, cwd, QUERY_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError) as exc:
         return [], f"读取会话失败：{exc}"
     if proc.returncode != 0:
@@ -187,20 +194,26 @@ def owner_session_info(project: dict[str, Any]) -> dict[str, Any]:
                 "note": "还没有平台托管的会话；启动后平台与你的输入就是同一个会话。"}
     session_id = str(saved["session_id"])
     repo = Path(str(project.get("repo_root") or "")).expanduser()
-    sessions, error = _agents(repo) if repo.is_dir() else ([], "仓库不存在")
-    live = next((s for s in sessions if str(s.get("sessionId")) == session_id), None)
+    sessions, error = _agents(repo, include_finished=True) if repo.is_dir() else ([], "仓库不存在")
+    found = next((s for s in sessions if str(s.get("sessionId")) == session_id), None)
+    live = bool(found) and str((found or {}).get("status") or "") in ("busy", "idle", "running")
+    if not found:
+        note = "会话当前不在运行；「继续对话」会以 --bg --resume 在同一 id 上继续。"
+    elif live:
+        note = "会话在线：平台里「继续对话」与你在窗口里输入的是同一个会话。"
+    else:
+        note = "会话已结束一轮（可继续）：平台里「继续对话」会在同一 id 上接着聊。"
     return {
         "exists": True,
         "session_id": session_id,
         "agent": saved.get("agent"),
         "launched_at": saved.get("launched_at"),
-        "running": bool(live),
-        "status": (live or {}).get("status"),
-        "kind": (live or {}).get("kind"),
-        "pid": (live or {}).get("pid"),
+        "running": live,
+        "status": (found or {}).get("status"),
+        "kind": (found or {}).get("kind"),
+        "pid": (found or {}).get("pid"),
         "error": error,
-        "note": ("会话在线：平台里「继续对话」与你在窗口里输入的是同一个会话。"
-                 if live else "会话当前不在运行；「继续对话」会以 --bg --resume 在同一 id 上继续。"),
+        "note": note,
     }
 
 

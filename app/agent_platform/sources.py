@@ -337,6 +337,22 @@ def scan_status_files(repo_root: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def role_for_worktree(name: str) -> str | None:
+    """worktree 目录名 → 角色。目录可能带项目前缀（``ddp-be`` / ``mat-fe``）。"""
+    name = str(name or "").strip()
+    if not name:
+        return None
+    if name in WORKTREE_ROLE_BY_DIR:
+        return WORKTREE_ROLE_BY_DIR[name]
+    for key, role in WORKTREE_ROLE_BY_DIR.items():
+        if name.endswith("-" + key):
+            return role
+    lowered = name.lower()
+    if lowered.endswith(("-qa", "-qa-devops")):
+        return "qa-devops"
+    return _norm_role(name)
+
+
 def scan_worktrees(repo_root: Path) -> list[dict[str, Any]]:
     raw = _git("worktree", "list", "--porcelain", cwd=repo_root)
     items: list[dict[str, Any]] = []
@@ -355,9 +371,7 @@ def scan_worktrees(repo_root: Path) -> list[dict[str, Any]]:
 
     for item in items:
         path = Path(item["path"])
-        item["role_key"] = WORKTREE_ROLE_BY_DIR.get(path.name)
-        if not item["role_key"]:
-            item["role_key"] = _norm_role(path.name)
+        item["role_key"] = role_for_worktree(path.name)
         item["present"] = path.exists()
         item["branch"] = item.get("branch") or ("(detached)" if item.get("head") else None)
         if item["present"]:
