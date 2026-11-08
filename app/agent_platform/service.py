@@ -1163,6 +1163,93 @@ def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[
 
 
 # ---------------------------------------------------------------------------
+# 执行时间线（复用 agent_events，四态由证据推导）
+# ---------------------------------------------------------------------------
+#: 最近多少分钟内的事件算「运行中」；超过窗口又没有明确结果的一律「未验证」。
+TIMELINE_RUNNING_MINUTES = 15
+TIMELINE_STATES = ("running", "failed", "unverified", "ok")
+TIMELINE_STATE_LABEL = {
+    "running": "运行中",
+    "failed": "失败",
+    "unverified": "未验证",
+    "ok": "成功",
+}
+_EVENT_TYPE_LABEL = {
+    "subagent_run": "Subagent 运行",
+    "session_activity": "会话活动",
+    "status_report": "状态自报",
+    "tool_use": "工具调用",
+    "tool_result": "工具结果",
+}
+#: 只把「执行证据」纳入时间线。项目/任务创建这类生命周期事件不代表有谁跑过，
+#: 混进来会让「未运行」的项目看起来像执行成功。
+TIMELINE_EVENT_TYPES = tuple(_EVENT_TYPE_LABEL)
+
+
+def _event_state(event: dict[str, Any], fresh_cutoff: str) -> str:
+    """单个事件的状态。只有 ``ok=1`` 才算成功；缺证据一律「未验证」。"""
+    ok = event.get("ok")
+    fresh = str(event.get("occurred_at") or "") >= fresh_cutoff
+    if event.get("event_type") == "subagent_run":
+        if ok == 1:
+            return "ok"
+        if ok == 0:
+            # finished=false：近期还在跑，超窗口就说明没跑完也没有结论
+            return "running" if fresh else "unverified"
+    if ok is None:
+        # 状态自报 / 会话活动本身不携带结果，只能说明「有动静」
+        return "running" if fresh else "unverified"
+    return "ok" if ok else "failed"
+
+
+def execution_timeline(
+    project_id: str,
+    *,
+    state: str | None = None,
+    limit: int = 80,
+) -> dict[str, Any]:
+    """项目执行时间线 + 四态计数。没有任何事件时显式返回 ``no_evidence``。"""
+    if state and state not in TIMELINE_STATES:
+        raise PlatformError("invalid_payload", 422, "state 非法")
+    limit = max(1, min(int(limit or 80), 200))
+    with store.session() as conn:
+        _require_project(conn, project_id)
+        fresh_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=TIMELINE_RUNNING_MINUTES)).isoformat(timespec="seconds")
+        rows = conn.execute(
+            f"""
+            SELECT e.id, e.agent_id, e.session_id, e.event_type, e.message, e.tool, e.ok,
+                   e.occurred_at, a.display_name AS agent_name, a.role_key
+            FROM agent_events e LEFT JOIN project_agents a
+              ON a.id = e.agent_id AND a.project_id = e.project_id
+            WHERE e.project_id = ? AND e.event_type IN ({",".join("?" * len(TIMELINE_EVENT_TYPES))})
+            ORDER BY e.occurred_at DESC
+            LIMIT 500
+            """,
+            (project_id, *TIMELINE_EVENT_TYPES),
+        ).fetchall()
+        counts = {key: 0 for key in TIMELINE_STATES}
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            event = dict(row)
+            event["state"] = _event_state(event, fresh_cutoff)
+            event["state_label"] = TIMELINE_STATE_LABEL[event["state"]]
+            event["type_label"] = _EVENT_TYPE_LABEL.get(event["event_type"], event["event_type"])
+            counts[event["state"]] += 1
+            items.append(event)
+        total = len(items)
+        shown = [item for item in items if not state or item["state"] == state][:limit]
+        return {
+            "items": shown,
+            "total": total,
+            "counts": counts,
+            "state": state,
+            "status": "no_evidence" if total == 0 else "has_evidence",
+            "last_activity_at": items[0]["occurred_at"] if items else None,
+            "running_window_minutes": TIMELINE_RUNNING_MINUTES,
+        }
+
+
+# ---------------------------------------------------------------------------
 # 模板 / 回填
 # ---------------------------------------------------------------------------
 TEMPLATE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")

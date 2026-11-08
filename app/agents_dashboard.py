@@ -2490,6 +2490,13 @@ class Handler(BaseHTTPRequestHandler):
                     page_size=(query.get("page_size") or ["20"])[0],
                 )
                 return
+            if rest == ["timeline"]:
+                self._platform(
+                    platform_service.execution_timeline, project_id,
+                    state=(query.get("state") or [None])[0],
+                    limit=int((query.get("limit") or ["80"])[0]),
+                )
+                return
             self._not_found_route()
         elif path == "/view":
             # 独立查看页：新标签页直接展示内容；路径仍走 safe_project_path 白名单。

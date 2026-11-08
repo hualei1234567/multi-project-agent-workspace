@@ -110,6 +110,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("PATCH", "/api/projects/{project_id}/documents/{document_id}"),
     ("DELETE", "/api/projects/{project_id}/documents/{document_id}"),
     ("GET", "/api/projects/{project_id}/events"),
+    ("GET", "/api/projects/{project_id}/timeline"),
     ("PUT", "/api/projects/{project_id}/favorite"),
     ("DELETE", "/api/projects/{project_id}/favorite"),
     ("POST", "/api/projects/{project_id}/visit"),
@@ -724,6 +725,9 @@ def _paths() -> dict[str, Any]:
             "delete": project_op("delete", "删除文档索引", params=[_param("document_id", "path", required=True)], errors=(404,))[2],
         },
         "/api/projects/{project_id}/events": {"get": project_op("get", "项目事件（分页）", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2]},
+        "/api/projects/{project_id}/timeline": {
+            "get": project_op("get", "执行时间线：四态（运行中/失败/未验证/成功）由证据推导", params=[_param("state", "query"), _param("limit", "query")])[2]
+        },
         "/api/projects/{project_id}/favorite": {
             "put": project_op("put", "收藏项目", errors=(404,))[2],
             "delete": project_op("delete", "取消收藏", errors=(404,))[2],

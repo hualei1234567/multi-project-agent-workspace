@@ -498,6 +498,44 @@ async function main() {
     check(new URL(page.url()).hash === `#/p/${code}/deliveries?stage=rejected`, "刷新后环节筛选保持", new URL(page.url()).hash);
     await page.screenshot({ path: join(SHOT_DIR, "05-delivery-center.png"), fullPage: true });
 
+    // -------------------------------------------------------- 8) 执行时间线
+    // 先看无事件项目：必须显式「未运行」，不能显示成成功
+    await page.goto(`${BASE}/#/p/${code}/executions`, { waitUntil: "domcontentloaded" });
+    await settle(page, 800);
+    const emptyText = await page.locator("#tl-rows").innerText().catch(() => "");
+    check(emptyText.includes("未运行") && emptyText.includes("不代表执行成功"), "无证据时显示未运行", emptyText.replace(/\s+/g, " ").slice(0, 70));
+
+    // 四态必须来自证据：ok=1 才成功；无结果的近期活动算运行中；过期无结果算未验证
+    const nowIso = new Date().toISOString();
+    const agoIso = (min) => new Date(Date.now() - min * 60000).toISOString();
+    const tlSql = [
+      `INSERT OR REPLACE INTO agent_events (id, project_id, event_type, message, tool, ok, occurred_at) VALUES`,
+      `('qa-tl-ok','${code}','subagent_run','完成实现',NULL,1,'${nowIso}'),`,
+      `('qa-tl-fail','${code}','tool_use','构建失败','Bash',0,'${agoIso(5)}'),`,
+      `('qa-tl-unv','${code}','subagent_run','没跑完',NULL,0,'${agoIso(180)}'),`,
+      `('qa-tl-run','${code}','status_report','正在执行',NULL,NULL,'${agoIso(2)}');`,
+    ].join(" ");
+    execFileSync("sqlite3", [DB_PATH, tlSql], { stdio: "pipe" });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(".tl-row").first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const tlChips = (await page.locator("#tl-filter").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/运行中 1/.test(tlChips) && /失败 1/.test(tlChips) && /未验证 1/.test(tlChips) && /成功 1/.test(tlChips),
+      "时间线四态计数正确", tlChips);
+    const tlStates = await page.locator(".tl-row .tl-state").allInnerTexts().catch(() => []);
+    check(tlStates.includes("运行中") && tlStates.includes("失败") && tlStates.includes("未验证") && tlStates.includes("成功"),
+      "时间线逐条标注状态", tlStates.join("/"));
+    const tlNote = await page.locator(".tl-note").innerText().catch(() => "");
+    check(tlNote.includes("只有明确 ok 的事件才是「成功」"), "时间线说明成功口径", tlNote.slice(0, 60));
+
+    await page.locator('.tl-chip[data-tlstate="failed"]').click();
+    await sleep(600);
+    check(new URL(page.url()).hash === `#/p/${code}/executions?state=failed`, "时间线筛选写入 URL", new URL(page.url()).hash);
+    const failedRows = await page.locator(".tl-row").count();
+    check(failedRows === 1, "筛选后只剩失败事件", `rows=${failedRows}`);
+
+    await page.screenshot({ path: join(SHOT_DIR, "06-timeline.png"), fullPage: true });
+
     // 清理：删除测试项目，避免污染临时库；夹具是本轮新建的也一并删掉
     cleanupProject(code);
     if (fixtureCreated) cleanupProject("demo-b");
