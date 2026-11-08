@@ -2123,6 +2123,7 @@ function bindPortfolioFilters(d) {
         <div class="ws-proj-stats"><span>完成 ${t0.done ?? "—"}/${t0.total ?? "—"}</span>
           <span>阻塞 ${t0.blocked ?? "—"}</span><span>待验收 ${p0.pending_deliveries ?? "—"}</span>
           <span>待审批 ${p0.pending_approvals ?? "—"}</span></div>
+        ${(p0.risk_reasons || []).length ? `<div class="ws-reasons">${p0.risk_reasons.map(r => `<span>${esc(r)}</span>`).join("")}</div>` : ""}
         ${ex0.total ? `<div class="ws-exec ${esc(ex0.last_state || "")}">执行 ${ex0.total} 次（近 ${ex0.window_hours}h）
           <span>成功 ${ex0.counts?.ok ?? 0}</span><span>失败 ${ex0.counts?.failed ?? 0}</span>
           <span>未验证 ${ex0.counts?.unverified ?? 0}</span>
