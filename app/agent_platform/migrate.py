@@ -131,6 +131,17 @@ V13_TABLES = (
     "saved_views",
 )
 
+#: v14（交付中心）：交付校验结果与返工次数。校验结果只是证据快照，
+#: 交付状态仍以 ``deliveries.status`` 为唯一事实源。
+V14_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("deliveries", (
+        ("validation_state", "TEXT"),
+        ("validated_at", "TEXT"),
+        ("validation_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("resubmit_count", "INTEGER NOT NULL DEFAULT 0"),
+    )),
+)
+
 #: v10（四期 M6）：业务价值域。
 V10_TABLES = (
     "outcome_metric_definitions",
@@ -379,6 +390,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         13,
         tables=V13_TABLES,
         description="体验层：消息已读状态 + 个人保存视图",
+    ),
+    MigrationStep(
+        14,
+        columns=V14_COLUMN_UPGRADES,
+        description="交付中心：校验结果快照 + 返工次数",
     ),
 )
 

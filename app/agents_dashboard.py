@@ -2185,6 +2185,12 @@ class Handler(BaseHTTPRequestHandler):
         if len(rest) == 3 and rest[0] == "deliveries" and rest[2] == "review":
             self._platform(platform_service.review_delivery, project_id, rest[1], self._body())
             return
+        if len(rest) == 3 and rest[0] == "deliveries" and rest[2] == "validate":
+            self._platform(platform_service.validate_delivery, project_id, rest[1])
+            return
+        if len(rest) == 3 and rest[0] == "deliveries" and rest[2] == "resubmit":
+            self._platform(platform_service.resubmit_delivery, project_id, rest[1], self._body())
+            return
         if rest == ["documents"]:
             self._platform(platform_service.create_document, project_id, self._body())
             return
@@ -2449,7 +2455,11 @@ class Handler(BaseHTTPRequestHandler):
                     status=(query.get("status") or [None])[0],
                     kind=(query.get("kind") or [None])[0],
                     task=(query.get("task") or [None])[0],
+                    stage=(query.get("stage") or [None])[0],
                 )
+                return
+            if len(rest) == 2 and rest[0] == "deliveries":
+                self._platform(platform_service.get_delivery, project_id, rest[1])
                 return
             if rest == ["executions"]:
                 self._platform(

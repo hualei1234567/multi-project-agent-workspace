@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -1081,9 +1082,12 @@ def list_deliveries(
     status: str | None = None,
     kind: str | None = None,
     task: str | None = None,
+    stage: str | None = None,
 ) -> dict[str, Any]:
     """列表合并只读镜像 + 平台内交付；镜像行标记 ``readonly: true``。"""
     page, size = _pagination(page, page_size)
+    if stage and stage not in {key for key, _l, _h in DELIVERY_STAGES} | {"mirror"}:
+        raise PlatformError("invalid_payload", 422, "stage 非法")
     with store.session() as conn:
         _require_project(conn, project_id)
         where = ["d.project_id = ?"]
@@ -1097,6 +1101,19 @@ def list_deliveries(
         if task:
             where.append("(d.task_id = ? OR t.task_key = ?)")
             params.extend([task, task])
+        # stage 是派生环节（validated = submitted + 已有校验结论），在这里翻译成 SQL，
+        # 避免前端分页后再过滤导致计数对不上。
+        if stage == "submitted":
+            where.append("d.source != 'mirror' AND d.status = 'submitted'"
+                         " AND (d.validation_state IS NULL OR d.validation_state = '')")
+        elif stage == "validated":
+            where.append("d.source != 'mirror' AND d.status = 'submitted'"
+                         " AND d.validation_state IS NOT NULL AND d.validation_state != ''")
+        elif stage == "mirror":
+            where.append("d.source = 'mirror'")
+        elif stage in {"accepted", "rejected"}:
+            where.append("d.source != 'mirror' AND d.status = ?")
+            params.append(stage)
         clause = " AND ".join(where)
         total = _scalar(
             conn,
@@ -1118,7 +1135,13 @@ def list_deliveries(
             item = dict(row)
             item["readonly"] = item.get("source") == "mirror"
             items.append(item)
-        return {"items": items, "total": total, "page": page, "page_size": size}
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": size,
+            "pipeline": _delivery_pipeline(conn, project_id),
+        }
 
 
 def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
@@ -1960,7 +1983,7 @@ def review_delivery(
     conn = store.connect()
     try:
         store.init_db(conn)
-        _require_project(conn, project_id, write=True)
+        project = _require_project(conn, project_id, write=True)
         row = conn.execute(
             "SELECT * FROM deliveries WHERE id = ? AND project_id = ?",
             (delivery_id, project_id),
@@ -1969,11 +1992,20 @@ def review_delivery(
             raise PlatformError("not_found", 404, "交付不存在")
         if row["source"] == "mirror":
             raise PlatformError("readonly_resource", 409, "镜像交付只读")
+        # 验收必然先校验：把证据快照写回，硬失败项（如实不存在的产物）直接拦住验收。
+        # 未验证项（无路径/无 sha）不拦，但会带着 validation_state=unverified 落库，
+        # 页面上必须显式标注，不能当成「已验证通过」。
+        checks = _delivery_checks(conn, project, row)
+        state = _overall_state(checks)
         now = store.now_iso()
+        snapshot = {"state": state, "checks": checks, "checked_at": now}
+        if decision == "accepted" and state == "fail":
+            failed = "；".join(c["detail"] for c in checks if c["state"] == "fail")
+            raise PlatformError("validation_failed", 409, f"交付校验未通过：{failed}")
         conn.execute(
             """
             UPDATE deliveries SET status = ?, reviewer = ?, reviewed_at = ?, rejection_reason = ?,
-                updated_at = ?
+                updated_at = ?, validation_state = ?, validated_at = ?, validation_json = ?
             WHERE id = ?
             """,
             (
@@ -1982,13 +2014,17 @@ def review_delivery(
                 now,
                 comment or None,
                 now,
+                state,
+                now,
+                store.dumps_json(snapshot),
                 delivery_id,
             ),
         )
         audit(
             conn, project_id, "delivery.review", "delivery", delivery_id,
             detail={"decision": decision, "comment": comment or None,
-                    "title": row["title"]},
+                    "title": row["title"], "validation_state": state,
+                    "failed_checks": [c["key"] for c in checks if c["state"] == "fail"]},
         )
         updated = conn.execute(
             "SELECT d.*, t.task_key FROM deliveries d "
@@ -1996,7 +2032,322 @@ def review_delivery(
             "WHERE d.id = ?",
             (delivery_id,),
         ).fetchone()
-        return {"delivery": _delivery_dict(updated, updated["task_key"])}
+        return {
+            "delivery": _delivery_dict(updated, updated["task_key"]),
+            "validation": snapshot,
+        }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 交付中心：提交 → 校验 → 验收 → 返工
+# ---------------------------------------------------------------------------
+#: 页面上的显式环节；``validated`` 是派生状态（status=submitted 且已有校验结论），
+#: 不新增 status 取值，避免多套状态机并存。
+DELIVERY_STAGES: tuple[tuple[str, str, str], ...] = (
+    ("submitted", "已提交", "等待校验"),
+    ("validated", "已校验", "已有校验结论，等待验收"),
+    ("accepted", "已验收", "验收通过"),
+    ("rejected", "返工中", "已退回，等待重新提交"),
+)
+DELIVERY_STAGE_LABEL = {key: label for key, label, _hint in DELIVERY_STAGES}
+VALIDATION_STATES = frozenset({"pass", "fail", "unverified"})
+
+
+def _delivery_stage(item: Any) -> str:
+    """交付当前环节；镜像行不可验收，单独记作 mirror。"""
+    data = dict(item)
+    if data.get("source") == "mirror":
+        return "mirror"
+    status = data.get("status") or "submitted"
+    if status in {"accepted", "rejected"}:
+        return status
+    return "validated" if data.get("validation_state") else "submitted"
+
+
+def _check(key: str, label: str, state: str, detail: str) -> dict[str, Any]:
+    return {"key": key, "label": label, "state": state, "detail": detail}
+
+
+def _overall_state(checks: list[dict[str, Any]]) -> str:
+    states = {c["state"] for c in checks}
+    if "fail" in states:
+        return "fail"
+    if "unverified" in states:
+        return "unverified"
+    return "pass"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 256), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_delivery_path(project: dict[str, Any], raw: str) -> Path | None:
+    if not raw:
+        return None
+    candidate = Path(str(raw)).expanduser()
+    if not candidate.is_absolute():
+        root = str(project.get("repo_root") or "").strip()
+        if not root:
+            return None
+        candidate = Path(root).expanduser() / candidate
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
+def _delivery_checks(
+    conn: sqlite3.Connection, project: dict[str, Any], row: sqlite3.Row | dict[str, Any]
+) -> list[dict[str, Any]]:
+    """对一条交付做可复核的校验。每项只给 pass / fail / unverified 三态。
+
+    - ``pass`` 必须有证据（任务查到、文件读到、sha 对上）
+    - ``fail`` 是确定性失败（任务不存在、文件不存在、sha 不一致）
+    - ``unverified`` 是**无法核对**，页面上必须显示为「未验证」，不能当成功
+    """
+    item = dict(row)
+    checks: list[dict[str, Any]] = []
+
+    task = None
+    if item.get("task_id"):
+        task = conn.execute(
+            "SELECT task_key, status FROM tasks WHERE id = ? AND project_id = ?",
+            (item["task_id"], project["id"]),
+        ).fetchone()
+        if task is None:
+            checks.append(_check("task", "关联任务", "fail", f"任务 {item['task_id']} 在本项目内不存在"))
+        elif task["status"] not in {"review", "done"}:
+            checks.append(_check(
+                "task", "关联任务", "unverified",
+                f"{task['task_key']} 当前状态为 {task['status']}，通常应在 review/done",
+            ))
+        else:
+            checks.append(_check("task", "关联任务", "pass", f"{task['task_key']} · {task['status']}"))
+    else:
+        checks.append(_check("task", "关联任务", "unverified", "交付未关联任务，无法核对来源"))
+
+    path = _resolve_delivery_path(project, item.get("path") or "")
+    if path is None:
+        checks.append(_check("artifact", "产物文件", "unverified", "未记录可解析的交付路径"))
+    elif not path.exists():
+        checks.append(_check("artifact", "产物文件", "fail", f"{path} 不存在"))
+    elif not path.is_file():
+        checks.append(_check("artifact", "产物文件", "unverified", f"{path} 不是普通文件"))
+    else:
+        size = path.stat().st_size
+        checks.append(_check("artifact", "产物文件", "pass", f"{path.name} · {size} 字节"))
+
+    sha = str(item.get("sha") or "").strip().lower()
+    if path is not None and path.is_file() and re.fullmatch(r"[0-9a-f]{64}", sha):
+        try:
+            actual = _sha256_file(path)
+        except OSError as exc:  # pragma: no cover - 权限异常极少见
+            checks.append(_check("sha", "内容指纹", "unverified", f"读取失败：{exc}"))
+        else:
+            if actual == sha:
+                checks.append(_check("sha", "内容指纹", "pass", "sha256 一致"))
+            else:
+                checks.append(_check(
+                    "sha", "内容指纹", "fail",
+                    f"记录 {sha[:12]}… 实际 {actual[:12]}…",
+                ))
+    elif sha:
+        checks.append(_check(
+            "sha", "内容指纹", "unverified", f"记录为短哈希 {sha[:12]}，无法直接核对内容",
+        ))
+    else:
+        checks.append(_check("sha", "内容指纹", "unverified", "未记录 sha，无法核对产物内容"))
+
+    summary = str(item.get("summary") or "").strip()
+    if summary:
+        checks.append(_check("summary", "交付说明", "pass", summary[:80]))
+    else:
+        checks.append(_check("summary", "交付说明", "unverified", "未填写交付说明，验收缺少上下文"))
+
+    root = str(project.get("repo_root") or "").strip()
+    if path is not None and path.exists() and root:
+        try:
+            inside = path.is_relative_to(Path(root).expanduser().resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside:
+            checks.append(_check("scope", "仓库归属", "pass", "产物在项目仓库内"))
+        else:
+            checks.append(_check(
+                "scope", "仓库归属", "unverified", f"产物不在项目仓库 {root} 内，需人工确认归属",
+            ))
+    return checks
+
+
+def _delivery_pipeline(conn: sqlite3.Connection, project_id: str) -> dict[str, Any]:
+    """各环节计数（口径与页面一致，镜像行单列）。"""
+    counts = {key: 0 for key, _label, _hint in DELIVERY_STAGES}
+    counts["mirror"] = 0
+    total = 0
+    for row in conn.execute(
+        "SELECT status, validation_state, source FROM deliveries WHERE project_id = ?",
+        (project_id,),
+    ):
+        total += 1
+        counts[_delivery_stage(row)] += 1
+    stages = [
+        {"key": key, "label": label, "hint": hint, "count": counts[key]}
+        for key, label, hint in DELIVERY_STAGES
+    ]
+    return {
+        "total": total,
+        "reviewable": sum(counts[key] for key, _l, _h in DELIVERY_STAGES),
+        "mirror": counts["mirror"],
+        "stages": stages,
+    }
+
+
+def _delivery_row(conn: sqlite3.Connection, project_id: str, delivery_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT d.*, t.task_key FROM deliveries d "
+        "LEFT JOIN tasks t ON t.id = d.task_id AND t.project_id = d.project_id "
+        "WHERE d.id = ? AND d.project_id = ?",
+        (delivery_id, project_id),
+    ).fetchone()
+    if row is None:
+        raise PlatformError("not_found", 404, "交付不存在")
+    return row
+
+
+def get_delivery(project_id: str, delivery_id: str) -> dict[str, Any]:
+    """交付详情：当前结论 + 现场复核 + 流转历史（历史来自 audit_logs）。"""
+    with store.session() as conn:
+        project = _require_project(conn, project_id)
+        row = _delivery_row(conn, project_id, delivery_id)
+        item = _delivery_dict(row, row["task_key"])
+        checks = _delivery_checks(conn, project, row)
+        stored = store.loads_json(item.get("validation_json"), {})
+        history: list[dict[str, Any]] = [{
+            "action": "delivery.submit",
+            "label": "提交交付",
+            "actor": "local",
+            "at": row["created_at"],
+            "detail": {"title": row["title"]},
+        }]
+        labels = {
+            "delivery.validate": "执行校验",
+            "delivery.review": "验收结论",
+            "delivery.resubmit": "返工重新提交",
+        }
+        for event in conn.execute(
+            "SELECT rowid AS seq, action, actor, result, detail_json, created_at FROM audit_logs "
+            "WHERE resource_type = 'delivery' AND resource_id = ? "
+            "ORDER BY created_at ASC, seq ASC",
+            (delivery_id,),
+        ):
+            history.append({
+                "action": event["action"],
+                "label": labels.get(event["action"], event["action"]),
+                "actor": event["actor"],
+                "result": event["result"],
+                "at": event["created_at"],
+                "detail": store.loads_json(event["detail_json"], {}),
+            })
+        return {
+            "delivery": item,
+            "stage": _delivery_stage(row),
+            "checks": checks,
+            "live_state": _overall_state(checks),
+            "validation": stored,
+            "history": history,
+        }
+
+
+def validate_delivery(project_id: str, delivery_id: str, *, actor: str = "local") -> dict[str, Any]:
+    """执行校验并落库。只写校验快照，不改交付状态本身。"""
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        project = _require_project(conn, project_id, write=True)
+        row = _delivery_row(conn, project_id, delivery_id)
+        if row["source"] == "mirror":
+            raise PlatformError("readonly_resource", 409, "镜像交付只读，无法校验")
+        checks = _delivery_checks(conn, project, row)
+        state = _overall_state(checks)
+        now = store.now_iso()
+        snapshot = {"state": state, "checks": checks, "checked_at": now}
+        conn.execute(
+            "UPDATE deliveries SET validation_state = ?, validated_at = ?, validation_json = ?,"
+            " updated_at = ? WHERE id = ?",
+            (state, now, store.dumps_json(snapshot), now, delivery_id),
+        )
+        audit(
+            conn, project_id, "delivery.validate", "delivery", delivery_id,
+            detail={
+                "state": state,
+                "failed": [c["key"] for c in checks if c["state"] == "fail"],
+                "unverified": [c["key"] for c in checks if c["state"] == "unverified"],
+            },
+            actor=actor,
+        )
+        return {
+            "delivery": _delivery_dict(_delivery_row(conn, project_id, delivery_id)),
+            "validation": snapshot,
+            "stage": _delivery_stage({**dict(row), "validation_state": state}),
+        }
+    finally:
+        conn.close()
+
+
+def resubmit_delivery(
+    project_id: str, delivery_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """返工后重新提交：只能从 rejected 出发，必须说明本次修改。"""
+    if not isinstance(payload, dict):
+        raise PlatformError("invalid_json", 400)
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        _require_project(conn, project_id, write=True)
+        row = _delivery_row(conn, project_id, delivery_id)
+        if row["source"] == "mirror":
+            raise PlatformError("readonly_resource", 409, "镜像交付只读")
+        if row["status"] != "rejected":
+            raise PlatformError("invalid_state", 409, "只有已退回的交付可以重新提交")
+        note = str(payload.get("note") or "").strip()
+        if not note:
+            raise PlatformError("invalid_payload", 422, "重新提交必须说明本次修改内容")
+        now = store.now_iso()
+        conn.execute(
+            """
+            UPDATE deliveries SET
+                status = 'submitted', reviewer = NULL, reviewed_at = NULL, rejection_reason = NULL,
+                validation_state = NULL, validated_at = NULL, validation_json = '{}',
+                resubmit_count = COALESCE(resubmit_count, 0) + 1, updated_at = ?,
+                path = COALESCE(?, path), sha = COALESCE(?, sha), summary = COALESCE(?, summary)
+            WHERE id = ?
+            """,
+            (
+                now,
+                str(payload.get("path") or "").strip() or None,
+                str(payload.get("sha") or "").strip() or None,
+                str(payload.get("summary") or "").strip() or None,
+                delivery_id,
+            ),
+        )
+        audit(
+            conn, project_id, "delivery.resubmit", "delivery", delivery_id,
+            detail={
+                "note": note,
+                "previous_reason": row["rejection_reason"],
+                "resubmit_count": int(row["resubmit_count"] or 0) + 1,
+            },
+        )
+        return {
+            "delivery": _delivery_dict(_delivery_row(conn, project_id, delivery_id)),
+            "stage": "submitted",
+        }
     finally:
         conn.close()
 

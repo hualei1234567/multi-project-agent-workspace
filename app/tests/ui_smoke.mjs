@@ -422,6 +422,82 @@ async function main() {
     check(newToken === "0" && newCost === "—" && newDoing === "0", "新项目状态为空（Token 0 / 花费 — / 任务 0）", `${newToken} / ${newCost} / ${newDoing}`);
     await page.screenshot({ path: join(SHOT_DIR, "04-new-project.png"), fullPage: true });
 
+    // ------------------------------------------------------ 7) 交付中心流程
+    // 用刚建的临时项目跑：提交 → 校验（无证据=未验证，不能当通过）→ 退回 → 返工重提
+    const dlvRes = await fetch(`${BASE}/api/projects/${code}/deliveries`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "冒烟交付物", kind: "document", summary: "用于验证交付中心" }),
+    }).then((r) => r.json()).catch(() => ({}));
+    const dlvId = dlvRes?.delivery?.id;
+    check(Boolean(dlvId), "创建冒烟交付", String(dlvId || JSON.stringify(dlvRes).slice(0, 80)));
+
+    await page.goto(`${BASE}/#/p/${code}/deliveries`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="delivery-flow"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const flowText = (await page.locator('[data-testid="delivery-flow"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/已提交/.test(flowText) && /已校验/.test(flowText) && /已验收/.test(flowText) && /返工中/.test(flowText),
+      "交付流程四环节完整", flowText.slice(0, 90));
+    const badge0 = await page.locator(`tr[data-delivery-id="${dlvId}"] .dlv-badge`).innerText().catch(() => "");
+    check(badge0.includes("未校验"), "新交付标记未校验", badge0);
+
+    // 执行校验：无路径/无 sha → 未验证（不是通过，也不是失败）
+    await page.locator(`[data-testid="delivery-validate-${dlvId}"]`).click();
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="delivery-error"]')), null, { timeout: 10000 }).catch(() => {});
+    const valErr = await page.locator('[data-testid="delivery-error"]').innerText().catch(() => "");
+    check(valErr.includes("未验证"), "校验结论显示未验证", valErr.replace(/\s+/g, " ").slice(0, 70));
+    const badge1 = await page.locator(`tr[data-delivery-id="${dlvId}"] .dlv-badge`).innerText().catch(() => "");
+    check(badge1.includes("未验证"), "行内校验徽标更新为未验证", badge1);
+
+    // 详情：校验项 + 流转历史
+    await page.locator(`[data-testid="delivery-detail-${dlvId}"]`).click();
+    await page.locator('[data-testid="delivery-checks"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    const checksText = (await page.locator('[data-testid="delivery-checks"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(checksText.includes("产物文件") && checksText.includes("未验证"), "详情展示校验项", checksText.slice(0, 90));
+    const histText = (await page.locator('[data-testid="delivery-history"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(histText.includes("提交交付") && histText.includes("执行校验"), "详情展示流转历史", histText.slice(0, 90));
+
+    // 退回：必须在详情里走验收/退回，并留驳回理由
+    await page.locator('[data-testid="delivery-detail-review"]').click();
+    await page.locator("#dr-comment").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    await page.locator('#dr-decision button[data-decision="rejected"]').click();
+    await page.locator("#dr-comment").fill("冒烟：缺少产物证据");
+    await page.locator('[data-testid="delivery-review-confirm"]').click();
+    await page.waitForFunction((id) => {
+      const row = document.querySelector(`tr[data-delivery-id="${id}"]`);
+      return Boolean(row && row.innerText.includes("已退回"));
+    }, dlvId, { timeout: 10000 }).catch(() => {});
+    const statusAfterReject = await page.locator(`tr[data-delivery-id="${dlvId}"]`).innerText().catch(() => "");
+    check(statusAfterReject.includes("已退回"), "退回后状态为已退回", statusAfterReject.replace(/\s+/g, " ").slice(0, 70));
+
+    // 返工重提：只从 rejected 出发，必须填修改说明
+    await page.locator(`[data-testid="delivery-detail-${dlvId}"]`).click();
+    await page.locator('[data-testid="delivery-detail-resubmit"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    const canResubmit = await page.locator('[data-testid="delivery-detail-resubmit"]').count();
+    check(canResubmit === 1, "退回后出现重新提交入口", `count=${canResubmit}`);
+    await page.locator('[data-testid="delivery-detail-resubmit"]').click();
+    await page.locator("#rs-note").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    await page.locator('[data-testid="delivery-resubmit-confirm"]').click();
+    await sleep(300);
+    const noteErr = await page.locator("#rs-err").innerText().catch(() => "");
+    check(noteErr.includes("必须说明"), "重新提交必须填说明", noteErr);
+    await page.locator("#rs-note").fill("冒烟：补充修改说明后重提");
+    await page.locator('[data-testid="delivery-resubmit-confirm"]').click();
+    await page.waitForFunction((id) => {
+      const row = document.querySelector(`tr[data-delivery-id="${id}"]`);
+      return Boolean(row && row.innerText.includes("返工 1 次"));
+    }, dlvId, { timeout: 10000 }).catch(() => {});
+    const afterResubmit = await page.locator(`tr[data-delivery-id="${dlvId}"]`).innerText().catch(() => "");
+    check(afterResubmit.includes("返工 1 次") && afterResubmit.includes("已提交"), "重新提交回到已提交并累计返工次数", afterResubmit.replace(/\s+/g, " ").slice(0, 80));
+
+    // 环节筛选：写进 URL，刷新不丢
+    await page.locator('.dlv-stage[data-stage="rejected"]').click();
+    await sleep(500);
+    check(new URL(page.url()).hash === `#/p/${code}/deliveries?stage=rejected`, "环节筛选写入 URL", new URL(page.url()).hash);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await settle(page, 800);
+    check(new URL(page.url()).hash === `#/p/${code}/deliveries?stage=rejected`, "刷新后环节筛选保持", new URL(page.url()).hash);
+    await page.screenshot({ path: join(SHOT_DIR, "05-delivery-center.png"), fullPage: true });
+
     // 清理：删除测试项目，避免污染临时库；夹具是本轮新建的也一并删掉
     cleanupProject(code);
     if (fixtureCreated) cleanupProject("demo-b");

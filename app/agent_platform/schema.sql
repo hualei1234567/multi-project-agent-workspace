@@ -92,7 +92,12 @@ CREATE TABLE IF NOT EXISTS deliveries (
   reviewed_at TEXT,
   rejection_reason TEXT,
   updated_at TEXT,
-  source     TEXT NOT NULL DEFAULT 'platform'
+  source     TEXT NOT NULL DEFAULT 'platform',
+  -- v14 交付中心：校验结果与返工次数（校验只存证据快照，不复制交付事实）
+  validation_state TEXT,
+  validated_at     TEXT,
+  validation_json  TEXT NOT NULL DEFAULT '{}',
+  resubmit_count   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS agent_events (

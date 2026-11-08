@@ -438,9 +438,10 @@ table { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout:
 }
 #reports col.c-name { width: 42%; } #reports col.c-dir { width: 16%; }
 #reports col.c-size { width: 12%; } #reports col.c-time { width: 30%; }
-#deliveries col.c-name { width: 30%; } #deliveries col.c-kind { width: 12%; }
-#deliveries col.c-task { width: 14%; } #deliveries col.c-path { width: 26%; }
-#deliveries col.c-time { width: 18%; }
+#deliveries col.c-name { width: 26%; } #deliveries col.c-stage { width: 10%; }
+#deliveries col.c-check { width: 10%; } #deliveries col.c-kind { width: 9%; }
+#deliveries col.c-task { width: 11%; } #deliveries col.c-time { width: 14%; }
+#deliveries col.c-act { width: 20%; }
 th { white-space: nowrap; }
 td { overflow-wrap: anywhere; }
 #wt td:nth-child(4) { white-space: nowrap; font-size: 10px; letter-spacing: -.2px; }
@@ -672,10 +673,54 @@ tbody tr:last-child td { border-bottom: none; }
 #audit-table col.c-time { width: 19%; } #audit-table col.c-proj { width: 15%; }
 #audit-table col.c-action { width: 19%; } #audit-table col.c-res { width: 25%; }
 #audit-table col.c-ok { width: 9%; } #audit-table col.c-actor { width: 13%; }
-#deliveries col.c-name { width: 22%; } #deliveries col.c-status { width: 10%; }
-#deliveries col.c-kind { width: 8%; } #deliveries col.c-task { width: 10%; }
-#deliveries col.c-path { width: 20%; } #deliveries col.c-time { width: 16%; }
-#deliveries col.c-act { width: 14%; }
+#deliveries col.c-name { width: 24%; } #deliveries col.c-stage { width: 10%; }
+#deliveries col.c-check { width: 10%; } #deliveries col.c-kind { width: 8%; }
+#deliveries col.c-task { width: 10%; } #deliveries col.c-time { width: 14%; }
+#deliveries col.c-act { width: 24%; }
+
+
+/* ---------- 交付中心（提交 → 校验 → 验收 → 返工） ---------- */
+.dlv-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; align-items: center; }
+.dlv-flow::before { content: "交付流程"; font-size: 12px; color: var(--muted); margin-right: 2px; }
+.dlv-stage { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); font-size: 12.5px; cursor: pointer; }
+.dlv-stage span { font-family: var(--mono, ui-monospace, monospace); color: var(--muted); }
+.dlv-stage.on { border-color: var(--accent); color: var(--accent); }
+.dlv-stage.on span { color: var(--accent); }
+.dlv-badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11.5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.dlv-badge.ok { color: var(--ok, #3fb950); border-color: currentColor; }
+.dlv-badge.bad { color: var(--bad, #f85149); border-color: currentColor; }
+.dlv-badge.warn { color: var(--warn, #d29922); border-color: currentColor; }
+.dlv-rw { font-size: 11px; color: var(--warn, #d29922); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; }
+.dlv-ops { display: flex; gap: 6px; flex-wrap: nowrap; }
+.dlv-ops .btn { padding: 2px 8px; font-size: 12px; }
+.dlv-steps { display: flex; align-items: center; gap: 6px; margin: 14px 0 4px; flex-wrap: wrap; }
+.dlv-step { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.dlv-step.done { color: var(--ok, #3fb950); border-color: currentColor; }
+.dlv-step.active { color: var(--accent); border-color: currentColor; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.dlv-step.fail { color: var(--bad, #f85149); border-color: currentColor; }
+.dlv-step.skip { opacity: .45; text-decoration: line-through; }
+.dlv-sep { width: 14px; height: 1px; background: var(--line); display: inline-block; }
+.dlv-sec { margin-top: 16px; }
+.dlv-sec h4 { font-size: 13px; margin: 0 0 8px; display: flex; align-items: baseline; gap: 8px; }
+.dlv-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.dlv-checks, .dlv-hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dlv-check { display: grid; grid-template-columns: 20px 88px 1fr auto; gap: 8px; align-items: baseline;
+  font-size: 12.5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.dlv-check .dlv-ck { font-family: var(--mono, ui-monospace, monospace); text-align: center; }
+.dlv-check .k { color: var(--muted); }
+.dlv-check .v { color: var(--fg); overflow-wrap: anywhere; }
+.dlv-check .dlv-cs { font-size: 11px; color: var(--muted); }
+.dlv-check.pass .dlv-ck, .dlv-check.pass .dlv-cs { color: var(--ok, #3fb950); }
+.dlv-check.fail .dlv-ck, .dlv-check.fail .dlv-cs { color: var(--bad, #f85149); }
+.dlv-check.unverified .dlv-ck, .dlv-check.unverified .dlv-cs { color: var(--warn, #d29922); }
+.dlv-hist li { display: grid; grid-template-columns: 88px 96px 1fr; gap: 8px; font-size: 12.5px;
+  padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.dlv-hist .at { color: var(--muted); }
+.dlv-hist .lb { color: var(--fg); }
+.dlv-hist .dt { color: var(--muted); overflow-wrap: anywhere; }
+#modal-body .dlv-sec + .form-actions { margin-top: 18px; }
 
 /* ---------- 表格：列宽拖拽 + 多行完整显示 ---------- */
 thead th { position: relative; }
@@ -1178,6 +1223,7 @@ const APP = {
   deliveryPage: 1,
   deliveryPageSize: 20,
   deliveryTotal: 0,
+  deliveryStage: "",
   projectDetail: null,
   projectDetailErr: null,
   projectDetailLoading: false,
@@ -3507,6 +3553,8 @@ function deliveryRows() {
       row.summary = match.summary || row.summary;
       row.source = match.source || row.source;
       row.task = match.task_key || match.task_code || row.task;
+      row.validation_state = match.validation_state || null;
+      row.resubmit_count = Number(match.resubmit_count || 0);
     }
   }
   const seen = new Set(base.map(r => r.id).filter(Boolean));
@@ -3520,9 +3568,78 @@ function deliveryRows() {
       status: a.status || "submitted", id: a.id || null,
       readonly: a.readonly === true || a.source === "mirror",
       summary: a.summary || "", source: a.source || "",
+      validation_state: a.validation_state || null,
+      resubmit_count: Number(a.resubmit_count || 0),
     });
   }
   return base.length ? base : (api ? [] : null);
+}
+
+function validationBadge(state) {
+  const map = {
+    pass: ["ok", "已验证"],
+    fail: ["bad", "未通过"],
+    unverified: ["warn", "未验证"],
+  };
+  const [cls, text] = map[String(state || "")] || ["none", "未校验"];
+  return `<span class="dlv-badge ${cls}" data-vstate="${esc(state || "")}">${esc(text)}</span>`;
+}
+
+function deliveryStageBar(pipeline, active) {
+  if (!pipeline) return "";
+  const reviewable = Number(pipeline.reviewable || 0);
+  const chip = (key, label, count, hint) => `
+    <button type="button" class="dlv-stage ${active === key ? "on" : ""}" data-stage="${esc(key)}" title="${esc(hint)}">
+      <b>${esc(label)}</b><span>${count}</span>
+    </button>`;
+  const stages = (pipeline.stages || []).map(s =>
+    chip(s.key, s.label, s.count, s.hint)).join("");
+  return `<div class="dlv-flow" data-testid="delivery-flow">
+    ${chip("", "全部", reviewable, "所有可验收的交付（不含镜像）")}
+    ${stages}
+    ${chip("mirror", "镜像只读", pipeline.mirror || 0, "仓库里的报告镜像，只读不可验收")}
+  </div>`;
+}
+
+function deliveryStepper(stage) {
+  const steps = [
+    { key: "submitted", label: "提交" },
+    { key: "validated", label: "校验" },
+    { key: "accepted", label: "验收" },
+    { key: "rejected", label: "返工" },
+  ];
+  const stateOf = (key) => {
+    if (stage === "accepted") return key === "rejected" ? "skip" : "done";
+    if (stage === "rejected") {
+      if (key === "submitted" || key === "validated") return "done";
+      if (key === "accepted") return "fail";
+      return "active";
+    }
+    if (stage === "validated") {
+      if (key === "submitted") return "done";
+      return key === "validated" ? "active" : "pending";
+    }
+    return key === "submitted" ? "active" : "pending";
+  };
+  return `<div class="dlv-steps" data-testid="delivery-steps">${steps.map(s0 => {
+    const st = stateOf(s0.key);
+    return `<span class="dlv-step ${st}" data-step="${s0.key}">${esc(s0.label)}</span>`;
+  }).join('<i class="dlv-sep"></i>')}</div>`;
+}
+
+async function runDeliveryValidate(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "校验中…"; }
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/deliveries/${encodeURIComponent(id)}/validate`, { method: "POST" });
+    const state = d?.validation?.state;
+    const bad = (d?.validation?.checks || []).filter(c => c.state !== "pass");
+    APP.deliveryError = state === "pass" ? null
+      : `校验结论：${state === "fail" ? "未通过" : "未验证"}（${bad.map(c => `${c.label}：${c.detail}`).join("；") || "无明细"}）`;
+  } catch (e) {
+    APP.deliveryError = errText(e);
+  }
+  APP.deliveriesFallback = null;
+  await loadDeliveriesFallback(true);
 }
 
 function renderDeliveriesPage(el) {
@@ -3536,27 +3653,32 @@ function renderDeliveriesPage(el) {
   }
   const list = rows.filter(r => filtered(r.name) || filtered(r.path) || filtered(r.task));
   const archived = projectArchived();
+  const stage = ROUTE.params ? (ROUTE.params.get("stage") || "") : (APP.deliveryStage || "");
+  APP.deliveryStage = stage;
+  const pipeline = APP.deliveriesFallback?.pipeline || null;
   el.innerHTML = `
     <section>
-      <div class="sec-head"><h2>交付记录</h2><span class="desc">平台内交付可验收/退回；镜像行只读</span><span class="count">${list.length} / ${rows.length}</span></div>
+      <div class="sec-head"><h2>交付记录</h2><span class="desc">提交 → 校验 → 验收 → 返工；镜像行只读</span><span class="count">${list.length} / ${rows.length}</span></div>
+      ${deliveryStageBar(pipeline, stage)}
       ${APP.deliveryError ? `<div class="banner" role="alert" data-testid="delivery-error"><span class="grow">${esc(APP.deliveryError)}</span>
         <button class="btn sm" id="delivery-err-close">知道了</button></div>` : ""}
       ${APP.deliveriesFallback?.error ? `<div class="banner warn"><b>交付接口不可用</b><span class="grow">${esc(APP.deliveriesFallback.error)}；当前展示 state 快照（只读）。</span>
         <button class="btn sm" onclick="loadDeliveriesFallback(true)">重试</button></div>` : ""}
       <div class="panel table-wrap"><table id="deliveries">
-        <colgroup><col class="c-name"><col class="c-status"><col class="c-kind"><col class="c-task"><col class="c-path"><col class="c-time"><col class="c-act"></colgroup>
-        <thead><tr><th>交付名称</th><th>状态</th><th>类型</th><th>关联任务</th><th>路径</th><th>时间</th><th>操作</th></tr></thead>
+        <colgroup><col class="c-name"><col class="c-stage"><col class="c-check"><col class="c-kind"><col class="c-task"><col class="c-time"><col class="c-act"></colgroup>
+        <thead><tr><th>交付名称</th><th>环节</th><th>校验</th><th>类型</th><th>关联任务</th><th>时间</th><th>操作</th></tr></thead>
         <tbody>${list.length ? list.map(r => {
           const reviewable = Boolean(r.id) && !r.readonly && !archived;
           return `
           <tr class="file-row" data-path="${esc(r.path)}" data-delivery-id="${esc(r.id || "")}" role="button" tabindex="0" aria-label="查看交付 ${esc(r.name)}">
-            <td class="wrap2"><span class="clamp-2" title="${esc(r.name)}">${esc(r.name)}</span>${r.readonly ? ` <span class="readonly-chip">只读镜像</span>` : ""}</td>
-            <td>${r.status ? deliveryStatusPill(r.status) : `<span class="mono">—</span>`}</td>
+            <td class="wrap2"><span class="clamp-2" title="${esc(r.name)}">${esc(r.name)}</span>${r.readonly ? ` <span class="readonly-chip">只读镜像</span>` : ""}${Number(r.resubmit_count || 0) > 0 ? ` <span class="dlv-rw">返工 ${r.resubmit_count} 次</span>` : ""}</td>
+            <td>${deliveryStatusPill(r.status || "submitted")}</td>
+            <td>${validationBadge(r.validation_state)}</td>
             <td class="mono">${esc(r.kind)}</td><td class="mono">${esc(r.task)}</td>
-            <td class="mono">${esc(r.path || "—")}</td><td class="mono">${esc(ago(r.time))}</td>
-            <td>${reviewable ? `<button class="btn sm" data-testid="delivery-review-${esc(r.id)}" data-review-id="${esc(r.id)}">验收 / 退回</button>` : `<span class="mono">${r.readonly ? "镜像只读" : "—"}</span>`}</td>
+            <td class="mono">${esc(ago(r.time))}</td>
+            <td class="dlv-ops">${r.id ? `<button class="btn sm" data-testid="delivery-detail-${esc(r.id)}" data-detail-id="${esc(r.id)}">详情</button>` : ""}${reviewable ? `<button class="btn sm" data-testid="delivery-validate-${esc(r.id)}" data-validate-id="${esc(r.id)}">校验</button>` : ""}${reviewable ? `<button class="btn sm" data-testid="delivery-review-${esc(r.id)}" data-review-id="${esc(r.id)}">验收</button>` : ""}</td>
           </tr>`;
-        }).join("") : `<tr><td colspan="7" class="empty">${query ? "没有匹配的交付" : "暂无交付记录"}</td></tr>`}</tbody>
+        }).join("") : `<tr><td colspan="7" class="empty">${query ? "没有匹配的交付" : (stage ? "该环节暂无交付" : "暂无交付记录")}</td></tr>`}</tbody>
       </table>
       ${api && APP.deliveryTotal > 0 ? pagerMarkup({ id: "deliveries-pager", testid: "deliveries-pager", total: APP.deliveryTotal, page: APP.deliveryPage, pageSize: APP.deliveryPageSize }) : ""}
       </div>
@@ -3569,22 +3691,187 @@ function renderDeliveriesPage(el) {
   const closeErr = $("#delivery-err-close");
   if (closeErr) closeErr.onclick = () => { APP.deliveryError = null; renderProjectContent(); };
   $$("#deliveries .file-row", el).forEach(rowEl => {
-    if (!rowEl.dataset.path) return;
-    const fn = () => openFile(rowEl.dataset.path);
+    if (!rowEl.dataset.deliveryId) return;
+    const fn = () => openDeliveryDetail(rowEl.dataset.deliveryId);
     rowEl.onclick = fn;
     rowEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); } };
   });
-  $$('#deliveries [data-review-id]', el).forEach(btn => {
-    btn.onclick = (e) => {
+  $$("#deliveries [data-detail-id], #deliveries [data-validate-id], #deliveries [data-review-id]", el).forEach(btn => {
+    btn.onclick = async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const row = rows.find(r => String(r.id) === String(btn.dataset.reviewId));
-      if (row) openDeliveryReview(row);
+      if (btn.dataset.reviewId) {
+        const row = rows.find(r => String(r.id) === String(btn.dataset.reviewId));
+        if (row) openDeliveryReview(row);
+      } else if (btn.dataset.validateId) {
+        await runDeliveryValidate(btn.dataset.validateId, btn);
+      } else if (btn.dataset.detailId) {
+        openDeliveryDetail(btn.dataset.detailId);
+      }
     };
     btn.onkeydown = (e) => e.stopPropagation();
   });
+  $$(".dlv-stage[data-stage]", el).forEach(btn => {
+    btn.onclick = () => {
+      APP.deliveryStage = btn.dataset.stage || "";
+      APP.deliveryPage = 1;
+      APP.deliveriesFallback = null;
+      // 环节筛选进 URL：可分享、可回退，刷新不丢
+      const qs = APP.deliveryStage ? `?stage=${encodeURIComponent(APP.deliveryStage)}` : "";
+      const base = `#/p/${encodeURIComponent(APP.currentProject.id)}/deliveries${qs}`;
+      history.replaceState(null, "", location.pathname + location.search + base);
+      ROUTE.params = new URLSearchParams(qs ? qs.slice(1) : "");
+      loadDeliveriesFallback(true);
+    };
+  });
   if (!api && !APP.deliveriesLoading) loadDeliveriesFallback();
   initColumnResizers();
+}
+
+async function openDeliveryDetail(id) {
+  if (!id) return;
+  const projectId = APP.currentProject?.id;
+  if (!projectId) return;
+  rememberFocus();
+  $("#modal-title").textContent = "交付详情";
+  $("#modal-body").innerHTML = skeletonBox(160);
+  mask.classList.add("show"); modal.classList.add("show");
+  let d;
+  try {
+    d = await fetchJSON(`/api/projects/${encodeURIComponent(projectId)}/deliveries/${encodeURIComponent(id)}`);
+  } catch (e) {
+    $("#modal-body").innerHTML = `<div class="form-err" role="alert">${esc(errText(e))}</div>`;
+    return;
+  }
+  if (APP.currentProject?.id !== projectId) return;
+  const item = d.delivery || {};
+  const checks = Array.isArray(d.checks) ? d.checks : [];
+  const history = Array.isArray(d.history) ? d.history : [];
+  const icon = { pass: "✓", fail: "✕", unverified: "!" };
+  const ckLabel = { pass: "通过", fail: "未通过", unverified: "未验证" };
+  const historyLine = (h) => {
+    const url = "";
+    const detail = h.detail || {};
+    let text = "";
+    if (h.action === "delivery.review") {
+      text = (detail.decision === "accepted" ? "验收通过" : "退回") + (detail.comment ? `：${detail.comment}` : "");
+    } else if (h.action === "delivery.resubmit") {
+      text = (detail.note || "重新提交") + (detail.previous_reason ? `（上次退回：${detail.previous_reason}）` : "");
+    } else if (h.action === "delivery.validate") {
+      text = `校验结论 ${ckLabel[detail.state] || detail.state || "—"}`;
+    } else if (h.action === "delivery.submit") {
+      text = detail.title || "提交交付";
+    } else {
+      text = JSON.stringify(detail).slice(0, 120);
+    }
+    return `<li><span class="at mono">${esc(ago(h.at))}</span><span class="lb">${esc(h.label || h.action)}</span><span class="dt">${esc(text)}</span></li>`;
+  };
+  const reviewable = !item.readonly && !projectArchived();
+  $("#modal-body").innerHTML = `
+    <div class="kv">
+      <span class="k">交付名称</span><span class="v">${esc(item.title || "—")}${Number(item.resubmit_count || 0) > 0 ? ` <span class="dlv-rw">返工 ${item.resubmit_count} 次</span>` : ""}</span>
+      <span class="k">关联任务</span><span class="v mono">${esc(item.task_key || item.task_id || "—")}</span>
+      <span class="k">当前状态</span><span class="v">${deliveryStatusPill(item.status || "submitted")} ${validationBadge(item.validation_state)}</span>
+      <span class="k">交付路径</span><span class="v mono">${esc(item.path || "未记录")}</span>
+      ${item.reviewed_at ? `<span class="k">最近验收</span><span class="v mono">${esc(ago(item.reviewed_at))} · ${esc(item.reviewer || "—")}</span>` : ""}
+      ${item.rejection_reason ? `<span class="k">退回原因</span><span class="v">${esc(item.rejection_reason)}</span>` : ""}
+    </div>
+    ${deliveryStepper(d.stage || "submitted")}
+    <div class="dlv-sec"><h4>校验项<span class="dlv-sub">${d.validation?.checked_at ? `上次校验 ${esc(ago(d.validation.checked_at))}` : "尚未执行校验"}</span></h4>
+      <ul class="dlv-checks" data-testid="delivery-checks">${checks.length ? checks.map(c => `
+        <li class="dlv-check ${esc(c.state)}"><span class="dlv-ck">${icon[c.state] || "?"}</span>
+          <span class="k">${esc(c.label)}</span><span class="v">${esc(c.detail)}</span>
+          <span class="dlv-cs">${esc(ckLabel[c.state] || c.state)}</span></li>`).join("") : `<li class="empty">无校验项</li>`}</ul>
+      <p class="dlv-sub">「未验证」表示无法核对，不等于通过；验收会重新跑一次校验，硬失败项会直接拦住验收。</p>
+    </div>
+    <div class="dlv-sec"><h4>流转历史</h4>
+      <ul class="dlv-hist" data-testid="delivery-history">${history.length ? history.map(historyLine).join("") : `<li class="empty">暂无记录</li>`}</ul>
+    </div>
+    <div class="form-actions">
+      ${item.path ? `<button type="button" class="btn" id="dv-open">打开产物</button>` : ""}
+      <button type="button" class="btn" id="dv-cancel">关闭</button>
+      ${reviewable ? `<button type="button" class="btn" id="dv-validate" data-testid="delivery-detail-validate">执行校验</button>` : ""}
+      ${reviewable ? `<button type="button" class="btn primary" id="dv-review" data-testid="delivery-detail-review">验收 / 退回</button>` : ""}
+      ${reviewable && item.status === "rejected" ? `<button type="button" class="btn primary" id="dv-resubmit" data-testid="delivery-detail-resubmit">重新提交</button>` : ""}
+    </div>`;
+  const openBtn = $("#dv-open");
+  if (openBtn) openBtn.onclick = () => { closeAll(); openFile(item.path); };
+  $("#dv-cancel").onclick = closeAll;
+  const vBtn = $("#dv-validate");
+  if (vBtn) vBtn.onclick = async () => {
+    vBtn.disabled = true; vBtn.textContent = "校验中…";
+    try {
+      const res = await fetchJSON(`/api/projects/${encodeURIComponent(projectId)}/deliveries/${encodeURIComponent(id)}/validate`, { method: "POST" });
+      APP.deliveryError = res?.validation?.state === "pass" ? null
+        : `校验结论：${res?.validation?.state === "fail" ? "未通过" : "未验证"}`;
+    } catch (e) {
+      APP.deliveryError = errText(e);
+    }
+    APP.deliveriesFallback = null;
+    await loadDeliveriesFallback(true);
+    openDeliveryDetail(id);
+  };
+  const rBtn = $("#dv-review");
+  if (rBtn) rBtn.onclick = () => {
+    openDeliveryReview({
+      id: item.id, name: item.title, status: item.status,
+      task: item.task_key || item.task_id || "—", path: item.path, summary: item.summary,
+    });
+  };
+  const rsBtn = $("#dv-resubmit");
+  if (rsBtn) rsBtn.onclick = () => openDeliveryResubmit(d);
+}
+
+function openDeliveryResubmit(d) {
+  const item = d?.delivery || {};
+  if (!item.id) return;
+  rememberFocus();
+  $("#modal-title").textContent = "返工重新提交";
+  $("#modal-body").innerHTML = `
+    <div class="kv">
+      <span class="k">交付名称</span><span class="v">${esc(item.title || "—")}</span>
+      <span class="k">退回原因</span><span class="v">${esc(item.rejection_reason || "—")}</span>
+      <span class="k">返工次数</span><span class="v mono">${Number(item.resubmit_count || 0)}</span>
+    </div>
+    <div class="field"><label for="rs-note">本次修改说明（必填）</label>
+      <textarea id="rs-note" placeholder="说明这次改了什么，便于验收对照"></textarea></div>
+    <div class="field"><label for="rs-path">交付路径（可选，留空沿用原路径）</label>
+      <input id="rs-path" value="${esc(item.path || "")}" placeholder="相对项目仓库，例如 docs/reports/x.md"></div>
+    <div class="field"><label for="rs-summary">交付说明（可选）</label>
+      <input id="rs-summary" value="${esc(item.summary || "")}"></div>
+    <div class="form-err" id="rs-err" role="alert"></div>
+    <div class="form-actions">
+      <button type="button" class="btn" id="rs-cancel">取消</button>
+      <button type="button" class="btn primary" id="rs-submit" data-testid="delivery-resubmit-confirm">提交</button>
+    </div>`;
+  mask.classList.add("show"); modal.classList.add("show");
+  $("#rs-cancel").onclick = closeAll;
+  $("#rs-submit").onclick = async () => {
+    const note = $("#rs-note").value.trim();
+    const errEl = $("#rs-err");
+    errEl.textContent = "";
+    if (!note) { errEl.textContent = "必须说明本次修改内容"; return; }
+    const btn = $("#rs-submit");
+    btn.disabled = true; btn.textContent = "提交中…";
+    try {
+      await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/deliveries/${encodeURIComponent(item.id)}/resubmit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note,
+          path: $("#rs-path").value.trim() || undefined,
+          summary: $("#rs-summary").value.trim() || undefined,
+        }),
+      });
+      closeAll();
+      APP.deliveryError = null;
+      APP.deliveriesFallback = null;
+      await loadDeliveriesFallback(true);
+    } catch (e) {
+      errEl.textContent = errText(e);
+      btn.disabled = false; btn.textContent = "提交";
+    }
+  };
 }
 
 function openDeliveryReview(row) {
@@ -4916,12 +5203,15 @@ async function loadDeliveriesFallback(force = false) {
   if (force) APP.deliveriesFallback = null;
   if (ROUTE.kind === "project" && ROUTE.tab === "deliveries") renderProjectContent();
   try {
-    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/deliveries?page=${APP.deliveryPage}&page_size=${APP.deliveryPageSize}`);
+    const stage = APP.deliveryStage || "";
+    const stageQs = stage ? `&stage=${encodeURIComponent(stage)}` : "";
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/deliveries?page=${APP.deliveryPage}&page_size=${APP.deliveryPageSize}${stageQs}`);
     if (APP.currentProject?.id !== p.id) return;
     APP.deliveryTotal = Number(d.total ?? (d.items || []).length) || 0;
     APP.deliveriesFallback = {
       projectId: p.id, items: d.items || [], total: APP.deliveryTotal,
       page: Number(d.page || APP.deliveryPage), pageSize: Number(d.page_size || APP.deliveryPageSize),
+      pipeline: d.pipeline || null,
     };
   } catch (e) {
     if (APP.currentProject?.id !== p.id) return;

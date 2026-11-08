@@ -99,7 +99,10 @@ API_PATHS: list[tuple[str, str]] = [
     ("DELETE", "/api/projects/{project_id}/tasks/{task_id}/dependencies/{dependency_id}"),
     ("GET", "/api/projects/{project_id}/deliveries"),
     ("POST", "/api/projects/{project_id}/deliveries"),
+    ("GET", "/api/projects/{project_id}/deliveries/{delivery_id}"),
     ("POST", "/api/projects/{project_id}/deliveries/{delivery_id}/review"),
+    ("POST", "/api/projects/{project_id}/deliveries/{delivery_id}/validate"),
+    ("POST", "/api/projects/{project_id}/deliveries/{delivery_id}/resubmit"),
     ("GET", "/api/projects/{project_id}/executions"),
     ("GET", "/api/projects/{project_id}/executions/{execution_id}"),
     ("GET", "/api/projects/{project_id}/documents"),
@@ -696,8 +699,17 @@ def _paths() -> dict[str, Any]:
             "get": project_op("get", "交付列表（分页，含镜像）", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2],
             "post": project_op("post", "创建交付")[2],
         },
+        "/api/projects/{project_id}/deliveries/{delivery_id}": {
+            "get": project_op("get", "交付详情：校验项 + 流转历史", params=[_param("delivery_id", "path", required=True)], errors=(404,))[2]
+        },
         "/api/projects/{project_id}/deliveries/{delivery_id}/review": {
-            "post": project_op("post", "交付验收/退回", params=[_param("delivery_id", "path", required=True)], body={"type": "object"})[2]
+            "post": project_op("post", "交付验收/退回（验收前先跑校验，硬失败拦截）", params=[_param("delivery_id", "path", required=True)], body={"type": "object"}, errors=(404, 409, 422))[2]
+        },
+        "/api/projects/{project_id}/deliveries/{delivery_id}/validate": {
+            "post": project_op("post", "执行交付校验并落库证据快照", params=[_param("delivery_id", "path", required=True)], errors=(404, 409))[2]
+        },
+        "/api/projects/{project_id}/deliveries/{delivery_id}/resubmit": {
+            "post": project_op("post", "返工后重新提交（仅 rejected → submitted）", params=[_param("delivery_id", "path", required=True)], body={"type": "object"}, errors=(404, 409, 422))[2]
         },
         "/api/projects/{project_id}/executions": {"get": project_op("get", "执行记录（分页）", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2]},
         "/api/projects/{project_id}/executions/{execution_id}": {
