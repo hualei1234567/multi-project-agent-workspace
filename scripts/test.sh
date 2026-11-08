@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 平台自测：py_compile + pytest + ruff（与 DDP CI 的 agent-platform 阶段等价）。
+# 平台自测：py_compile + pytest + ruff（与 CI 的 agent-platform 阶段等价）。
 set -uo pipefail
 WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${PYTHON:-$WS/.venv/bin/python}"

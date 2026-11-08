@@ -83,9 +83,9 @@ V6.0 §28.2。通用 DoR：
 
 ```
 ~/agent-team/
-├── ddp-team/
+├── legacy-team/
 │   └── worktrees/
-│       └── p4-<milestone>/        # ddp 侧（P0 阶段只做越权测试）
+│       └── p4-<milestone>/        # legacy 侧（P0 阶段只做越权测试）
 └── material-team/
     └── worktrees/
         └── p4-<milestone>/        # material 试点

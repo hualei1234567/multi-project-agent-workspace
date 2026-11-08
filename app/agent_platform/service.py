@@ -439,7 +439,7 @@ def create_project(payload: dict[str, Any]) -> dict[str, Any]:
         if not repo.is_dir():
             raise PlatformError("invalid_project_path", 422)
     else:
-        # 未显式提供仓库时，不继承 DDP 仓库/会话，改用独立空工作区。
+        # 未显式提供仓库时，不继承业务仓库/会话，改用独立空工作区。
         repo = workspace_root_for(code)
         try:
             repo.mkdir(parents=True, exist_ok=True)

@@ -94,7 +94,7 @@ def test_migration_upgrades_v1_preserves_rows_and_backs_up(tmp_path, monkeypatch
         INSERT INTO schema_version VALUES (1, '2026-11-01T00:00:00+00:00');
         INSERT INTO agent_projects
           (id, code, name, status, repo_root, created_at, updated_at)
-          VALUES ('default', 'default', 'DDP', 'active', '/tmp/repo', 'x', 'x');
+          VALUES ('default', 'default', '示例项目', 'active', '/tmp/repo', 'x', 'x');
         INSERT INTO tasks (id, project_id, task_key, title, status, updated_at)
           VALUES ('t1', 'default', 'TEAM-001', '旧任务', 'todo', 'x');
         INSERT INTO deliveries (id, project_id, title, kind, path, created_at)

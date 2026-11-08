@@ -1,4 +1,4 @@
-"""B-14 三项目隔离回归：DDP / PROJECT_B / PROJECT_C 之间的读写边界。
+"""B-14 三项目隔离回归：PROJECT_A / PROJECT_B / PROJECT_C 之间的读写边界。
 
 覆盖：跨项目 task/delivery/execution、归档只读、依赖跨项目与成环、
 交付验收校验、收藏隔离、最近访问顺序、``/api/state`` 项目隔离、审计过滤。
@@ -28,7 +28,7 @@ if str(SCRIPTS) not in sys.path:
 import agents_dashboard as dash
 from agent_platform import service, sources, store
 
-DDP = "default"
+PROJECT_A = "default"
 PROJECT_B = "proj-b"
 PROJECT_C = "proj-c"
 
@@ -143,7 +143,7 @@ def _create_delivery(base: str, project: str, title: str,
 # ---------------------------------------------------------------------------
 def test_cross_project_task_and_delivery_are_isolated(http_server):
     _create_project(http_server, PROJECT_B, "Project B")
-    a_task = _create_task(http_server, DDP, "A-1", "A 项目任务")
+    a_task = _create_task(http_server, PROJECT_A, "A-1", "A 项目任务")
 
     # B 读 A 的任务 → 404
     code, data = _request(http_server, f"/api/projects/{PROJECT_B}/tasks/{a_task['id']}")
@@ -169,7 +169,7 @@ def test_cross_project_task_and_delivery_are_isolated(http_server):
     assert code == 422 and data["detail"]["code"] == "cross_project_reference"
 
     # B 审 A 的交付 → 404；B 的交付列表不含 A 的交付
-    a_delivery = _create_delivery(http_server, DDP, "A 项目交付")
+    a_delivery = _create_delivery(http_server, PROJECT_A, "A 项目交付")
     code, data = _request(
         http_server, f"/api/projects/{PROJECT_B}/deliveries/{a_delivery['id']}/review",
         "POST", {"decision": "accepted"},
@@ -192,10 +192,10 @@ def test_cross_project_execution_is_isolated(http_server, env):
         "agentType": "backend-engineer", "description": "隔离用例", "finished": True,
     }, ensure_ascii=False))
 
-    code, backfilled = _request(http_server, f"/api/projects/{DDP}/backfill", "POST", {})
+    code, backfilled = _request(http_server, f"/api/projects/{PROJECT_A}/backfill", "POST", {})
     assert code == 200 and backfilled["counts"]["executions"] == 1
 
-    code, executions = _request(http_server, f"/api/projects/{DDP}/executions")
+    code, executions = _request(http_server, f"/api/projects/{PROJECT_A}/executions")
     assert code == 200 and executions["total"] == 1
     exec_id = executions["items"][0]["id"]
 
@@ -251,36 +251,36 @@ def test_archived_project_is_read_only(http_server):
 # ---------------------------------------------------------------------------
 def test_dependency_cross_project_and_cycle(http_server):
     _create_project(http_server, PROJECT_B, "Project B")
-    a1 = _create_task(http_server, DDP, "A-1")
-    a2 = _create_task(http_server, DDP, "A-2")
+    a1 = _create_task(http_server, PROJECT_A, "A-1")
+    a2 = _create_task(http_server, PROJECT_A, "A-2")
     b1 = _create_task(http_server, PROJECT_B, "B-1")
 
     code, data = _request(
-        http_server, f"/api/projects/{DDP}/tasks/{a2['id']}/dependencies", "POST",
+        http_server, f"/api/projects/{PROJECT_A}/tasks/{a2['id']}/dependencies", "POST",
         {"depends_on_task_id": b1["id"]},
     )
     assert code == 422 and data["detail"]["code"] == "cross_project_reference"
 
     code, dep = _request(
-        http_server, f"/api/projects/{DDP}/tasks/{a2['id']}/dependencies", "POST",
+        http_server, f"/api/projects/{PROJECT_A}/tasks/{a2['id']}/dependencies", "POST",
         {"depends_on_task_id": a1["id"]},
     )
     assert code == 200 and dep["dependency_id"]
 
     code, data = _request(
-        http_server, f"/api/projects/{DDP}/tasks/{a1['id']}/dependencies", "POST",
+        http_server, f"/api/projects/{PROJECT_A}/tasks/{a1['id']}/dependencies", "POST",
         {"depends_on_task_id": a2["id"]},
     )
     assert code == 422 and data["detail"]["code"] == "dependency_cycle"
 
     code, data = _request(
-        http_server, f"/api/projects/{DDP}/tasks/{a1['id']}/dependencies", "POST",
+        http_server, f"/api/projects/{PROJECT_A}/tasks/{a1['id']}/dependencies", "POST",
         {"depends_on_task_id": a1["id"]},
     )
     assert code == 422 and data["detail"]["code"] == "invalid_payload"
 
     # 跨项目依赖没有落库：A-2 只有 A-1 一个依赖
-    code, detail = _request(http_server, f"/api/projects/{DDP}/tasks/{a2['id']}")
+    code, detail = _request(http_server, f"/api/projects/{PROJECT_A}/tasks/{a2['id']}")
     assert code == 200
     assert [item["depends_on_task_id"] for item in detail["task"]["dependencies"]] == [a1["id"]]
 
@@ -290,7 +290,7 @@ def test_dependency_cross_project_and_cycle(http_server):
 # ---------------------------------------------------------------------------
 def test_delivery_review_isolation_and_validation(http_server):
     _create_project(http_server, PROJECT_B, "Project B")
-    a_delivery = _create_delivery(http_server, DDP, "A 交付")
+    a_delivery = _create_delivery(http_server, PROJECT_A, "A 交付")
     b_delivery = _create_delivery(http_server, PROJECT_B, "B 交付")
 
     # rejected 必须带 comment
@@ -316,7 +316,7 @@ def test_delivery_review_isolation_and_validation(http_server):
     assert reviewed["delivery"]["reviewer"] == "local"
 
     # A 的交付未被跨项目审核影响
-    code, a_deliveries = _request(http_server, f"/api/projects/{DDP}/deliveries")
+    code, a_deliveries = _request(http_server, f"/api/projects/{PROJECT_A}/deliveries")
     assert code == 200
     a_item = next(item for item in a_deliveries["items"] if item["id"] == a_delivery["id"])
     assert a_item["status"] == "submitted"
@@ -333,7 +333,7 @@ def test_favorites_are_scoped_per_project(http_server):
     assert code == 200 and fav["favorite"] is True
     code, b = _request(http_server, f"/api/projects/{PROJECT_B}")
     assert code == 200 and b["project"]["favorite"] is True
-    code, a = _request(http_server, f"/api/projects/{DDP}")
+    code, a = _request(http_server, f"/api/projects/{PROJECT_A}")
     assert code == 200 and a["project"]["favorite"] is False
     code, c = _request(http_server, f"/api/projects/{PROJECT_C}")
     assert code == 200 and c["project"]["favorite"] is False
@@ -370,18 +370,18 @@ def test_recent_projects_follow_visit_order(http_server, monkeypatch):
 
     monkeypatch.setattr(store, "now_iso", _fake_now)
 
-    for project in (DDP, PROJECT_B, PROJECT_C):
+    for project in (PROJECT_A, PROJECT_B, PROJECT_C):
         code, _ = _request(http_server, f"/api/projects/{project}/visit", "POST", {})
         assert code == 200
     code, recent = _request(http_server, "/api/me/recent-projects")
     assert code == 200
-    assert [item["id"] for item in recent["items"]] == [PROJECT_C, PROJECT_B, DDP]
+    assert [item["id"] for item in recent["items"]] == [PROJECT_C, PROJECT_B, PROJECT_A]
 
-    # 再次访问 DDP 后排到最前
-    code, _ = _request(http_server, f"/api/projects/{DDP}/visit", "POST", {})
+    # 再次访问 PROJECT_A 后排到最前
+    code, _ = _request(http_server, f"/api/projects/{PROJECT_A}/visit", "POST", {})
     assert code == 200
     code, recent = _request(http_server, "/api/me/recent-projects")
-    assert [item["id"] for item in recent["items"]] == [DDP, PROJECT_C, PROJECT_B]
+    assert [item["id"] for item in recent["items"]] == [PROJECT_A, PROJECT_C, PROJECT_B]
 
 
 # ---------------------------------------------------------------------------
@@ -391,12 +391,12 @@ def test_state_endpoint_is_project_scoped(http_server):
     _create_project(http_server, PROJECT_B, "Project B")
     _create_task(http_server, PROJECT_B, "B-1", "B 项目任务")
 
-    code, state_a = _request(http_server, f"/api/state?project={DDP}")
+    code, state_a = _request(http_server, f"/api/state?project={PROJECT_A}")
     assert code == 200
     code, state_b = _request(http_server, f"/api/state?project={PROJECT_B}")
     assert code == 200
 
-    assert state_a["project"]["id"] == DDP
+    assert state_a["project"]["id"] == PROJECT_A
     assert state_b["project"]["id"] == PROJECT_B
     assert state_a["project"]["name"] != state_b["project"]["name"]
 

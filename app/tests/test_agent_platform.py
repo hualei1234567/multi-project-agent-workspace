@@ -586,7 +586,7 @@ def test_backfill_endpoint_and_archive_guard(http_server, env):
 
 
 # ---------------------------------------------------------------------------
-# /api/state 会话扫描的项目隔离（回归：material 曾显示 DDP 的 Owner 与 72 个 agent）
+# /api/state 会话扫描的项目隔离（回归：material 曾显示其他项目的 Owner 与 agent）
 # ---------------------------------------------------------------------------
 def _build_slug_transcript(projects_root: Path, slug: str, agent_id: str,
                            description: str) -> None:

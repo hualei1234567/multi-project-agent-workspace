@@ -41,7 +41,7 @@
 | 所有第三期依赖状态有证据 | ✅ | 证据矩阵逐项标注 VERIFIED/PARTIAL/MISSING，附文件行号与查询结果 |
 | 试点项目明确 | ✅ | material（`P4_PILOT_AND_ROLLOUT_PLAN.md` §1） |
 | **Project Owner / 业务 Owner 明确** | ❌ | **待用户指定** |
-| **数据授权明确** | ❌ | **待用户确认四项**（试点数据范围 / transcript 是否入评估集 / ddp 是否参与对照 / 保留期） |
+| **数据授权明确** | ❌ | **待用户确认四项**（试点数据范围 / transcript 是否入评估集 / legacy 是否参与对照 / 保留期） |
 | P0/P1/P2 范围冻结 | ✅ | `P4_CURRENT_STATE_AND_GAP_ANALYSIS.md` §4 |
 | 关键 ADR 获得批准 | ⚠️ | 16 条 ADR 均为 Proposed，随本 Decision Pack 一并提交 |
 | 指标口径与基线可复核 | ✅ | `P4_VALUE_BASELINE_AND_METRIC_DICTIONARY.md`；6 项 Verified + 明确标注 BLOCKED |

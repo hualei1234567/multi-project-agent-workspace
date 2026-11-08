@@ -1,5 +1,5 @@
--- DDP 多项目 Agent 管理平台 · 独立 SQLite schema（schema v2）
--- 依据 docs/112 §2/§3、docs/113；与 DDP 业务库/迁移链完全独立。
+-- 多项目 Agent 管理平台 · 独立 SQLite schema
+-- 与业务库/迁移链完全独立。
 -- 所有语句幂等：重复启动只补缺失对象。老库的新增列由 migrate.py 用
 -- PRAGMA table_info + ALTER TABLE 补齐，这里只描述 v2 的完整形态。
 

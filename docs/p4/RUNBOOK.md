@@ -106,7 +106,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.agentplatform.proxy-t
 | 监听 | 服务器 `0.0.0.0:8099`；Mac 本地实例 `127.0.0.1:8099` |
 | 托管 | 服务器 systemd `agent-platform`；Mac launchd（plist 已改名 `.disabled`，不自动启动） |
 | 数据库 | `data/platform.db`（SQLite，WAL） |
-| 日志 | stdout `\tmp\ddp-agents-dashboard.log`、stderr `\tmp\ddp-agents-dashboard.err.log` |
+| 日志 | stdout `\tmp\legacy-agents-dashboard.log`、stderr `\tmp\legacy-agents-dashboard.err.log` |
 | 健康检查 | `curl -s http://127.0.0.1:8099/healthz` → `{"ok":true,"schema_version":N}` |
 
 ---

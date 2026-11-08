@@ -1,4 +1,4 @@
-"""平台 SQLite schema 版本链迁移（独立于 DDP 业务库）。
+"""平台 SQLite schema 版本链迁移（独立于业务库）。
 
 用法::
 

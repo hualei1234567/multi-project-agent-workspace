@@ -1,6 +1,6 @@
 # 多项目 Agent 管理平台 · 领域模块（阶段 1 / Track B）
 
-独立于 DDP 业务库：**独立 SQLite + 本机文件采集 + stdlib HTTP 兼容层**。
+独立于业务库：**独立 SQLite + 本机文件采集 + stdlib HTTP 兼容层**。
 依据 `docs/109-多项目Agent平台-阶段1实施方案.md`、`docs/110-多项目Agent管理平台V2.1规范.md`。
 
 ## 文件
@@ -19,7 +19,7 @@ HTTP 在 `scripts/agents_dashboard.py`（旧 `/api/state` 字段与旧 HTML 保�
 
 - 默认库：`~/.claude/agent-platform/platform.db`
 - 覆盖：`AGWS_PLATFORM_DB=/path/to/platform.db`
-- 新项目工作区：未传 `repo_root` 时创建 `~/.claude/agent-platform/projects/<code>`（与平台库同目录，测试随 DB 隔离），`session_slugs=[]`，不继承 DDP 数据
+- 新项目工作区：未传 `repo_root` 时创建 `~/.claude/agent-platform/projects/<code>`（与平台库同目录，测试随 DB 隔离），`session_slugs=[]`，不继承既有业务数据
 - 会话目录覆盖（测试用）：`AGWS_PLATFORM_PROJECTS_ROOT`
 - 默认仓库覆盖：`AGWS_PLATFORM_REPO`
 
@@ -72,4 +72,4 @@ python3 -m pytest scripts/tests -q                   # 19 用例
 ## 回滚
 
 平台数据独立：停止进程后删除 `~/.claude/agent-platform/platform.db`（或 `AGWS_PLATFORM_DB` 指向的文件）即可恢复原状；
-不涉及 DDP 业务库、Alembic 迁移、`ai-team/` 原始文件或前端资源。
+不涉及业务库、Alembic 迁移、`ai-team/` 原始文件或前端资源。

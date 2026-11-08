@@ -48,7 +48,7 @@ app/agent_platform/   领域层 5,848 行（16 个模块）
 app/agents_dashboard.py    HTTP 层 1,958 行
 app/agents_dashboard.html  UI 4,468 行（单文件）
 app/tests/                 17 个 pytest 文件 + 2 个 mjs 冒烟
-config/projects.json       纳管清单（ddp / material）
+config/projects.json       纳管清单（legacy / material）
 data/platform.db           平台库
 docs/                      方案、审计、验收、p4/
 scripts/                   start.sh / status.sh / test.sh
@@ -149,9 +149,9 @@ scripts/                   start.sh / status.sh / test.sh
 |---|---|---|---|
 | 管理平台 | 8099 | 运行中，**仅 127.0.0.1** | `lsof` PID 71154 |
 | 采集：runtime_checks | — | **最新 2026-11-05T11:41，已停更** | D-2 |
-| launchd | — | `com.agentplatform.dashboard` 已加载；同目录另有 `com.ddp.gitlab-runner-2`、`com.ddp.tailscale-watchdog` | `~/Library/LaunchAgents/` |
+| launchd | — | `com.agentplatform.dashboard` 已加载；同目录另有 `com.legacy.gitlab-runner-2`、`com.legacy.tailscale-watchdog` | `~/Library/LaunchAgents/` |
 | Tailscale | — | stopped | 三期审计 §3.4 |
-| DDP 管理平台 8080 | 8080 | 本机不可达 | 三期审计 §3.4 |
+| 历史项目 管理平台 8080 | 8080 | 本机不可达 | 三期审计 §3.4 |
 
 ---
 
@@ -160,7 +160,7 @@ scripts/                   start.sh / status.sh / test.sh
 | 要求 | 当前值 | 状态 |
 |---|---|---|
 | 用户数 | **0**（无身份体系，只有 loopback/令牌二值） | BLOCKED |
-| 项目数 | 2（ddp、material） | VERIFIED |
+| 项目数 | 2（legacy、material） | VERIFIED |
 | Agent / Runtime 并发 | 每项目 1（`max_concurrency` 默认）；实际历史最大并发 1 | PARTIAL |
 | Task / Execution / Event 量 | 33 任务 / 44 执行 / 178 事件 / 17,812 usage | VERIFIED |
 | Evaluation Dataset 样本量 | 不存在 | MISSING |
@@ -181,7 +181,7 @@ scripts/                   start.sh / status.sh / test.sh
 
 | 项 | 位置 | 状态 |
 |---|---|---|
-| 纳管清单 | `config/projects.json`（ddp / material，repo_root + team_dir） | 有效 |
+| 纳管清单 | `config/projects.json`（legacy / material，repo_root + team_dir） | 有效 |
 | 平台库路径 | 默认 `data/platform.db`，`AGWS_PLATFORM_DB` 可覆盖 | 有效 |
 | 执行器令牌文件 | `data/token` | **不存在**（D-7） |
 | API Key / 中转站凭据 | 本机环境变量，不落库 | 未读取、未打印 |

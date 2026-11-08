@@ -2,7 +2,7 @@
 
 > 交付物：P4-M0 第 7/10 份
 > 依据：V6.0 §4.3（业务旅程）、§24.2（资源隔离）、§30.10（M8）、ADR-P4-014
-> 结论先行：**试点 = material；隔离对照 = ddp（P0 阶段不写入任何 P4 数据）**
+> 结论先行：**试点 = material；隔离对照 = legacy（P0 阶段不写入任何 P4 数据）**
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### 1.1 候选对比（基于实测数据）
 
-| 维度 | ddp | material | 判据 |
+| 维度 | legacy | material | 判据 |
 |---|---|---|---|
 | 任务量 | 32（27 done / 5 in_progress） | **1（todo）** | 试点要能快速跑完闭环，任务少有优势 |
 | 执行记录 | 39 | **5** | 同上 |
@@ -24,14 +24,14 @@
 ### 1.2 决策
 
 - **试点项目：`material`（MaterialDev）**
-- **隔离对照项目：`ddp`** —— 只用于越权测试，P0 阶段不得向其写入任何 P4 域数据（评估结果、知识、Workflow 绑定、Release）。
+- **隔离对照项目：`legacy`** —— 只用于越权测试，P0 阶段不得向其写入任何 P4 域数据（评估结果、知识、Workflow 绑定、Release）。
 
 ### 1.3 理由（结论必须可反驳）
 
 1. 生产环境是局域网 Docker，出问题影响面小、可回滚（`scripts/deploy-lan.sh` 有既定流程）。
 2. 业务量小，端到端闭环能在数天内跑完，而不是数月。
 3. ACC-001 已经在本项目跑通过一次真实执行（exit 0，23s），执行链路无未知。
-4. ddp 涉及 4090 站点切流与真实采集数据，任何 P4 误操作代价过高，不适合作为首个试点。
+4. legacy 涉及 4090 站点切流与真实采集数据，任何 P4 误操作代价过高，不适合作为首个试点。
 
 **反面意见（记录在案）**：material 业务量太小（仅 1 个 todo 任务），评估样本可能不足，导致 Benchmark 缺乏统计意义。**缓解**：试点期允许用人工构造的评估样本（标注 `synthetic`），但必须在报告中标注，不得当作生产质量结论。
 
@@ -75,7 +75,7 @@ W1 只读接入    material 接入评估/知识/指标的只读视图，任何�
    ↓ 门禁：连续 3 天无越权命中、无 Secret 泄漏
 W2 受控写      评估运行、知识发布、Workflow 测试、Release 审批在 material 生效
    ↓ 门禁：一次完整 Release→Canary→Rollback 演练通过
-W3 扩展        ddp 只读接入；跨项目 Grant 仍关闭
+W3 扩展        legacy 只读接入；跨项目 Grant 仍关闭
    ↓ 门禁：P4-M8 P0 验收
 P1（另行批准）  Capability Catalog、跨项目模板、A3
 ```
@@ -90,11 +90,11 @@ P1（另行批准）  Capability Catalog、跨项目模板、A3
 |---|---|---|
 | 全局执行器开关 | 默认 `off`，按需开启 | 关闭即停 |
 | material `execution_enabled` | 试点期 `true` | 改为 `false` 即停 |
-| ddp `execution_enabled` | **保持 `false`** | 立即回退并审计 |
+| legacy `execution_enabled` | **保持 `false`** | 立即回退并审计 |
 | 单项目并发 | 1 | 硬限 |
 | Kill Switch | 全局 + 项目级，DB 驱动 | 触发后 5s 内拒绝新请求 |
 | 成本上限 | 每任务 token 上限 + 每日项目预算（P4-M6 前用临时配置） | 超限拒绝新任务 |
-| 数据写入范围 | 仅 material | 任何 ddp 写入视为安全事件 |
+| 数据写入范围 | 仅 material | 任何 legacy 写入视为安全事件 |
 
 ---
 
@@ -102,7 +102,7 @@ P1（另行批准）  Capability Catalog、跨项目模板、A3
 
 1. material 完成一次端到端闭环：Dataset 授权 → Evaluation Run → Knowledge 发布 → Workflow 测试 → Release 审批 → Canary → 回滚。
 2. 全链路有 `correlation_id`，审计可串起整条链路。
-3. 越权测试：ddp 项目成员无法读取 material 的任何 Confidential 数据，**命中数 0**。
+3. 越权测试：legacy 项目成员无法读取 material 的任何 Confidential 数据，**命中数 0**。
 4. 撤销测试：已撤销知识在新请求中命中数 **0**。
 5. 回滚测试：回滚后版本组合与发布前完全一致。
 6. 成本：每项评估/发布的 token 与金额可追溯到 `price_version`。
@@ -129,7 +129,7 @@ P1（另行批准）  Capability Catalog、跨项目模板、A3
 |---|---|---|
 | 试点数据范围 | material 仓库代码 + 工程文档 + 执行日志（不含客户数据） | 建议，待批 |
 | 是否允许 transcript 进评估集 | 建议：**默认不允许**，需逐条授权 | 待批 |
-| 是否允许 ddp 数据参与对照 | 建议：**不允许**，P0 阶段 ddp 零写入 | 待批 |
+| 是否允许 legacy 数据参与对照 | 建议：**不允许**，P0 阶段 legacy 零写入 | 待批 |
 | 保留期 | 见 `P4_DATA_CLASSIFICATION_AND_PERMISSION_MATRIX.md` §4 | 待批 |
 
 **这四项未确认前，M1 的 Dataset 不得导入任何真实数据**（V6.0 §10.5、P4-R16）。

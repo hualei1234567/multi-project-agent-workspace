@@ -2,7 +2,7 @@
 # 把一个新项目接入多项目 Agent 管理平台。
 #
 # 用法：
-#   scripts/import-project.sh --id ddp --name "DDP 数据平台" <来源>
+#   scripts/import-project.sh --id demo --name "示例项目" <来源>
 #
 # <来源> 可以是：
 #   - git 地址：git@host:group/repo.git 或 https://...

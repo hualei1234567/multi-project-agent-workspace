@@ -22,16 +22,16 @@
 
 | # | 指标 | 值 | 来源 | 测量时间 |
 |---|---|---|---|---|
-| B-1 | 纳管项目数 | 2（ddp、material） | `agent_projects` | 2026-11-06 |
+| B-1 | 纳管项目数 | 2（legacy、material） | `agent_projects` | 2026-11-06 |
 | B-2 | 任务总数 / 完成数 | 33 / 27（81.8%） | `tasks` status 分布 | 2026-11-06 |
 | B-3 | 执行记录数 / 成功数 | 44 / 42（95.5%） | `executions` | 2026-11-06 |
-| B-4 | Token 总量 | ddp 3,267,584,533；material 260,664,478；合计 3,528,249,011 | `token_usage_events`（17,812 行） | 2026-10-28 → 2026-11-06 |
+| B-4 | Token 总量 | legacy 3,267,584,533；material 260,664,478；合计 3,528,249,011 | `token_usage_events`（17,812 行） | 2026-10-28 → 2026-11-06 |
 | B-5 | 自动化测试 | 192 passed / 18.55s | pytest | 2026-11-06 |
 | B-6 | 平台库容量 | 9,977,856 B（25 表，16 索引） | `ls data/platform.db` | 2026-11-06 |
 
 补充事实：
 
-- 任务分布：ddp 27 done / 5 in_progress；material 1 todo。**material 几乎零业务数据**。
+- 任务分布：legacy 27 done / 5 in_progress；material 1 todo。**material 几乎零业务数据**。
 - 交付记录 17 条，全部 `submitted`，仅 1 条关联 task_id。
 - 调度历史：2 个计划、1 个调度项（succeeded，exit 0，23s，$0.1715 为 claude 返回值）。
 - 审计 6 条，其中 4 条为 2026-11-06 的调度执行。
@@ -57,7 +57,7 @@
 | ID | 指标 | 口径 | 来源 | 当前 | 说明 |
 |---|---|---|---|---|---|
 | C-01 | 任务周期（创建→done） | `finished_at - created_at` | `tasks` | **unknown** | 需确认 `tasks` 是否有 finished_at |
-| C-02 | 执行时长 | `duration_ms` | `executions` | ddp 平均 33,270s；material 101,530s | **这是会话时长，不是任务时长**，不可当周期用 |
+| C-02 | 执行时长 | `duration_ms` | `executions` | legacy 平均 33,270s；material 101,530s | **这是会话时长，不是任务时长**，不可当周期用 |
 | C-03 | 发布周期（Proposal→published） | 状态迁移时间差 | P4-M4 新建 | MISSING | — |
 
 **警告**：C-02 的数值看起来像"9 小时/28 小时"，因为它是 transcript 会话跨度（可能跨多次人机交互）。在 P4-M6 之前**不得**用它表述"Agent 执行效率"。

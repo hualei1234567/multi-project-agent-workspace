@@ -121,7 +121,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "template_key": STANDARD_1_6,
         "version": 1,
         "name": "标准 1+6",
-        "description": "General Owner + 产品/架构/UX + 前端/后端/QA，DDP 当前使用",
+        "description": "General Owner + 产品/架构/UX + 前端/后端/QA，通用研发团队",
         "roles": STANDARD_ROLES,
     },
     LEAN_1_3: {

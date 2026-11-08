@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
-  // 平台已独立于任何仓库（2026-11-04）：优先本机安装，其次复用 DDP 前端的 node_modules
+  // 平台已独立于任何仓库（2026-11-04）：优先本机安装，其次复用业务前端的 node_modules
   const candidates = [
     "playwright",
     join(HERE, "node_modules", "playwright"),
