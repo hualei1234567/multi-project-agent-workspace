@@ -83,16 +83,34 @@ def list_sessions() -> list[dict]:
 
 
 def project_for(cwd: str, projects: list[dict]) -> str | None:
-    """会话 cwd → 项目 id：repo_root 前缀最长匹配，其次 ~/agent-team/<id>-team 推导目录。"""
-    best: tuple[int, str] | None = None
+    """会话 cwd → 项目 id。
+
+    平台上的 repo_root 是服务器路径，桥接在本机看到的 cwd 是另一套路径，
+    所以不能只做前缀匹配，按下面顺序判定：
+
+    1. 以 repo_root 结尾（同仓库在不同机器的挂载路径）；
+    2. 路径末段与 repo_root 末段同名（本机与服务器目录名一致的情况）；
+    3. 位于 ~/agent-team/<id>-team/ 下（项目 worktree）。
+    """
+    cwd = str(cwd or "").rstrip("/")
+    if not cwd:
+        return None
     for project in projects:
-        repo = str(project.get("repo_root") or "")
-        if repo and (cwd == repo or cwd.startswith(repo.rstrip("/") + "/")):
-            score = len(repo)
-            if best is None or score > best[0]:
-                best = (score, str(project.get("id")))
-    if best:
-        return best[1]
+        repo = str(project.get("repo_root") or "").rstrip("/")
+        if not repo:
+            continue
+        if cwd == repo or cwd.endswith(repo):
+            parent = cwd[: -len(repo)] or "/"
+            if cwd.endswith(repo) and (parent.endswith("/") or parent == ""):
+                return str(project.get("id"))
+    by_name = {
+        repo.rstrip("/").rsplit("/", 1)[-1]: str(project.get("id"))
+        for project in projects
+        if (repo := str(project.get("repo_root") or ""))
+    }
+    name = cwd.rsplit("/", 1)[-1]
+    if name in by_name:
+        return by_name[name]
     for project in projects:
         pid = str(project.get("id") or "")
         if f"/agent-team/{pid}-team/" in cwd:
