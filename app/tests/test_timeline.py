@@ -64,6 +64,21 @@ def _event(
         conn.close()
 
 
+def _report(idx: str, reported_state: str, minutes_ago: int, message: str = "") -> None:
+    """插入一条状态自报事件（带自报状态，ok 恒为 NULL）。"""
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        conn.execute(
+            "INSERT INTO agent_events (id, project_id, agent_id, session_id, event_type,"
+            " message, tool, ok, reported_state, occurred_at)"
+            " VALUES (?, 'default', NULL, NULL, 'status_report', ?, NULL, NULL, ?, ?)",
+            (idx, message, reported_state, _iso(minutes_ago)),
+        )
+    finally:
+        conn.close()
+
+
 def test_no_events_is_explicitly_no_evidence(env):
     tl = service.execution_timeline("default")
     assert tl["status"] == "no_evidence"
@@ -93,6 +108,63 @@ def test_states_are_derived_from_evidence(env):
     assert tl["counts"] == {"running": 2, "failed": 1, "unverified": 2, "ok": 1}
     # 最新事件在最前
     assert tl["items"][0]["id"] == "e-fresh-report"
+
+
+def test_status_report_echoes_reported_state_without_becoming_evidence(env):
+    """自报只做回显：窗口内的「运行中」算运行中，过期的仍是未验证，自报空闲绝不等于成功。"""
+    _report("r-fresh-running", "running", 3)
+    _report("r-stale-running", "running", 120)
+    _report("r-idle", "idle", 1, "DDP-212 已合入 b5d510c；329 pytest 通过")
+    _report("r-blocked", "blocked", 2)
+
+    tl = service.execution_timeline("default")
+    by_id = {item["id"]: item for item in tl["items"]}
+    assert by_id["r-fresh-running"]["state"] == "running"
+    assert by_id["r-stale-running"]["state"] == "unverified"
+    assert by_id["r-idle"]["state"] == "unverified"
+    assert by_id["r-idle"]["reported_label"] == "空闲"
+    assert by_id["r-blocked"]["reported_label"] == "阻塞"
+    # 自报不产生「成功」
+    assert tl["counts"]["ok"] == 0
+    assert all(item["state"] != "ok" for item in tl["items"])
+
+
+def test_agent_card_echoes_self_report(env):
+    """Agent 卡片要能回显「自报状态/任务」，同时执行状态仍按证据判定。"""
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        conn.execute(
+            "INSERT INTO project_agents (id, project_id, role_key, instance_key, agent_type,"
+            " execution_mode, display_name, status, metadata_json, last_heartbeat_at, last_seen_at)"
+            " VALUES ('ag-1', 'default', 'backend-engineer', 'backend-engineer', 'subagent',"
+            " 'worktree', 'Backend Engineer', 'idle', ?, ?, ?)",
+            (
+                json.dumps({"self_report": {"state": "idle", "task": "DDP-212",
+                                            "note": "已合入 b5d510c", "commit": "b5d510c"}}),
+                _iso(60), _iso(60),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO agent_events (id, project_id, agent_id, session_id, event_type,"
+            " message, tool, ok, reported_state, occurred_at)"
+            " VALUES ('ag-1-ev', 'default', 'ag-1', NULL, 'status_report',"
+            " '已合入 b5d510c', NULL, NULL, 'idle', ?)",
+            (_iso(20),),
+        )
+    finally:
+        conn.close()
+
+    tl = service.execution_timeline("default")
+    card = next(a for a in tl["agents"] if a["agent_id"] == "ag-1")
+    assert card["reported"]["label"] == "空闲"
+    assert card["reported"]["task"] == "DDP-212"
+    assert card["state"] == "unverified"      # 自报空闲不是执行证据
+
+    activity = service.agent_activity("default")
+    act = next(a for a in activity["agents"] if a["agent_id"] == "ag-1")
+    assert act["reported_label"] == "空闲"
+    assert act["self_report"]["commit"] == "b5d510c"
 
 
 def test_lifecycle_events_are_not_execution_evidence(env):

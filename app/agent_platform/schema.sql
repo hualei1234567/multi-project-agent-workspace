@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS agent_events (
   message     TEXT,
   tool        TEXT,
   ok          INTEGER,
+  reported_state TEXT,
   occurred_at TEXT NOT NULL,
   UNIQUE(session_id, agent_id, occurred_at, event_type, tool)
 );

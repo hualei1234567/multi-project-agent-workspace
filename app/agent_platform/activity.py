@@ -24,6 +24,20 @@ LABELS = {
     "none": "无执行记录",
 }
 EVENT_TYPES = ("subagent_run", "session_activity", "status_report", "tool_use", "tool_result")
+#: 自报状态（ai-team/status/*.json 的 state）→ 中文标签。
+REPORTED_LABELS = {
+    "idle": "空闲",
+    "running": "运行中",
+    "working": "运行中",
+    "in_progress": "运行中",
+    "blocked": "阻塞",
+    "done": "已完成",
+    "failed": "异常",
+    "error": "异常",
+    "offline": "离线",
+}
+#: 自报成「在做」的状态；只有自报且仍在窗口内才算「运行中」，过期仍是「未验证」。
+REPORTED_RUNNING = ("running", "working", "in_progress")
 #: 只有这些事件代表「有谁真的跑过」；项目/任务创建等生命周期事件不算执行证据。
 EVENT_TYPE_LABELS = {
     "subagent_run": "Subagent 运行",
@@ -40,10 +54,28 @@ def fresh_cutoff(now: datetime | None = None) -> str:
     return (base - timedelta(minutes=RUNNING_MINUTES)).isoformat(timespec="seconds")
 
 
+def reported_label(state: Any) -> str | None:
+    """自报状态的中文标签；未知值原样返回，空值返回 None。"""
+    text = str(state or "").strip()
+    if not text:
+        return None
+    return REPORTED_LABELS.get(text.lower(), text)
+
+
 def event_state(event: dict[str, Any], cutoff: str) -> str:
-    """单个事件的状态；缺证据一律「未验证」，不猜成功。"""
+    """单个事件的状态；缺证据一律「未验证」，不猜成功。
+
+    状态自报、会话活动本身不带执行结果：自报「运行中」且仍在窗口内算「运行中」，
+    过期或自报空闲/阻塞的仍是「未验证」——自报是回显，不是成功证据。
+    """
     ok = event.get("ok")
     fresh = str(event.get("occurred_at") or "") >= cutoff
+    reported = str(event.get("reported_state") or "").strip().lower()
+    if reported:
+        if reported in REPORTED_RUNNING:
+            return "running" if fresh else "unverified"
+        # 自报空闲/阻塞/完成：只是回显，既不是证据，也不能算「运行中」。
+        return "unverified"
     if event.get("event_type") == "subagent_run":
         if ok == 1:
             return "ok"

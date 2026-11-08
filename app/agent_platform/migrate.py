@@ -134,6 +134,13 @@ V13_TABLES = (
 #: v15（Agent Team）：真实 Claude Code 后台会话的启动记录。
 V15_TABLES = ("team_sessions",)
 
+#: v16（执行状态回显）：状态自报事件记录自报状态（idle/running/blocked…），
+#: 让时间线与卡片能回显「Agent 自称在做什么」，而不是一律「未验证」。
+#: 自报不是执行证据，``ok`` 仍然只由真实执行结果决定。
+V16_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("agent_events", (("reported_state", "TEXT"),)),
+)
+
 #: v14（交付中心）：交付校验结果与返工次数。校验结果只是证据快照，
 #: 交付状态仍以 ``deliveries.status`` 为唯一事实源。
 V14_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
@@ -242,6 +249,37 @@ class MigrationStep:
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     _backfill_mirror_source(conn)
+
+
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """回填历史状态自报事件的自报状态。
+
+    每个 Agent 的早期自报无法逐条还原（事件里当时没存状态），
+    只把「最近一条」对齐到当前 status 文件里的状态；更早的仍保持 NULL，
+    页面会按「未验证」显示并附原始 note，不做猜测。
+    """
+    rows = conn.execute(
+        """
+        SELECT e.id AS id,
+               CASE WHEN json_valid(a.metadata_json)
+                    THEN json_extract(a.metadata_json, '$.self_report.state') END AS state
+        FROM agent_events e
+        JOIN project_agents a ON a.id = e.agent_id
+        WHERE e.event_type = 'status_report' AND e.reported_state IS NULL
+          AND e.id = (
+              SELECT e2.id FROM agent_events e2
+              WHERE e2.agent_id = e.agent_id AND e2.event_type = 'status_report'
+              ORDER BY e2.occurred_at DESC LIMIT 1
+          )
+        """
+    ).fetchall()
+    for row in rows:
+        state = str(row["state"] or "").strip()
+        if not state:
+            continue
+        conn.execute(
+            "UPDATE agent_events SET reported_state = ? WHERE id = ?", (state, row["id"])
+        )
 
 
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
@@ -403,6 +441,12 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         15,
         tables=V15_TABLES,
         description="Agent Team：真实 Claude Code 后台会话启动记录",
+    ),
+    MigrationStep(
+        16,
+        columns=V16_COLUMN_UPGRADES,
+        backfill=_migrate_v15_to_v16,
+        description="执行状态回显：状态自报事件记录自报状态",
     ),
 )
 

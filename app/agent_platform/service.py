@@ -1319,6 +1319,10 @@ def agent_activity(project_id: str) -> dict[str, Any]:
                 "worktree_path": agent.get("worktree_path"),
                 "current_branch": agent.get("current_branch"),
                 "last_heartbeat_at": agent.get("last_heartbeat_at"),
+                "self_report": (store.loads_json(agent.get("metadata_json"), {}).get("self_report") or None),
+                "reported_label": activity.reported_label(
+                    (store.loads_json(agent.get("metadata_json"), {}).get("self_report") or {}).get("state")
+                ),
                 "state": state,
                 "state_label": TIMELINE_STATE_LABEL.get(state, "无执行记录"),
                 "last_event_at": events[0]["occurred_at"] if events else None,
@@ -1571,6 +1575,8 @@ def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[
 # 执行时间线（复用 agent_events，四态由证据推导）
 # ---------------------------------------------------------------------------
 #: 执行状态口径统一在 ``activity`` 模块，这里只保留旧名字给既有调用方。
+#: 采集侧占位/缺失的 Agent 标识，页面统一显示「未归属」，不要把 "unknown" 当角色名。
+_UNKNOWN_AGENT_IDS = {"", "unknown", "none", "null", "n/a", "unassigned"}
 TIMELINE_RUNNING_MINUTES = activity.RUNNING_MINUTES
 TIMELINE_STATES = activity.STATES
 TIMELINE_STATE_LABEL = activity.LABELS
@@ -1600,7 +1606,7 @@ def execution_timeline(
         rows = conn.execute(
             f"""
             SELECT e.id, e.agent_id, e.session_id, e.event_type, e.message, e.tool, e.ok,
-                   e.occurred_at, a.display_name AS agent_name, a.role_key
+                   e.reported_state, e.occurred_at, a.display_name AS agent_name, a.role_key
             FROM agent_events e LEFT JOIN project_agents a
               ON a.id = e.agent_id AND a.project_id = e.project_id
             WHERE e.project_id = ? AND e.event_type IN ({",".join("?" * len(TIMELINE_EVENT_TYPES))})
@@ -1609,6 +1615,26 @@ def execution_timeline(
             """,
             (project_id, *TIMELINE_EVENT_TYPES),
         ).fetchall()
+        # 自报状态来自 status 文件（project_agents.metadata_json.self_report）：
+        # 它只是回显「Agent 说自己怎么样」，不作为成功证据。
+        reports: dict[str, dict[str, Any]] = {}
+        for row in conn.execute(
+            "SELECT id, status, last_heartbeat_at, metadata_json FROM project_agents"
+            " WHERE project_id = ?",
+            (project_id,),
+        ):
+            sr = store.loads_json(row["metadata_json"], {}).get("self_report") or {}
+            if not sr:
+                continue
+            reports[row["id"]] = {
+                "state": sr.get("state"),
+                "label": activity.reported_label(sr.get("state")),
+                "task": sr.get("task"),
+                "note": sr.get("note"),
+                "commit": sr.get("commit"),
+                "reported_at": row["last_heartbeat_at"],
+                "agent_status": row["status"],
+            }
         counts = {key: 0 for key in TIMELINE_STATES}
         items: list[dict[str, Any]] = []
         agent_map: dict[str, dict[str, Any]] = {}
@@ -1617,6 +1643,9 @@ def execution_timeline(
             event["state"] = _event_state(event, fresh_cutoff)
             event["state_label"] = TIMELINE_STATE_LABEL[event["state"]]
             event["type_label"] = _EVENT_TYPE_LABEL.get(event["event_type"], event["event_type"])
+            event["reported_label"] = activity.reported_label(event.get("reported_state"))
+            if str(event.get("agent_id") or "").strip().lower() in _UNKNOWN_AGENT_IDS:
+                event["agent_name"] = event["agent_name"] or "未归属"
             counts[event["state"]] += 1
             items.append(event)
             # items 已按时间倒序：每个 Agent 的第一条就是它的最近一次事件
@@ -1626,11 +1655,13 @@ def execution_timeline(
                 entry = {
                     "agent_id": event["agent_id"],
                     "agent_name": event["agent_name"] or event["role_key"]
-                    or event["agent_id"] or "未归属",
+                    or (None if str(event["agent_id"] or "").strip().lower() in _UNKNOWN_AGENT_IDS
+                        else event["agent_id"]) or "未归属",
                     "role_key": event["role_key"],
                     "state": event["state"],
                     "state_label": event["state_label"],
                     "last_activity_at": event["occurred_at"],
+                    "reported": reports.get(event["agent_id"] or ""),
                     "counts": {k: 0 for k in TIMELINE_STATES},
                 }
                 agent_map[key] = entry

@@ -462,8 +462,9 @@ def backfill_agents(conn: sqlite3.Connection, project: dict[str, Any]) -> int:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO agent_events
-                    (id, project_id, agent_id, session_id, event_type, message, tool, ok, occurred_at)
-                VALUES (?, ?, ?, NULL, ?, ?, NULL, NULL, ?)
+                    (id, project_id, agent_id, session_id, event_type, message, tool, ok,
+                     reported_state, occurred_at)
+                VALUES (?, ?, ?, NULL, ?, ?, NULL, NULL, ?, ?)
                 """,
                 (
                     store.stable_id("evt", project["id"], row["id"], occurred, event_type),
@@ -471,6 +472,7 @@ def backfill_agents(conn: sqlite3.Connection, project: dict[str, Any]) -> int:
                     row["id"],
                     event_type,
                     message,
+                    str(status.get("state") or "").strip() or None,
                     occurred,
                 ),
             )

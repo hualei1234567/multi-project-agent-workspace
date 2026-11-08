@@ -193,6 +193,43 @@ def test_cross_project_column_added(fresh_db):
     assert "cross_project" in cols
 
 
+def test_v16_adds_and_backfills_reported_state(fresh_db):
+    """执行状态回显：新增 reported_state 列，并把每个 Agent 最近一条自报对齐到当前状态。"""
+    conn, _ = fresh_db
+    migrate.apply(conn, no_backup=True)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_events)")}
+    assert "reported_state" in cols
+
+    now = "2026-11-08T12:00:00+00:00"
+    later = "2026-11-08T12:30:00+00:00"
+    conn.execute(
+        "INSERT INTO agent_projects (id, code, name, status, repo_root, session_slugs,"
+        " team_template_key, team_template_version, settings_json, created_at, updated_at, version)"
+        " VALUES ('p1', 'p1', 'P1', 'active', '/tmp/p1', '[]', 'default', 1, '{}', ?, ?, 1)",
+        (now, now),
+    )
+    conn.execute(
+        "INSERT INTO project_agents (id, project_id, role_key, instance_key, agent_type,"
+        " execution_mode, display_name, status, metadata_json, last_heartbeat_at, last_seen_at)"
+        " VALUES ('a1', 'p1', 'backend-engineer', 'backend-engineer', 'subagent', 'worktree',"
+        " 'BE', 'idle', ?, ?, ?)",
+        ('{"self_report": {"state": "idle", "task": "DDP-212"}}', later, later),
+    )
+    for evt, at in (("ev-old", now), ("ev-latest", later)):
+        conn.execute(
+            "INSERT INTO agent_events (id, project_id, agent_id, session_id, event_type,"
+            " message, tool, ok, reported_state, occurred_at)"
+            " VALUES (?, 'p1', 'a1', NULL, 'status_report', 'note', NULL, NULL, NULL, ?)",
+            (evt, at),
+        )
+    # 模拟升级前状态：清空列后重跑修正步骤
+    conn.execute("UPDATE agent_events SET reported_state = NULL")
+    migrate._migrate_v15_to_v16(conn)
+    rows = dict(conn.execute("SELECT id, reported_state FROM agent_events"))
+    assert rows["ev-latest"] == "idle"
+    assert rows["ev-old"] is None      # 更早的自报无法还原，保持未验证，不猜测
+
+
 def test_repair_reruns_steps_when_version_current(fresh_db):
     """版本已最新但需要重跑数据修正时，--repair 必须执行步骤。"""
     conn, _ = fresh_db
