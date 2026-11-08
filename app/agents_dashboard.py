@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DDP AI 团队看板（本地只读）。
+"""多项目 Agent 管理平台（本地只读）。
 
 把「谁在干活、干到哪了、产出在哪」变成一块屏：
 
@@ -2481,7 +2481,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="DDP AI 团队看板（本地只读）")
+    parser = argparse.ArgumentParser(description="多项目 Agent 管理平台（本地只读）")
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--host", default="127.0.0.1", help="监听地址；127.0.0.1 仅本机")
     parser.add_argument("--tailscale", action="store_true",
@@ -2490,7 +2490,7 @@ def main() -> int:
     parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
     args = parser.parse_args()
 
-    # 平台库：建表 → 默认 DDP 项目 → 首次回填（只写平台独立 SQLite，不写仓库）。
+    # 平台库：建表 → 默认项目 → 首次回填（只写平台独立 SQLite，不写仓库）。
     try:
         platform_service.bootstrap(repo_root=REPO)
         # 每个登记项目各自回填一次：只回填默认项目会让其它项目的用量永远显示 0
