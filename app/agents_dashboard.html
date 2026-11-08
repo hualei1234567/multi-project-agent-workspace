@@ -1023,6 +1023,11 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 
 .ws-filterbar { justify-content: flex-start; gap: 14px; align-items: center; font-size: 12.5px; color: var(--muted); }
 .ws-filterbar label { display: inline-flex; align-items: center; gap: 6px; }
+
+.ws-views { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ws-views select, .ws-views input { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12.5px; }
+.ws-views input { width: 110px; }
+.ws-filterbar + .ws-grid { margin-top: 4px; }
 .ws-filterbar select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12.5px; }
 .ws-searchbar { display: flex; gap: 10px; margin: 4px 0 16px; }
 .ws-searchbar input { flex: 1; }
@@ -1973,6 +1978,63 @@ function bindPortfolioFilters(d) {
   riskSel.onchange = apply;
   qSel.onchange = apply;
   apply();
+
+  // 保存视图：只存筛选条件（个人偏好），不复制任何项目事实
+  const viewSel = $("#pf-views"), nameInput = $("#pf-view-name");
+  const saveBtn = $("#pf-view-save"), delBtn = $("#pf-view-del");
+  let views = [];
+  const refreshViews = async () => {
+    try {
+      const res = await fetchJSON("/api/workspace/views?scope=portfolio");
+      views = res.items || [];
+    } catch { views = []; }
+    if (!viewSel) return;
+    const cur = viewSel.value;
+    viewSel.innerHTML = `<option value="">保存的视图…</option>` +
+      views.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    if (views.some(v => v.id === cur)) viewSel.value = cur;
+    if (delBtn) delBtn.hidden = !viewSel.value;
+  };
+  if (viewSel) {
+    viewSel.onchange = () => {
+      const v = views.find(x => x.id === viewSel.value);
+      if (delBtn) delBtn.hidden = !v;
+      if (!v) return;
+      riskSel.value = v.filters?.risk || "";
+      qSel.value = v.filters?.quality || "";
+      apply();
+    };
+    if (saveBtn) saveBtn.onclick = async () => {
+      const name = (nameInput?.value || "").trim();
+      if (!name) { if (nameInput) nameInput.focus(); return; }
+      const filters = {};
+      if (riskSel.value) filters.risk = riskSel.value;
+      if (qSel.value) filters.quality = qSel.value;
+      try {
+        await fetchJSON("/api/workspace/views", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "portfolio", name, filters }),
+        });
+      } catch (e) {
+        if (nameInput) nameInput.placeholder = errText(e) || "保存失败";
+        return;
+      }
+      if (nameInput) { nameInput.value = ""; nameInput.placeholder = "视图名称"; }
+      await refreshViews();
+      const saved = views.find(v => v.name === name);
+      if (saved && viewSel) { viewSel.value = saved.id; if (delBtn) delBtn.hidden = false; }
+    };
+    if (delBtn) delBtn.onclick = async () => {
+      if (!viewSel.value) return;
+      try {
+        await fetchJSON(`/api/workspace/views/${encodeURIComponent(viewSel.value)}`, { method: "DELETE" });
+      } catch { /* 已删除或无权删除：刷新列表即可 */ }
+      viewSel.value = "";
+      await refreshViews();
+    };
+    refreshViews();
+  }
 }
 
 function portfolioHTML(d) {
@@ -2022,6 +2084,12 @@ function portfolioHTML(d) {
           <option value="stale">陈旧</option>
         </select>
       </label>
+      <span class="ws-views">
+        <select id="pf-views" data-testid="pf-views"><option value="">保存的视图…</option></select>
+        <input id="pf-view-name" maxlength="60" placeholder="视图名称" data-testid="pf-view-name" />
+        <button type="button" class="btn sm" id="pf-view-save" data-testid="pf-view-save">保存</button>
+        <button type="button" class="btn sm" id="pf-view-del" data-testid="pf-view-del" hidden>删除视图</button>
+      </span>
       <span class="ws-sub" id="pf-count"></span>
     </div>
     <div class="ws-grid" id="pf-grid"></div>`;

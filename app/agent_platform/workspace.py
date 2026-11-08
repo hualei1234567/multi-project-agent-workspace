@@ -617,3 +617,101 @@ def search(conn: sqlite3.Connection | None = None,
     finally:
         if own:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 个人保存视图（只存筛选条件，不复制任何业务事实）
+# ---------------------------------------------------------------------------
+VIEW_SCOPES = ("portfolio", "deliveries", "tasks")
+
+
+class ViewError(Exception):
+    """保存视图的参数错误；HTTP 层按 code/status 映射。"""
+
+    def __init__(self, message: str, code: str = "invalid_payload", status: int = 422) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+        self.message = message
+
+
+def _view_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["filters"] = store.loads_json(item.pop("filters_json", "{}"), {})
+    return item
+
+
+def list_views(conn: sqlite3.Connection | None = None,
+               principal_id: str | None = None,
+               scope: str | None = None) -> dict[str, Any]:
+    own = conn is None
+    conn = conn or store.connect()
+    pid = principal_id or LOCAL_OWNER
+    try:
+        store.init_db(conn)
+        if scope and scope not in VIEW_SCOPES:
+            raise ViewError("scope 只能是 " + "/".join(VIEW_SCOPES))
+        where = ["principal_id = ?"]
+        params: list[Any] = [pid]
+        if scope:
+            where.append("scope = ?")
+            params.append(scope)
+        rows = conn.execute(
+            "SELECT id, scope, name, filters_json, created_at, updated_at FROM saved_views"
+            f" WHERE {' AND '.join(where)} ORDER BY updated_at DESC, name ASC",
+            tuple(params),
+        ).fetchall()
+        return {"items": [_view_dict(row) for row in rows], "total": len(rows), "scope": scope}
+    finally:
+        if own:
+            conn.close()
+
+
+def save_view(conn: sqlite3.Connection, principal_id: str | None,
+              payload: dict[str, Any]) -> dict[str, Any]:
+    """同主体 + 同 scope + 同名视为更新，不产生重复视图。"""
+    pid = principal_id or LOCAL_OWNER
+    if not isinstance(payload, dict):
+        raise ViewError("payload 必须是对象")
+    scope = str(payload.get("scope") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    filters = payload.get("filters")
+    if scope not in VIEW_SCOPES:
+        raise ViewError("scope 只能是 " + "/".join(VIEW_SCOPES))
+    if not name or len(name) > 60:
+        raise ViewError("name 必填且不超过 60 字")
+    if not isinstance(filters, dict):
+        raise ViewError("filters 必须是对象")
+    # 只保留扁平标量，避免把任意结构塞进个人偏好
+    clean = {
+        str(key)[:40]: str(value)[:80]
+        for key, value in filters.items()
+        if isinstance(value, (str, int, float, bool)) and str(value) != ""
+    }
+    now = _iso(_now())
+    with store.write_tx(conn):
+        conn.execute(
+            "INSERT INTO saved_views (id, principal_id, scope, name, filters_json, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(principal_id, scope, name) DO UPDATE SET"
+            " filters_json = excluded.filters_json, updated_at = excluded.updated_at",
+            (store.stable_id("view", pid, scope, name), pid, scope, name,
+             store.dumps_json(clean), now, now),
+        )
+    row = conn.execute(
+        "SELECT id, scope, name, filters_json, created_at, updated_at FROM saved_views"
+        " WHERE principal_id = ? AND scope = ? AND name = ?",
+        (pid, scope, name),
+    ).fetchone()
+    return {"view": _view_dict(row)}
+
+
+def delete_view(conn: sqlite3.Connection, principal_id: str | None, view_id: str) -> dict[str, Any]:
+    pid = principal_id or LOCAL_OWNER
+    with store.write_tx(conn):
+        cur = conn.execute(
+            "DELETE FROM saved_views WHERE id = ? AND principal_id = ?", (view_id, pid),
+        )
+    if cur.rowcount == 0:
+        raise ViewError("视图不存在或无权删除", code="not_found", status=404)
+    return {"ok": True, "deleted": view_id}

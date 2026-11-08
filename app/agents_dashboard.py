@@ -1968,7 +1968,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._json(200, fn(*args, **kwargs))
         except (platform_service.PlatformError, scheduler_service.SchedulerError,
-                resource_service.ResourceError, runtime_service.RuntimeError_) as exc:
+                resource_service.ResourceError, runtime_service.RuntimeError_,
+                workspace_service.ViewError) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -2073,6 +2074,19 @@ class Handler(BaseHTTPRequestHandler):
                     lambda: {"project": self._public_project(platform_service.create_project(payload))},
                 )
                 self._json(200, response)
+                return
+            if path == "/api/workspace/views":
+                payload = self._body()
+                principal_id = self._principal_id()
+
+                def _save():
+                    conn = platform_store.connect()
+                    try:
+                        return workspace_service.save_view(conn, principal_id, payload)
+                    finally:
+                        conn.close()
+
+                self._platform(_save)
                 return
             if path == "/api/workspace/notifications/read":
                 payload = self._body()
@@ -2261,6 +2275,19 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], False)
             return
+        if len(segments) == 4 and segments[:2] == ["api", "workspace"] and segments[2] == "views":
+            view_id = segments[3]
+            principal_id = self._principal_id()
+
+            def _delete_view():
+                conn = platform_store.connect()
+                try:
+                    return workspace_service.delete_view(conn, principal_id, view_id)
+                finally:
+                    conn.close()
+
+            self._platform(_delete_view)
+            return
         self._not_found_route()
 
     def do_GET(self) -> None:
@@ -2346,6 +2373,12 @@ class Handler(BaseHTTPRequestHandler):
                 workspace_service.my_work,
                 principal_id=self._principal_id(),
                 limit=int((query.get("limit") or ["20"])[0]),
+            )
+        elif path == "/api/workspace/views":
+            self._platform(
+                workspace_service.list_views,
+                principal_id=self._principal_id(),
+                scope=(query.get("scope") or [None])[0],
             )
         elif path == "/api/workspace/notifications":
             self._platform(

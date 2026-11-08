@@ -147,3 +147,40 @@ def test_suspended_principal_denied(conn):
     )
     conn.commit()
     assert workspace.visible_project_ids(conn, "frozen") == []
+
+
+def test_saved_views_are_per_principal_and_upsert(conn):
+    saved = workspace.save_view(conn, "local-owner", {
+        "scope": "portfolio", "name": "高风险项目",
+        "filters": {"risk": "high", "empty": "", "nested": {"x": 1}},
+    })["view"]
+    assert saved["filters"] == {"risk": "high"}          # 只留扁平标量
+    assert workspace.list_views(conn, "local-owner", "portfolio")["total"] == 1
+
+    # 同名再存是更新，不产生第二条
+    workspace.save_view(conn, "local-owner", {
+        "scope": "portfolio", "name": "高风险项目", "filters": {"risk": "medium"},
+    })
+    items = workspace.list_views(conn, "local-owner", "portfolio")["items"]
+    assert len(items) == 1 and items[0]["filters"] == {"risk": "medium"}
+
+    # 别人看不到、也删不掉
+    assert workspace.list_views(conn, "other", "portfolio")["total"] == 0
+    with pytest.raises(workspace.ViewError) as err:
+        workspace.delete_view(conn, "other", saved["id"])
+    assert err.value.code == "not_found" and err.value.status == 404
+
+    assert workspace.delete_view(conn, "local-owner", saved["id"])["ok"] is True
+    assert workspace.list_views(conn, "local-owner", "portfolio")["total"] == 0
+
+
+def test_saved_view_rejects_bad_input(conn):
+    for payload in (
+        {"scope": "nope", "name": "x", "filters": {}},
+        {"scope": "portfolio", "name": "", "filters": {}},
+        {"scope": "portfolio", "name": "x", "filters": "not-a-dict"},
+    ):
+        with pytest.raises(workspace.ViewError):
+            workspace.save_view(conn, "local-owner", payload)
+    with pytest.raises(workspace.ViewError):
+        workspace.list_views(conn, "local-owner", "nope")

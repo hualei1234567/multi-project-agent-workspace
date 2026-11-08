@@ -119,6 +119,9 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/workspace/my"),
     ("GET", "/api/workspace/notifications"),
     ("POST", "/api/workspace/notifications/read"),
+    ("GET", "/api/workspace/views"),
+    ("POST", "/api/workspace/views"),
+    ("DELETE", "/api/workspace/views/{view_id}"),
     ("GET", "/api/search"),
     ("GET", "/api/audit-logs"),
     ("GET", "/api/team-templates"),
@@ -778,6 +781,25 @@ def _paths() -> dict[str, Any]:
                 "标记消息已读/未读（只写个人偏好，不改业务状态）",
                 tags=["workspace"], body={"type": "object"},
                 ok_schema={"type": "object"}, errors=(400, 422),
+            )
+        },
+        "/api/workspace/views": {
+            "get": _operation(
+                "个人保存视图列表：只存筛选条件，不复制业务数据",
+                tags=["workspace"], params=[_param("scope")],
+                ok_schema={"type": "object"}, errors=(422,),
+            ),
+            "post": _operation(
+                "保存视图：同主体 + 同 scope + 同名视为更新",
+                tags=["workspace"], body={"type": "object"},
+                ok_schema={"type": "object"}, errors=(400, 422),
+            ),
+        },
+        "/api/workspace/views/{view_id}": {
+            "delete": _operation(
+                "删除个人保存视图（只能删自己的）",
+                tags=["workspace"], params=[_param("view_id", "path", required=True)],
+                ok_schema={"type": "object"}, errors=(404,),
             )
         },
         "/api/search": {

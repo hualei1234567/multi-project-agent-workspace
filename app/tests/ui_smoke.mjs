@@ -339,6 +339,39 @@ async function main() {
     // 正向：延迟 demo-b 响应，先点 demo-b 再点 material
     await raceCase("demo-b", "demo-b", "material", "竞态(延迟 demo-b)");
 
+    // ------------------------------------------------ 3.5) 组合筛选 + 保存视图
+    await page.goto(`${BASE}/#/portfolio`, { waitUntil: "domcontentloaded" });
+    await page.locator("#pf-risk").waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    await page.locator("#pf-risk").selectOption("high");
+    await sleep(500);
+    check(new URL(page.url()).hash.includes("risk=high"), "组合筛选写入 URL", new URL(page.url()).hash);
+
+    const viewName = "冒烟高风险视图";
+    await page.locator('[data-testid="pf-view-name"]').fill(viewName);
+    await page.locator('[data-testid="pf-view-save"]').click();
+    await page.waitForFunction((n) =>
+      Array.from(document.querySelectorAll("#pf-views option")).some((o) => o.textContent === n),
+      viewName, { timeout: 8000 }).catch(() => {});
+    const viewOpts = await page.locator("#pf-views option").allInnerTexts().catch(() => []);
+    check(viewOpts.includes(viewName), "保存视图出现在下拉", viewOpts.join("/"));
+    check(await page.locator('[data-testid="pf-view-del"]').isVisible().catch(() => false), "选中后出现删除入口");
+
+    // 清空筛选再套用视图，应恢复「高风险」条件
+    await page.locator("#pf-view-name").fill("");
+    await page.locator("#pf-risk").selectOption("");
+    await sleep(300);
+    await page.locator("#pf-views").selectOption({ label: viewName });
+    await sleep(500);
+    check((await page.locator("#pf-risk").inputValue()) === "high", "套用视图恢复筛选条件");
+    check(new URL(page.url()).hash.includes("risk=high"), "套用视图写回 URL", new URL(page.url()).hash);
+
+    await page.locator('[data-testid="pf-view-del"]').click();
+    await page.waitForFunction((n) =>
+      !Array.from(document.querySelectorAll("#pf-views option")).some((o) => o.textContent === n),
+      viewName, { timeout: 8000 }).catch(() => {});
+    const afterDel = await page.locator("#pf-views option").allInnerTexts().catch(() => []);
+    check(!afterDel.includes(viewName), "删除视图后下拉移除", afterDel.join("/"));
+
     // --------------------------------------------------------- 4) Tab 深链
     const tabs = [
       ["agents", "角色花名册"],
