@@ -3,12 +3,12 @@
 set -uo pipefail
 WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${1:-8099}"
-export DDP_AGENT_PLATFORM_DB="${DDP_AGENT_PLATFORM_DB:-$WS/data/platform.db}"
-export DDP_AGENT_PLATFORM_WORKSPACE="$WS"
+export AGWS_PLATFORM_DB="${AGWS_PLATFORM_DB:-$WS/data/platform.db}"
+export AGWS_PLATFORM_WORKSPACE="$WS"
 
 echo "=== 工作区 ==="; echo "  $WS"
-echo "=== 库 ==="; echo "  $DDP_AGENT_PLATFORM_DB"
-[ -f "$DDP_AGENT_PLATFORM_DB" ] && echo "  大小 $(du -h "$DDP_AGENT_PLATFORM_DB" | cut -f1)" || echo "  ⚠ 不存在"
+echo "=== 库 ==="; echo "  $AGWS_PLATFORM_DB"
+[ -f "$AGWS_PLATFORM_DB" ] && echo "  大小 $(du -h "$AGWS_PLATFORM_DB" | cut -f1)" || echo "  ⚠ 不存在"
 echo "=== 进程 ==="
 pgrep -fl "agents_dashboard.py --port $PORT" || echo "  未运行"
 echo "=== 接口 ==="

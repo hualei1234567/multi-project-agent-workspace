@@ -23,14 +23,14 @@ scripts/deploy-laptop.sh --with-data  # 连库一起推（首次部署用）
 
 局域网访问：<http://<LAN_HOST>:8099/> —— **默认无需令牌**（2026-11-08 起）。
 
-鉴权开关：`DDP_AGENT_PLATFORM_AUTH`（默认 `off`）。设成 `on` 后非回环访问需
+鉴权开关：`AGWS_PLATFORM_AUTH`（默认 `off`）。设成 `on` 后非回环访问需
 `Authorization: Bearer <data/token>`。**无论开关如何，`/api/open` 只允许回环来源。**
 打开鉴权：
 
 ```bash
 ssh <ssh-alias> 'sudo tee /etc/systemd/system/agent-platform.service.d/auth.conf <<EOF
 [Service]
-Environment=DDP_AGENT_PLATFORM_AUTH=on
+Environment=AGWS_PLATFORM_AUTH=on
 EOF
 sudo systemctl daemon-reload && sudo systemctl restart agent-platform'
 ```
@@ -92,7 +92,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.agentplatform.proxy-t
 
 ---
 
-**当前状态**：隧道已启用；`DDP_AGENT_PLATFORM_EXECUTOR=on`；material 的
+**当前状态**：隧道已启用；`AGWS_PLATFORM_EXECUTOR=on`；material 的
 `execution_enabled=true`。2026-11-07 实测一次真实执行：exit 0，41 秒，
 产出 `ACCEPTANCE.md`，`executions.source='dispatcher'` 有对应记录。
 
@@ -241,7 +241,7 @@ killswitch.release(c, '<switch_id>', released_by='oncall')
 
 ```bash
 # 全局总闸（需重启才生效，Kill Switch 是秒级手段）
-DDP_AGENT_PLATFORM_EXECUTOR=off
+AGWS_PLATFORM_EXECUTOR=off
 # 项目级
 sqlite3 data/platform.db "update agent_projects set settings_json = json_set(settings_json,'$.execution_enabled',0) where id='material';"
 ```

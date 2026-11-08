@@ -15,7 +15,7 @@ from agent_platform.p4 import evaluation, release
 
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(tmp_path / "platform.db"))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(tmp_path / "platform.db"))
     conn = store.connect()
     store.init_db(conn)
     conn.execute(

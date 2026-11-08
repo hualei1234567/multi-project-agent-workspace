@@ -34,12 +34,12 @@ def env(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / "ai-team").mkdir(parents=True)
     (repo / "ai-team" / "TASK_BOARD.md").write_text("# Board\n", encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db_path))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db_path))
     config_file = tmp_path / "projects.json"
     config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(config_file))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(projects_root))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(config_file))
+    monkeypatch.setenv("AGWS_PLATFORM_PROJECTS_ROOT", str(projects_root))
+    monkeypatch.setenv("AGWS_PLATFORM_REPO", str(repo))
     service.bootstrap(repo_root=repo)
     killswitch.reset_cache()
     yield SimpleNamespace(db=db_path, repo=repo, projects_root=projects_root)

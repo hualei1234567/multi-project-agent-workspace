@@ -1,7 +1,7 @@
 """独立 SQLite 存储层：连接、建表、schema_version、通用时间/ID 工具。
 
 默认库：``~/Multi-Project-Agent-Workspace/data/platform.db``（见 ``config.data_dir()``）
-覆盖：环境变量 ``DDP_AGENT_PLATFORM_DB``（测试使用临时目录）。
+覆盖：环境变量 ``AGWS_PLATFORM_DB``（测试使用临时目录）。
 
 历史：2026-11-04 前默认在 ``~/.claude/agent-platform/``；迁移时保留该路径作为
 只读回退（老库存在且新库不存在时自动沿用），避免一次性搬库丢数据。
@@ -27,7 +27,7 @@ LEGACY_DB_PATH = Path.home() / ".claude" / "agent-platform" / "platform.db"
 
 def default_db_path() -> Path:
     """平台库路径：环境变量 → 工作区 data/ → （回退）旧 ~/.claude 路径。"""
-    override = os.environ.get("DDP_AGENT_PLATFORM_DB")
+    override = os.environ.get("AGWS_PLATFORM_DB")
     if override:
         return Path(override).expanduser()
     from . import config

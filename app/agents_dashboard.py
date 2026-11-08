@@ -103,7 +103,7 @@ except ImportError:  # pragma: no cover
 #: 默认项目仓库根（平台已脱离单一仓库，由 config/projects.json 决定）
 REPO = platform_config.default_repo_root()
 PROJECTS_ROOT = Path(
-    os.environ.get("DDP_AGENT_PLATFORM_PROJECTS_ROOT") or (Path.home() / ".claude" / "projects")
+    os.environ.get("AGWS_PLATFORM_PROJECTS_ROOT") or (Path.home() / ".claude" / "projects")
 ).expanduser()
 STATUS_DIR = REPO / "ai-team" / "status"
 

@@ -2698,8 +2698,8 @@ function renderDispatchPage(el) {
 
   const executorBanner = enabled
     ? `<div class="note ok">执行器已启用：平台可拉起 claude 执行任务。<b>项目开关</b>仍须单独打开，且只允许改代码（禁 push / 部署 / 删数据）。</div>`
-    : `<div class="note warn">执行器未启用（<code>${esc(executor.env_switch || "DDP_AGENT_PLATFORM_EXECUTOR")}</code>=off）。
-        当前只能生成计划与预演，不能真正执行。启用：<code>DDP_AGENT_PLATFORM_EXECUTOR=on scripts/start.sh</code></div>`;
+    : `<div class="note warn">执行器未启用（<code>${esc(executor.env_switch || "AGWS_PLATFORM_EXECUTOR")}</code>=off）。
+        当前只能生成计划与预演，不能真正执行。启用：<code>AGWS_PLATFORM_EXECUTOR=on scripts/start.sh</code></div>`;
 
   el.innerHTML = `
     <section>

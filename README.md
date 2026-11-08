@@ -38,12 +38,12 @@ python3 scripts/agent_status.py ...     # 已随项目迁移，见下
 
 | 变量 | 作用 |
 |---|---|
-| `DDP_AGENT_PLATFORM_DB` | 库路径（默认 `data/platform.db`） |
-| `DDP_AGENT_PLATFORM_WORKSPACE` | 工作区根（默认本目录） |
-| `DDP_AGENT_PLATFORM_REPO` | 覆盖默认项目仓库根 |
+| `AGWS_PLATFORM_DB` | 库路径（默认 `data/platform.db`） |
+| `AGWS_PLATFORM_WORKSPACE` | 工作区根（默认本目录） |
+| `AGWS_PLATFORM_REPO` | 覆盖默认项目仓库根 |
 | `PLAYWRIGHT_MODULE` | 冒烟测试的 playwright 路径 |
-| `DDP_AGENT_PLATFORM_CONFIG` | 纳管清单路径（默认 `config/projects.json`；测试用临时清单） |
-| `AGWS_DB` | UI 冒烟清理测试项目用的库；默认跟随 `DDP_AGENT_PLATFORM_DB` |
+| `AGWS_PLATFORM_CONFIG` | 纳管清单路径（默认 `config/projects.json`；测试用临时清单） |
+| `AGWS_DB` | UI 冒烟清理测试项目用的库；默认跟随 `AGWS_PLATFORM_DB` |
 
 ## 新增一个项目
 
@@ -54,25 +54,25 @@ python3 scripts/agent_status.py ...     # 已随项目迁移，见下
 
 ## 项目纳管模式
 
-详见 [docs/项目纳管约定.md](docs/项目纳管约定.md)：有 `ai-team/` 的项目（DDP）以仓库为事实来源，
-没有的项目（Material）以平台库为事实来源。
+详见 [docs/项目纳管约定.md](docs/项目纳管约定.md)：有 `ai-team/` 的项目以仓库为事实来源，
+没有的以平台库为事实来源（当前纳管的 material 属于后者）。
 
 ## 现状（2026-11-05）
 
 - [IMPLEMENTED] `/api/state` **会话扫描按项目精确隔离**：`build_state` 把项目仓库传给 `scan_agents`，
-  `_prefixes_for` 改为「配置登记的精确 slug 名单」，不再用前缀匹配。修复前 material 面板显示的是
-  DDP 的 Owner 与 72 个 agent。回归用例 `test_agent_scan_is_scoped_to_project_slugs`，59 passed。
+  `_prefixes_for` 改为「配置登记的精确 slug 名单」，不再用前缀匹配。修复前 material 面板会串到
+  另一个项目的 Owner 与 agent。回归用例 `test_agent_scan_is_scoped_to_project_slugs`，59 passed。
 - [IMPLEMENTED] 工作区已纳入 git（`.venv*/`、`data/platform.db`、`state-cache/`、`logs/` 不入库）。
 - [IMPLEMENTED] `config/projects.json` 真正成为纳管清单：启动时自动登记缺失项目（幂等、不覆盖库内改名），
-  路径不存在的条目跳过；配置路径可用 `DDP_AGENT_PLATFORM_CONFIG` 覆盖，测试改用临时清单保持隔离。
+  路径不存在的条目跳过；配置路径可用 `AGWS_PLATFORM_CONFIG` 覆盖，测试改用临时清单保持隔离。
 - [IMPLEMENTED] UI 冒烟基线化：项目数按实际配置算（不再写死 2 个），夹具目录自建，
   清理写入被测实例的库（`AGWS_DB`），比较 Token 前先回填对齐两条口径 —— **49/49**。
 
 ## 现状（2026-11-04）
 
-- [IMPLEMENTED] 平台代码已整体移出 DDP 仓库（DDP 侧提交 `b24bce6`），库在 `data/platform.db`，ddp + material 双项目独立渲染。
+- [IMPLEMENTED] 平台代码独立成仓，库在 `data/platform.db`，多项目独立渲染。
 - [IMPLEMENTED] `scan_agents/scan_usage/scan_worktrees/parse_task_board/scan_reports/safe_repo_path` 全部按项目仓库参数化，slug 前缀按项目区分。
 - [IMPLEMENTED] `/api/state` 的项目元信息不走缓存，改名/归档立即生效。
 - [IMPLEMENTED] 验证：`./scripts/test.sh` 58 passed + ruff；UI 冒烟 **48/48**（夹具自动创建、收尾自动清理）。
 - [KNOWN] 项目级 Token 有两条口径：`project_usage.token_24h`（平台库 token_usage_events，回填口径）与 `usage.total_tokens`（实时扫 transcript，含本轮未回填的部分），差异属预期，UI 项目概览用前者。
-- [TODO] `scripts/agent_status.py` 仍留在 DDP 仓库（写 `ai-team/status/*.json`），功能不受影响。
+- [TODO] `scripts/agent_status.py` 仍在各业务仓库内（写 `ai-team/status/*.json`），功能不受影响。

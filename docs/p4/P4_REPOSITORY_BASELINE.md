@@ -79,8 +79,8 @@ scripts/                   start.sh / status.sh / test.sh
 | 动作 | 命令 | 当前结果 |
 |---|---|---|
 | 启动 | `scripts/start.sh [端口] [--background]`，默认 8099，仅本机 | 运行中 |
-| 执行器开关 | `DDP_AGENT_PLATFORM_EXECUTOR=on`（默认 off） | off |
-| 鉴权开关 | `DDP_AGENT_PLATFORM_AUTH`（默认 auto，实际强制远端校验） | 本机免令牌 |
+| 执行器开关 | `AGWS_PLATFORM_EXECUTOR=on`（默认 off） | off |
+| 鉴权开关 | `AGWS_PLATFORM_AUTH`（默认 auto，实际强制远端校验） | 本机免令牌 |
 | 自检 | `scripts/status.sh` | — |
 | 测试 | `scripts/test.sh` = py_compile + pytest + ruff | — |
 | pytest | `.venv/bin/python -m pytest app/tests -q` | **192 passed in 18.55s** |
@@ -182,7 +182,7 @@ scripts/                   start.sh / status.sh / test.sh
 | 项 | 位置 | 状态 |
 |---|---|---|
 | 纳管清单 | `config/projects.json`（ddp / material，repo_root + team_dir） | 有效 |
-| 平台库路径 | 默认 `data/platform.db`，`DDP_AGENT_PLATFORM_DB` 可覆盖 | 有效 |
+| 平台库路径 | 默认 `data/platform.db`，`AGWS_PLATFORM_DB` 可覆盖 | 有效 |
 | 执行器令牌文件 | `data/token` | **不存在**（D-7） |
 | API Key / 中转站凭据 | 本机环境变量，不落库 | 未读取、未打印 |
 | `.claude/settings.local.json` | 工作区级权限配置 | 存在，本期不改 |

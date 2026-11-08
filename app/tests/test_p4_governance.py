@@ -19,7 +19,7 @@ from agent_platform.p4 import events, governance, killswitch, policy
 
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(tmp_path / "platform.db"))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(tmp_path / "platform.db"))
     conn = store.connect()
     store.init_db(conn)
     for project_id, code, name in (("p1", "p1", "项目一"), ("p2", "p2", "项目二")):

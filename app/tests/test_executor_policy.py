@@ -51,7 +51,7 @@ def test_project_execution_disabled_by_default(tmp_path, monkeypatch):
     from agent_platform import store
 
     db = tmp_path / "p.db"
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db))
     conn = store.connect(db)
     try:
         store.init_db(conn)

@@ -8,7 +8,7 @@
 | 文件 | 职责 |
 |---|---|
 | `schema.sql` | schema v1（7 张业务表 + `schema_version`，全部 `IF NOT EXISTS`） |
-| `store.py` | 连接（`DDP_AGENT_PLATFORM_DB`）、建表、时间/ID/JSON 工具 |
+| `store.py` | 连接（`AGWS_PLATFORM_DB`）、建表、时间/ID/JSON 工具 |
 | `templates.py` | 内置模板 `standard-1-6`（7 角色）、`lean-1-3`（4 角色） |
 | `sources.py` | 任务板 / 自报状态 / worktree / 报告 / session transcript 采集（幂等 + 增量 cursor） |
 | `service.py` | 项目 CRUD、模板初始化、统计聚合、隔离校验、回填编排 |
@@ -18,10 +18,10 @@ HTTP 在 `scripts/agents_dashboard.py`（旧 `/api/state` 字段与旧 HTML 保�
 ## 数据库
 
 - 默认库：`~/.claude/agent-platform/platform.db`
-- 覆盖：`DDP_AGENT_PLATFORM_DB=/path/to/platform.db`
+- 覆盖：`AGWS_PLATFORM_DB=/path/to/platform.db`
 - 新项目工作区：未传 `repo_root` 时创建 `~/.claude/agent-platform/projects/<code>`（与平台库同目录，测试随 DB 隔离），`session_slugs=[]`，不继承 DDP 数据
-- 会话目录覆盖（测试用）：`DDP_AGENT_PLATFORM_PROJECTS_ROOT`
-- 默认仓库覆盖：`DDP_AGENT_PLATFORM_REPO`
+- 会话目录覆盖（测试用）：`AGWS_PLATFORM_PROJECTS_ROOT`
+- 默认仓库覆盖：`AGWS_PLATFORM_REPO`
 
 启动自动建表并写入 `schema_version=1`；重复启动幂等。测试只用临时目录，不碰真实 `~/.claude`。
 
@@ -71,5 +71,5 @@ python3 -m pytest scripts/tests -q                   # 19 用例
 
 ## 回滚
 
-平台数据独立：停止进程后删除 `~/.claude/agent-platform/platform.db`（或 `DDP_AGENT_PLATFORM_DB` 指向的文件）即可恢复原状；
+平台数据独立：停止进程后删除 `~/.claude/agent-platform/platform.db`（或 `AGWS_PLATFORM_DB` 指向的文件）即可恢复原状；
 不涉及 DDP 业务库、Alembic 迁移、`ai-team/` 原始文件或前端资源。

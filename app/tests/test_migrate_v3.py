@@ -48,7 +48,7 @@ def _version(conn: sqlite3.Connection) -> int:
 @pytest.fixture()
 def fresh_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db))
     conn = store.connect(db)
     yield conn, db
     conn.close()

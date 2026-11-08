@@ -35,7 +35,7 @@ PUBLIC_PATHS = frozenset({"/healthz", "/api/auth/token"})
 
 
 def token_path() -> Path:
-    override = os.environ.get("DDP_AGENT_PLATFORM_TOKEN_FILE")
+    override = os.environ.get("AGWS_PLATFORM_TOKEN_FILE")
     if override:
         return Path(override).expanduser()
     return config.data_dir() / "token"
@@ -79,7 +79,7 @@ def reset_cache() -> None:
 
 def auth_enabled() -> bool:
     """远端令牌校验是否开启（默认关闭）。"""
-    return os.environ.get("DDP_AGENT_PLATFORM_AUTH", "off").strip().lower() in {
+    return os.environ.get("AGWS_PLATFORM_AUTH", "off").strip().lower() in {
         "on", "1", "true", "yes",
     }
 
@@ -118,8 +118,8 @@ def check_request(
     enabled = auth_enabled
     if enabled is None:
         # 默认关闭：局域网内单用户使用，不强制令牌。
-        # 需要时用 DDP_AGENT_PLATFORM_AUTH=on 打开远端校验。
-        enabled = os.environ.get("DDP_AGENT_PLATFORM_AUTH", "off").strip().lower() in {
+        # 需要时用 AGWS_PLATFORM_AUTH=on 打开远端校验。
+        enabled = os.environ.get("AGWS_PLATFORM_AUTH", "off").strip().lower() in {
             "on", "1", "true", "yes",
         }
 

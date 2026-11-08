@@ -95,7 +95,7 @@ ROLE_KEY_BY_KEYWORD = (
 # 基础工具
 # ---------------------------------------------------------------------------
 def projects_root() -> Path:
-    override = os.environ.get("DDP_AGENT_PLATFORM_PROJECTS_ROOT")
+    override = os.environ.get("AGWS_PLATFORM_PROJECTS_ROOT")
     if override:
         return Path(override).expanduser()
     return Path.home() / ".claude" / "projects"

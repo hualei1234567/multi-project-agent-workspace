@@ -77,16 +77,16 @@ def lan_ip() -> str:
 
 
 def bootstrap(tmp: Path) -> None:
-    os.environ["DDP_AGENT_PLATFORM_DB"] = str(tmp / "platform.db")
-    os.environ["DDP_AGENT_PLATFORM_REPO"] = str(tmp / "repo")
-    os.environ["DDP_AGENT_PLATFORM_PROJECTS_ROOT"] = str(tmp / "projects")
+    os.environ["AGWS_PLATFORM_DB"] = str(tmp / "platform.db")
+    os.environ["AGWS_PLATFORM_REPO"] = str(tmp / "repo")
+    os.environ["AGWS_PLATFORM_PROJECTS_ROOT"] = str(tmp / "projects")
     token_file = tmp / "token"
     token_file.write_text(TOKEN, encoding="utf-8")
-    os.environ["DDP_AGENT_PLATFORM_TOKEN_FILE"] = str(token_file)
+    os.environ["AGWS_PLATFORM_TOKEN_FILE"] = str(token_file)
 
     config = tmp / "projects.json"
     config.write_text(json.dumps({"projects": []}), encoding="utf-8")
-    os.environ["DDP_AGENT_PLATFORM_CONFIG"] = str(config)
+    os.environ["AGWS_PLATFORM_CONFIG"] = str(config)
 
     (tmp / "repo" / "ai-team").mkdir(parents=True, exist_ok=True)
     (tmp / "repo" / "ai-team" / "TASK_BOARD.md").write_text("# Board\n", encoding="utf-8")

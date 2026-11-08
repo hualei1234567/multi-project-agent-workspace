@@ -71,4 +71,4 @@ if [[ "$code" == "000" ]]; then
   echo "      仍然不通：检查订阅节点是否可用（curl -x http://127.0.0.1:7890 -I https://www.google.com）" >&2
   exit 1
 fi
-echo "完成。执行器可开启：sudo systemctl edit --full agent-platform（加 DDP_AGENT_PLATFORM_EXECUTOR=on）"
+echo "完成。执行器可开启：sudo systemctl edit --full agent-platform（加 AGWS_PLATFORM_EXECUTOR=on）"

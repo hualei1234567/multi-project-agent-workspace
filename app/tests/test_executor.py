@@ -34,12 +34,12 @@ def env(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db))
+    monkeypatch.setenv("AGWS_PLATFORM_REPO", str(repo))
+    monkeypatch.setenv("AGWS_PLATFORM_PROJECTS_ROOT", str(tmp_path / "projects"))
     cfg = tmp_path / "projects.json"
     cfg.write_text('{"projects": []}', encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(cfg))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(cfg))
     monkeypatch.setenv(policy.ENV_SWITCH, "on")
     service.bootstrap(repo_root=repo)
     return SimpleNamespace(db=db, repo=repo)

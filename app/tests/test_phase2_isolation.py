@@ -3,7 +3,7 @@
 覆盖：跨项目 task/delivery/execution、归档只读、依赖跨项目与成环、
 交付验收校验、收藏隔离、最近访问顺序、``/api/state`` 项目隔离、审计过滤。
 
-每个用例使用独立临时库（``DDP_AGENT_PLATFORM_DB``）与临时仓库，
+每个用例使用独立临时库（``AGWS_PLATFORM_DB``）与临时仓库，
 保证可重复且不污染本机平台库。
 """
 
@@ -65,13 +65,13 @@ def env(tmp_path, monkeypatch):
     projects_root.mkdir()
     repo = tmp_path / "repo"
     _build_repo(repo)
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db_path))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db_path))
     # 临时配置：测试库不读真实 config/projects.json，避免自动登记真实项目
     config_file = tmp_path / "projects.json"
     config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(config_file))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(projects_root))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(config_file))
+    monkeypatch.setenv("AGWS_PLATFORM_PROJECTS_ROOT", str(projects_root))
+    monkeypatch.setenv("AGWS_PLATFORM_REPO", str(repo))
     service.bootstrap(repo_root=repo)
     return SimpleNamespace(
         tmp=tmp_path, db=db_path, projects_root=projects_root, repo=repo,

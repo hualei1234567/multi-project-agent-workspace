@@ -747,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-backup", action="store_true", help="跳过备份（仅测试用）")
     parser.add_argument("--repair", action="store_true",
                         help="版本已是最新时也重跑各版本的数据修正步骤")
-    parser.add_argument("--db", help="覆盖数据库路径（默认 DDP_AGENT_PLATFORM_DB）")
+    parser.add_argument("--db", help="覆盖数据库路径（默认 AGWS_PLATFORM_DB）")
     args = parser.parse_args(argv)
 
     db_path = Path(args.db).expanduser() if args.db else store.default_db_path()

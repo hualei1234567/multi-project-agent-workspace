@@ -46,7 +46,7 @@ def repo_root_default() -> Path:
 
     平台已脱离任何单一仓库（2026-11-04）：不再用 ``Path(__file__).parents[2]``。
     """
-    override = os.environ.get("DDP_AGENT_PLATFORM_REPO")
+    override = os.environ.get("AGWS_PLATFORM_REPO")
     if override:
         return Path(override).expanduser().resolve()
     from . import config

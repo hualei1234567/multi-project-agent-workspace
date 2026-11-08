@@ -23,12 +23,12 @@ def env(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db))
+    monkeypatch.setenv("AGWS_PLATFORM_REPO", str(repo))
+    monkeypatch.setenv("AGWS_PLATFORM_PROJECTS_ROOT", str(tmp_path / "projects"))
     cfg = tmp_path / "projects.json"
     cfg.write_text('{"projects": []}', encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(cfg))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(cfg))
     service.bootstrap(repo_root=repo)
     return SimpleNamespace(db=db, repo=repo)
 
@@ -145,7 +145,7 @@ def test_probe_never_raises(env):
 
 
 def test_duplicate_service_name_rejected(env, monkeypatch):
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(env.db))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(env.db))
     runtime.register_service({"name": "重复", "kind": "port", "target": "127.0.0.1:1",
                               "project_id": "default"})
     with pytest.raises(runtime.RuntimeError_) as exc:

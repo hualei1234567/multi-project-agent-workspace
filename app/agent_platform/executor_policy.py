@@ -5,7 +5,7 @@
 
 安全模型（用户已确认「只读 + 改代码」）：
 
-1. **全局开关**：``DDP_AGENT_PLATFORM_EXECUTOR`` 默认 ``off``，必须显式设为 ``on``。
+1. **全局开关**：``AGWS_PLATFORM_EXECUTOR`` 默认 ``off``，必须显式设为 ``on``。
 2. **项目开关**：``agent_projects.settings_json.execution_enabled`` 默认 ``false``，
    逐项目开启。
 3. **命令白名单**：只能执行 ``claude`` 一个可执行文件，参数由模板拼装，
@@ -26,7 +26,7 @@ from pathlib import Path
 from . import store
 
 #: 全局开关环境变量；默认关。
-ENV_SWITCH = "DDP_AGENT_PLATFORM_EXECUTOR"
+ENV_SWITCH = "AGWS_PLATFORM_EXECUTOR"
 
 #: 唯一允许的可执行文件。
 ALLOWED_BINARY = "claude"

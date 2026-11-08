@@ -12,9 +12,9 @@
     ~/vscodeworkspace/<项目>/             ← 项目代码
 
 所有路径都可由环境变量覆盖，便于测试与迁移：
-  DDP_AGENT_PLATFORM_DB              平台库路径
-  DDP_AGENT_PLATFORM_DEFAULT_REPO    默认项目仓库根（缺省取 config/projects.json 首个）
-  DDP_AGENT_PLATFORM_WORKSPACE       工作区根
+  AGWS_PLATFORM_DB              平台库路径
+  AGWS_PLATFORM_DEFAULT_REPO    默认项目仓库根（缺省取 config/projects.json 首个）
+  AGWS_PLATFORM_WORKSPACE       工作区根
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def workspace_root() -> Path:
-    override = os.environ.get("DDP_AGENT_PLATFORM_WORKSPACE")
+    override = os.environ.get("AGWS_PLATFORM_WORKSPACE")
     return Path(override).expanduser().resolve() if override else WORKSPACE_ROOT
 
 
@@ -36,8 +36,8 @@ def data_dir() -> Path:
 
 
 def config_path() -> Path:
-    """纳管清单路径；``DDP_AGENT_PLATFORM_CONFIG`` 可覆盖（测试/多实例用）。"""
-    override = os.environ.get("DDP_AGENT_PLATFORM_CONFIG")
+    """纳管清单路径；``AGWS_PLATFORM_CONFIG`` 可覆盖（测试/多实例用）。"""
+    override = os.environ.get("AGWS_PLATFORM_CONFIG")
     if override:
         return Path(override).expanduser()
     return workspace_root() / "config" / "projects.json"
@@ -72,7 +72,7 @@ def default_repo_root() -> Path:
     优先级：环境变量 → config/projects.json 中默认项目的 repo_root → 当前工作目录。
     换机器/换目录后只改配置，不用改代码（旧实现靠 ``Path(__file__).parents[2]``）。
     """
-    override = os.environ.get("DDP_AGENT_PLATFORM_DEFAULT_REPO")
+    override = os.environ.get("AGWS_PLATFORM_DEFAULT_REPO")
     if override:
         return Path(override).expanduser().resolve()
     repo = str(default_project().get("repo_root") or "").strip()
@@ -85,6 +85,6 @@ def default_repo_root() -> Path:
 
 def team_dir(code: str) -> Path:
     """某项目的 team 目录：``~/agent-team/<code>-team``。"""
-    override = os.environ.get("DDP_AGENT_PLATFORM_TEAM_ROOT")
+    override = os.environ.get("AGWS_PLATFORM_TEAM_ROOT")
     root = Path(override).expanduser() if override else Path.home() / "agent-team"
     return root / f"{code}-team"

@@ -20,9 +20,9 @@ class _Headers(dict):
 @pytest.fixture()
 def token_env(tmp_path, monkeypatch):
     path = tmp_path / "token"
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_TOKEN_FILE", str(path))
+    monkeypatch.setenv("AGWS_PLATFORM_TOKEN_FILE", str(path))
     # 这些用例验证的是"开启鉴权"时的行为；默认已改为 off，这里显式打开。
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_AUTH", "on")
+    monkeypatch.setenv("AGWS_PLATFORM_AUTH", "on")
     auth.reset_cache()
     yield path
     auth.reset_cache()
@@ -131,7 +131,7 @@ def test_disabled_still_blocks_open_endpoint_for_remote(token_env):
 
 
 def test_default_env_is_off(monkeypatch, token_env):
-    monkeypatch.delenv("DDP_AGENT_PLATFORM_AUTH", raising=False)
+    monkeypatch.delenv("AGWS_PLATFORM_AUTH", raising=False)
     ok, _ = auth.check_request(
         path="/api/projects", client_address="203.0.113.7", headers=_Headers({})
     )

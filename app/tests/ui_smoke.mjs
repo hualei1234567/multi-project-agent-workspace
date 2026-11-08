@@ -51,11 +51,11 @@ async function prepareContext(context) {
 }
 
 const BASE = (process.env.AGWS_URL || "http://127.0.0.1:8098").replace(/\/$/, "");
-// 清理测试项目要写**被测实例**的库：优先 AGWS_DB，其次实例启动用的 DDP_AGENT_PLATFORM_DB，
+// 清理测试项目要写**被测实例**的库：优先 AGWS_DB，其次实例启动用的 AGWS_PLATFORM_DB，
 // 最后回落到工作区默认库。以前默认写死一个 /tmp 路径，清理悄悄落在别的库上，
 // 侧栏看起来「没恢复」，实际是脏数据留在被测库里。
 const DB_PATH = process.env.AGWS_DB
-  || process.env.DDP_AGENT_PLATFORM_DB
+  || process.env.AGWS_PLATFORM_DB
   || join(HERE, "..", "..", "data", "platform.db");
 const SHOT_DIR = join("/tmp", "agws-smoke");
 const results = [];

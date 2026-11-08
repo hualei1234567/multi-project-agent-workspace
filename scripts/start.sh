@@ -8,8 +8,8 @@ PORT="${1:-8099}"
 MODE="${2:-}"
 
 # 统一用工作区自己的库与配置，避免误读旧路径
-export DDP_AGENT_PLATFORM_DB="${DDP_AGENT_PLATFORM_DB:-$WS/data/platform.db}"
-export DDP_AGENT_PLATFORM_WORKSPACE="$WS"
+export AGWS_PLATFORM_DB="${AGWS_PLATFORM_DB:-$WS/data/platform.db}"
+export AGWS_PLATFORM_WORKSPACE="$WS"
 
 cd "$WS/app"
 if [ "$MODE" = "--background" ]; then

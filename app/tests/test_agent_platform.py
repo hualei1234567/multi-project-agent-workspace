@@ -149,13 +149,13 @@ def env(tmp_path, monkeypatch):
     projects_root.mkdir()
     repo = tmp_path / "repo"
     _build_repo(repo)
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_DB", str(db_path))
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(db_path))
     # 临时配置：测试库不读真实 config/projects.json，避免自动登记真实项目
     config_file = tmp_path / "projects.json"
     config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(config_file))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_PROJECTS_ROOT", str(projects_root))
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_REPO", str(repo))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(config_file))
+    monkeypatch.setenv("AGWS_PLATFORM_PROJECTS_ROOT", str(projects_root))
+    monkeypatch.setenv("AGWS_PLATFORM_REPO", str(repo))
     service.bootstrap(repo_root=repo)
     return SimpleNamespace(
         tmp=tmp_path, db=db_path, projects_root=projects_root, repo=repo,
@@ -651,7 +651,7 @@ def test_bootstrap_registers_configured_projects_once(env, monkeypatch, tmp_path
              "repo_root": str(tmp_path / "not-there")},
         ],
     }), encoding="utf-8")
-    monkeypatch.setenv("DDP_AGENT_PLATFORM_CONFIG", str(cfg))
+    monkeypatch.setenv("AGWS_PLATFORM_CONFIG", str(cfg))
 
     service.bootstrap(repo_root=env.repo)
     project = service.get_project("proj-c")

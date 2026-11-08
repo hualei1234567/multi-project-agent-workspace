@@ -33,6 +33,10 @@ fi
 echo "[deploy] 修正远端 repo_root"
 ssh "$HOST" "cd $TARGET && sed -i 's|<HOME>/vscodeworkspace|/home/user/vscodeworkspace|' config/projects.json"
 
+# 环境变量前缀改名后，服务端 unit 也要同步，否则 AUTH/EXECUTOR 开关会失效
+echo "[deploy] 同步 systemd 环境变量前缀"
+ssh "$HOST" "sudo sed -i 's/DDP_AGENT_PLATFORM_/AGWS_PLATFORM_/g' /etc/systemd/system/agent-platform.service && sudo systemctl daemon-reload"
+
 echo "[deploy] 远端跑测试"
 ssh "$HOST" "cd $TARGET && .venv/bin/python -m pytest app/tests -q 2>&1 | tail -3"
 
