@@ -350,6 +350,46 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,
                 },
                 result="ok" if status == "succeeded" else "failed",
             )
+    # 事务结束后再动任务状态：service 会自己开连接，放在事务里会互相等锁。
+    row = conn.execute(
+        "SELECT project_id, task_id FROM dispatch_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    if row is not None and row["task_id"]:
+        _sync_task_status(conn, row["project_id"], row["task_id"], status == "succeeded")
+
+
+def _sync_task_status(conn, project_id: str, task_id: str, ok: bool) -> None:
+    """把执行结果写回任务状态：成功 → review，失败 → blocked。
+
+    状态机是 todo → in_progress → review → done，不能跳级，所以逐级推进。
+    """
+    try:
+        from . import service
+
+        def _advance(to_status: str, note: str | None = None) -> bool:
+            row = conn.execute(
+                "SELECT status, version FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            payload = {"to_status": to_status, "expected_version": row["version"]}
+            if note:
+                payload["blocked_reason"] = note
+            try:
+                service.transition_task(project_id, task_id, payload)
+                return True
+            except Exception:  # noqa: BLE001 - 状态不合法就跳过，不阻断调度结果
+                return False
+
+        if ok:
+            row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is not None and row["status"] == "todo":
+                _advance("in_progress")
+            _advance("review")
+        else:
+            _advance("blocked", "执行器运行失败，见调度项日志")
+    except Exception:  # noqa: BLE001,S110 - 状态回写失败不影响执行结果
+        pass
 
 
 def _record_execution(conn, item_id: str, row, status: str, exit_code: int | None) -> None:
@@ -442,6 +482,7 @@ def _build_prompt(project, agent, task) -> str:
     """把任务信息拼成给 Agent 的提示。任务缺失时给出显式说明。"""
     lines = [
         f"你是 {project['name']} 项目的 {agent['display_name']}（{agent['role_key']}）。",
+        "【铁律】思考、说明与答复一律用简体中文；技术术语可保留英文原词。",
         "",
     ]
     if task is not None:
@@ -465,6 +506,7 @@ def _build_prompt(project, agent, task) -> str:
     lines.extend([
         "",
         "## 工作约束",
+        "- 全程使用简体中文；禁止用英文作答。",
         "- 只在本工作目录内改动；不要执行 git push、部署、删除数据或修改 .claude 配置。",
         "- 改动完成后不要自行提交，把变更留在工作区供人审阅。",
         "- 结束时用一段话说明：改了什么、验证命令与结果、还有什么没做。",

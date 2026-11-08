@@ -230,3 +230,16 @@ def test_invalid_role_rejected(tmp_path, monkeypatch):
             project_code="default", repo_root=repo, role_key="../../etc/passwd",
             execution_mode="worktree", prompt="x",
         )
+
+
+def test_chinese_only_rule_is_injected(monkeypatch):
+    """项目铁律：所有 Agent 输出必须是中文，靠 --append-system-prompt 强制。"""
+    monkeypatch.setenv(policy.ENV_SWITCH, "on")
+    spec = policy.build_spec(
+        project_code="default", repo_root="/tmp", role_key="backend-engineer",
+        execution_mode="worktree", prompt="写一个文件",
+    )
+    argv = spec.argv()
+    assert "--append-system-prompt" in argv
+    rule = argv[argv.index("--append-system-prompt") + 1]
+    assert "简体中文" in rule

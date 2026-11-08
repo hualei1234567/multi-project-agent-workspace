@@ -306,8 +306,14 @@ section { display: grid; gap: 16px; min-width: 0; }
 .org-bus { position: relative; width: 100%; height: 34px; flex: none; }
 .org-bus::before { content: ""; position: absolute; left: 50%; top: 0; width: 2px; height: 17px;
   transform: translateX(-1px); background: var(--line-strong); }
-.org-bus::after { content: ""; position: absolute; left: 16.666%; right: 16.666%; top: 17px; height: 2px; background: var(--line-strong); }
+.org-bus::after { content: ""; position: absolute; top: 17px; height: 2px; background: var(--line-strong);
+  left: calc(184px + (100% - 184px) / 6); right: calc(184px + (100% - 184px) / 6); }
 .org-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; width: 100%; }
+.org-layer { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 16px; width: 100%; align-items: center; }
+.org-layer-label { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--primary) 6%, transparent); }
+.org-layer-label b { display: block; font-size: 12.5px; letter-spacing: .2px; }
+.org-layer-label span { display: block; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .org-cell { position: relative; display: flex; }
 .org-cell > .role-card { flex: 1; min-height: 128px; }
 .org-cell::before { content: ""; position: absolute; left: 50%; top: -17px; width: 2px; height: 17px;
@@ -319,6 +325,8 @@ section { display: grid; gap: 16px; min-width: 0; }
 .org-owner .role-icon { width: 50px; height: 50px; background: color-mix(in srgb, var(--primary) 16%, transparent); }
 .kpis > *, .roster > *, .kanban > *, .agents > *, .two-col > * { min-width: 0; }
 @media (max-width: 1024px) {
+  .org-layer { grid-template-columns: 1fr; gap: 8px; }
+  .org-layer-label { justify-self: start; }
   .org-bus { display: none; }
   .org-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
   .org-cell::before { display: none; }
@@ -2225,6 +2233,28 @@ function roleIcon(role) {
   return svg('<circle cx="12" cy="8.5" r="3.4"/><path d="M5 20c0-3.4 3.1-5.6 7-5.6s7 2.2 7 5.6"/>');
 }
 
+const ROLE_DESC = {
+  "general-owner": "统筹全局 · 战略决策 · 资源协调 · 目标交付",
+  "product-manager": "需求管理 · 项目推进 · 过程协同 · 交付把控",
+  "system-architect": "技术规划 · 架构设计 · 方案评审 · 技术治理",
+  "ux-designer": "体验设计 · 交互规范 · 视觉呈现 · 使用优化",
+  "frontend-engineer": "界面开发 · 交互实现 · 性能优化 · 工程规范",
+  "backend-engineer": "服务开发 · 接口设计 · 数据管理 · 系统稳定",
+  "qa-devops": "质量测试 · 持续集成 · 环境运维 · 稳定保障",
+};
+
+function roleDesc(role) {
+  const r = String(role || "").toLowerCase();
+  if (r.includes("owner")) return ROLE_DESC["general-owner"];
+  if (r.includes("product")) return ROLE_DESC["product-manager"];
+  if (r.includes("architect")) return ROLE_DESC["system-architect"];
+  if (r.includes("ux") || r.includes("design")) return ROLE_DESC["ux-designer"];
+  if (r.includes("frontend")) return ROLE_DESC["frontend-engineer"];
+  if (r.includes("backend")) return ROLE_DESC["backend-engineer"];
+  if (r.includes("qa") || r.includes("devops")) return ROLE_DESC["qa-devops"];
+  return "";
+}
+
 function shortState(text) {
   const s = String(text || "");
   return s.includes(" · ") ? s.split(" · ")[0] : s;
@@ -2250,7 +2280,11 @@ function renderRoster(rows) {
           <span class="role-state">${esc(shortState(r.status_text))}</span>
         </div>
       </div>
-      <div class="role-detail">${esc(r.detail || "—")}</div>
+      <div class="role-detail">${esc(
+        (r.detail && r.detail.trim() && r.detail.trim() !== "—")
+          ? r.detail
+          : (roleDesc(r.role) || "—")
+      )}</div>
       <div class="role-meta">
         ${r.task ? `<span class="task">${esc(r.task)}</span>` : ""}
         <span>${esc(r.meta || "")}</span>
@@ -2274,14 +2308,27 @@ function renderRoster(rows) {
 
   const row = group => `<div class="org-row">${group.map(r => `<div class="org-cell">${card(r)}</div>`).join("")}</div>`;
   const bus = `<div class="org-bus" aria-hidden="true"></div>`;
+  const layer = (label, sub, group) => group.length
+    ? `<div class="org-layer">
+         <div class="org-layer-label"><b>${esc(label)}</b><span>${esc(sub)}</span></div>
+         ${row(group)}
+       </div>`
+    : "";
   const parts = [];
   if (owners.length) {
     // 多个 main session 时仍居中排列，但只在第一行
     parts.push(`<div class="org-owner-row">${owners.map(r => `<div class="org-owner">${card(r)}</div>`).join("")}</div>`);
   }
-  for (let i = 0; i < rest.length; i += 3) {
-    if (i === 0) parts.push(bus);
-    parts.push(row(rest.slice(i, i + 3)));
+  // 1+6 固定两层：战略与管理层（前 3）/ 研发与交付层（其余），每层最多 3 列
+  const strategy = rest.slice(0, 3);
+  const delivery = rest.slice(3, 6);
+  if (strategy.length) {
+    parts.push(bus);
+    parts.push(layer("战略与管理层", "规划 · 架构 · 体验", strategy));
+  }
+  if (delivery.length) {
+    parts.push(bus);
+    parts.push(layer("研发与交付层", "开发 · 测试 · 运维", delivery));
   }
   el.innerHTML = `<div class="org-tree">${parts.filter(Boolean).join("")}</div>`;
   $$(".role-card", el).forEach(cardEl => {

@@ -287,14 +287,25 @@ def _materialize(conn, project_id: str, definition: dict[str, Any],
             task_ids[key] = existing["id"]
             continue
         task_id = _new_id("task")
+        # 节点可以声明 role（平台角色 key）。不指派角色的任务调度器不会调度，
+        # 所以这里按 role 解析出项目里的 agent 实例并写进 assignee_agent_id。
+        role_key = str(node.get("role") or "").strip()
+        agent_id = None
+        if role_key:
+            agent = conn.execute(
+                "SELECT id FROM project_agents WHERE project_id = ? AND role_key = ?"
+                " ORDER BY instance_key LIMIT 1", (project_id, role_key),
+            ).fetchone()
+            if agent is not None:
+                agent_id = agent["id"]
         conn.execute(
             "INSERT INTO tasks (id, project_id, task_key, title, status, priority,"
-            " source, updated_at, description, created_by)"
-            " VALUES (?, ?, ?, ?, 'todo', ?, 'workflow', ?, ?, ?)",
+            " source, updated_at, description, created_by, assignee_agent_id)"
+            " VALUES (?, ?, ?, ?, 'todo', ?, 'workflow', ?, ?, ?, ?)",
             (task_id, project_id, task_key, node["title"],
              str(node.get("priority") or "P2"), now,
              node.get("description") or f"来自 workflow {definition['def_key']} v{version['version']}",
-             created_by),
+             created_by, agent_id),
         )
         task_ids[key] = task_id
         created.append(task_id)

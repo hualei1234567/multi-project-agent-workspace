@@ -31,6 +31,13 @@ ENV_SWITCH = "DDP_AGENT_PLATFORM_EXECUTOR"
 #: 唯一允许的可执行文件。
 ALLOWED_BINARY = "claude"
 
+#: 项目铁律：所有 Agent 的思考与输出必须使用简体中文。
+#: 通过 --append-system-prompt 注入，不依赖任务描述怎么写。
+CHINESE_ONLY_RULE = (
+    "【项目铁律·必须遵守】本项目的所有思考过程、工具调用说明、代码注释与最终答复，"
+    "一律使用简体中文。禁止用英文回答；技术术语可保留英文原词，但句子必须是中文。"
+)
+
 #: 目标仓库没有定义该角色时的回退 agent。
 #: 平台角色（project_agents.role_key）是平台概念，Claude Code 的 agent 定义是
 #: 仓库概念；两者不一定对齐（例如 MaterialDev 没有 .claude/agents/）。
@@ -130,6 +137,7 @@ class ExecutionSpec:
             "--max-turns", str(self.max_turns),
             "--allowedTools", *self.allowed_tools,
             "--disallowedTools", "Bash",
+            "--append-system-prompt", CHINESE_ONLY_RULE,
         ]
 
 
