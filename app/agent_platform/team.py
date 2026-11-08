@@ -34,6 +34,8 @@ LOG_TIMEOUT_S = 25
 #: 项目可以指定由哪个角色担任总负责人（settings.team_owner_agent）
 OWNER_SETTING = "team_owner_agent"
 DEFAULT_OWNER = "general-owner"
+#: 平台托管的总负责人后台会话（claude --bg）。平台与用户输入的是同一个会话。
+OWNER_SESSION_SETTING = "team_owner_session"
 
 
 class TeamError(Exception):
@@ -171,6 +173,37 @@ def preflight(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def owner_session_info(project: dict[str, Any]) -> dict[str, Any]:
+    """平台托管的总负责人后台会话：是否还在跑、状态如何。
+
+    这是「平台下发 = 同一个会话」的真正形态：会话由平台用 claude --bg 拉起，
+    平台内可查看输出（trace）、继续对话（--bg --resume 同一 id）、结束。
+    """
+    settings = project.get("settings_json")
+    settings = settings if isinstance(settings, dict) else store.loads_json(settings, {})
+    saved = (settings or {}).get(OWNER_SESSION_SETTING)
+    if not isinstance(saved, dict) or not saved.get("session_id"):
+        return {"exists": False, "session_id": None, "status": None,
+                "note": "还没有平台托管的会话；启动后平台与你的输入就是同一个会话。"}
+    session_id = str(saved["session_id"])
+    repo = Path(str(project.get("repo_root") or "")).expanduser()
+    sessions, error = _agents(repo) if repo.is_dir() else ([], "仓库不存在")
+    live = next((s for s in sessions if str(s.get("sessionId")) == session_id), None)
+    return {
+        "exists": True,
+        "session_id": session_id,
+        "agent": saved.get("agent"),
+        "launched_at": saved.get("launched_at"),
+        "running": bool(live),
+        "status": (live or {}).get("status"),
+        "kind": (live or {}).get("kind"),
+        "pid": (live or {}).get("pid"),
+        "error": error,
+        "note": ("会话在线：平台里「继续对话」与你在窗口里输入的是同一个会话。"
+                 if live else "会话当前不在运行；「继续对话」会以 --bg --resume 在同一 id 上继续。"),
+    }
+
+
 def team_status(project: dict[str, Any], conn) -> dict[str, Any]:
     """真实会话 + 平台记录的启动历史。"""
     repo = Path(str(project.get("repo_root") or "")).expanduser()
@@ -257,6 +290,17 @@ def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "loca
             " output, created_at, updated_at) VALUES (?, ?, ?, ?, 'launched', ?, ?, ?, ?)",
             (record_id, project["id"], session_id, agent, text[:2000], output[:2000], now, now),
         )
+        if session_id:
+            settings = project.get("settings_json")
+            settings = settings if isinstance(settings, dict) else store.loads_json(settings, {})
+            settings = dict(settings or {})
+            settings[OWNER_SESSION_SETTING] = {
+                "session_id": session_id, "agent": agent, "launched_at": now,
+            }
+            conn.execute(
+                "UPDATE agent_projects SET settings_json = ?, updated_at = ? WHERE id = ?",
+                (store.dumps_json(settings), now, project["id"]),
+            )
         conn.execute(
             "INSERT INTO audit_logs (id, project_id, actor, action, resource_type, resource_id,"
             " result, detail_json, created_at) VALUES (?, ?, ?, 'team.launch', 'team_session', ?,"

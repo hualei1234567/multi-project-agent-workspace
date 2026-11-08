@@ -115,6 +115,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/sessions"),
     ("GET", "/api/projects/{project_id}/team"),
     ("GET", "/api/projects/{project_id}/team/preflight"),
+    ("GET", "/api/projects/{project_id}/team/owner"),
     ("POST", "/api/projects/{project_id}/team/launch"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/instruct"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/stop"),
@@ -753,6 +754,10 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/team/preflight": {
             "get": project_op("get", "启动前预检：CLI / 仓库 / 执行器开关 / 会话读取",
+                              ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/team/owner": {
+            "get": project_op("get", "平台托管的总负责人后台会话：是否存在/在线/可继续对话",
                               ok_schema={"type": "object"}, errors=(404,))[2]
         },
         "/api/projects/{project_id}/team/launch": {

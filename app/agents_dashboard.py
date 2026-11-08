@@ -1391,6 +1391,10 @@ def _team_status(project_id: str) -> dict[str, Any]:
         conn.close()
 
 
+def _team_owner(project_id: str) -> dict[str, Any]:
+    return team_service.owner_session_info(_project_dict(project_id))
+
+
 def _team_preflight(project_id: str) -> dict[str, Any]:
     return team_service.preflight(_project_dict(project_id))
 
@@ -2662,6 +2666,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["team", "preflight"]:
                 self._platform(_team_preflight, project_id)
+                return
+            if rest == ["team", "owner"]:
+                self._platform(_team_owner, project_id)
                 return
             if rest == ["windows"]:
                 self._platform(_windows_list, project_id)

@@ -1291,6 +1291,13 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 @media (max-width: 1220px) { #btn-notify, #nav-settings-top { display: none; } }
 @media (max-width: 1140px) { .iv-cap, .live .sync { display: none; } }
 @media (max-width: 1080px) { .crumb { display: none; } }
+
+/* 平台托管的总负责人会话 */
+.team-owner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; font-size: 12px; }
+.team-owner .ws-sub { color: var(--muted); }
+.to-state { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.to-state.on { color: var(--ok, #3fb950); border-color: currentColor; }
+.to-state.off { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -3349,6 +3356,7 @@ async function launchTeam() {
     TEAM.notice = `启动失败：${errText(e)}`;
   }
   await loadTeam(true);
+  loadTeamOwner(true);
 }
 
 async function instructTeam(sessionId) {
@@ -3369,6 +3377,7 @@ async function instructTeam(sessionId) {
     TEAM.notice = `指令失败：${errText(e)}`;
   }
   await loadTeam(true);
+  loadTeamOwner(true);
 }
 
 async function stopTeam(sessionId) {
@@ -3382,6 +3391,7 @@ async function stopTeam(sessionId) {
     TEAM.notice = `停止失败：${errText(e)}`;
   }
   await loadTeam(true);
+  loadTeamOwner(true);
 }
 
 async function preflightTeam() {
@@ -3496,6 +3506,67 @@ async function loadAgentActivity(force = false) {
 let teamComposeRO = null;
 
 const WINDOWS = { projectId: null, at: 0, data: null, busy: false, error: null };
+
+const OWNER_SESSION = { projectId: null, at: 0, data: null, busy: false, error: null };
+
+async function loadTeamOwner(force = false) {
+  const p = APP.currentProject;
+  if (!p) return;
+  if (!force && OWNER_SESSION.projectId === p.id && Date.now() - OWNER_SESSION.at < 8000) return;
+  if (OWNER_SESSION.busy) return;
+  OWNER_SESSION.busy = true;
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/team/owner`);
+    if (APP.currentProject?.id !== p.id) return;
+    OWNER_SESSION.data = d; OWNER_SESSION.projectId = p.id; OWNER_SESSION.at = Date.now();
+    OWNER_SESSION.error = null;
+  } catch (e) {
+    if (APP.currentProject?.id !== p.id) return;
+    OWNER_SESSION.error = errText(e) || "托管会话状态不可用";
+    OWNER_SESSION.data = null;
+  } finally {
+    OWNER_SESSION.busy = false;
+    paintTeamOwner();
+  }
+}
+
+function paintTeamOwner() {
+  const box = $("#team-owner");
+  if (!box) return;
+  const d = OWNER_SESSION.data;
+  if (OWNER_SESSION.error) {
+    box.innerHTML = `<span class="ws-sub">平台托管总负责人：${esc(OWNER_SESSION.error)}</span>`;
+    return;
+  }
+  if (!d) { box.innerHTML = `<span class="ws-sub">读取托管会话…</span>`; return; }
+  if (!d.exists) {
+    box.innerHTML = `
+      <span class="ws-sub">平台托管总负责人：<b>未启动</b>（启动后，平台里的对话与你的输入是同一个会话）</span>
+      <button type="button" class="btn sm primary" id="team-owner-start" data-testid="team-owner-start">启动托管会话</button>`;
+  } else {
+    const state = d.running ? (d.status === "busy" ? "运行中" : "在线空闲") : "未运行";
+    box.innerHTML = `
+      <span class="to-state ${d.running ? "on" : "off"}">${esc(state)}</span>
+      <span class="ws-sub">托管总负责人会话 <b class="mono">${esc(String(d.session_id).slice(0, 8))}</b>${d.agent ? ` · ${esc(d.agent)}` : ""}</span>
+      <button type="button" class="btn sm" id="team-owner-watch" data-testid="team-owner-watch">进去看</button>
+      <button type="button" class="btn sm" id="team-owner-talk" data-testid="team-owner-talk">继续对话</button>
+      <button type="button" class="btn sm" id="team-owner-stop" data-testid="team-owner-stop">结束</button>`;
+  }
+  const start = $("#team-owner-start");
+  if (start) start.onclick = () => launchTeam();
+  const watch = $("#team-owner-watch");
+  if (watch) watch.onclick = () => openSessionTrace(d.session_id);
+  const talk = $("#team-owner-talk");
+  if (talk) talk.onclick = () => {
+    const input = $("#team-input");
+    if (!input) return;
+    input.placeholder = "继续对话会发送到同一个托管会话（同一个 session id）";
+    input.focus();
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+  const stop = $("#team-owner-stop");
+  if (stop) stop.onclick = () => stopTeam(d.session_id);
+}
 
 async function loadTeamWindows(force = false) {
   const p = APP.currentProject;
@@ -3744,6 +3815,7 @@ function renderAgentsPage(el) {
           </label>
           <span class="ws-sub" id="team-task-count"></span>
         </div>
+        <div class="team-owner" id="team-owner" data-testid="team-owner"></div>
         <div class="team-target" data-testid="team-target">
           <label>派发目标
             <select id="team-window" data-testid="team-window">
@@ -3781,6 +3853,7 @@ function renderAgentsPage(el) {
   const bindBtn = $("#team-window-bind");
   if (bindBtn) bindBtn.onclick = bindTeamWindow;
   loadTeamWindows();
+  loadTeamOwner();
   const launchBtn = $("#team-launch");
   if (launchBtn) launchBtn.onclick = launchTeam;
   loadTeamTasks();
