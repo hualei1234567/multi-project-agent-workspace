@@ -71,6 +71,17 @@ def _agents(cwd: Path) -> tuple[list[dict[str, Any]], str | None]:
     return data if isinstance(data, list) else [], None
 
 
+def _trusted(repo: Path) -> bool | None:
+    """读取 ``~/.claude.json`` 里的工作区信任标记；读不到返回 None（未知）。"""
+    config = Path.home() / ".claude.json"
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = (data.get("projects") or {}).get(str(repo)) or {}
+    return bool(entry.get("hasTrustDialogAccepted"))
+
+
 def preflight(project: dict[str, Any]) -> dict[str, Any]:
     """启动前检查：CLI、仓库、开关、信任状态。每条都给出可执行的处理方式。"""
     repo = Path(str(project.get("repo_root") or "")).expanduser()
@@ -90,6 +101,17 @@ def preflight(project: dict[str, Any]) -> dict[str, Any]:
     checks.append({
         "key": "switch", "label": "执行器开关", "ok": enabled,
         "detail": "已开启" if enabled else f"未开启：在服务端设置 {EXECUTOR_ENV}=on 后重启",
+    })
+    trusted = _trusted(repo) if repo_ok else None
+    checks.append({
+        "key": "trust", "label": "工作区信任",
+        # 未知不拦（不同版本可能不写这个字段），但一定要提示
+        "ok": trusted is not False,
+        "detail": (
+            "已信任" if trusted is True else
+            f"未信任：在服务器终端执行 `cd {repo} && claude` 并接受一次提示" if trusted is False else
+            "未读取到信任记录；若启动被拒，按 CLI 提示在该目录接受一次"
+        ),
     })
     sessions, error = _agents(repo) if repo_ok and binary else ([], None)
     mine = [s for s in sessions if str(s.get("cwd") or "") == str(repo)]

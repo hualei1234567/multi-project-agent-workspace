@@ -27,21 +27,31 @@ cd "$ROOT"
 # 守护：systemd 重启会清掉执行器拉起的 claude 进程组。有在途调度项时默认拒绝重启。
 if (( ! FORCE )); then
   echo "[deploy] 检查在途调度项"
-  ACTIVE="$(ssh "$HOST" "cd $TARGET && .venv/bin/python - <<'PY' 2>/dev/null || true
+  STATE="$(ssh "$HOST" "cd $TARGET && .venv/bin/python - <<'PY' 2>/dev/null || true
 import sqlite3
 c = sqlite3.connect('data/platform.db')
-rows = c.execute(
+rows = dict(c.execute(
     \"select status, count(*) from dispatch_items where status in ('running','leased','queued') group by 1\"
-).fetchall()
-print(' '.join(f'{s}={n}' for s, n in rows))
+).fetchall())
+print(f\"running={rows.get('running', 0)} leased={rows.get('leased', 0)} queued={rows.get('queued', 0)}\")
 PY"
 )"
-  if [[ -n "${ACTIVE// /}" ]]; then
-    echo "[deploy] ✘ 存在在途调度项：$ACTIVE"
+  RUNNING="$(echo "$STATE" | sed -n 's/.*running=\([0-9]*\).*/\1/p')"
+  LEASED="$(echo "$STATE" | sed -n 's/.*leased=\([0-9]*\).*/\1/p')"
+  QUEUED="$(echo "$STATE" | sed -n 's/.*queued=\([0-9]*\).*/\1/p')"
+  if [[ -z "$RUNNING" ]]; then
+    echo "[deploy] ⚠ 读不到调度状态（$STATE），按有风险处理；确认无影响后加 --force"
+    exit 2
+  fi
+  if (( RUNNING > 0 || LEASED > 0 )); then
+    echo "[deploy] ✘ 有正在执行的调度项：$STATE"
     echo "         重启会杀掉执行器拉起的 claude 进程；等它们结束，或确认无影响后加 --force"
     exit 2
   fi
-  echo "[deploy] ✓ 无在途调度项"
+  echo "[deploy] ✓ 无运行中的执行器进程（$STATE）"
+  if (( QUEUED > 0 )); then
+    echo "[deploy] ⚠ 仍有 $QUEUED 个排队项；请确认派发器已暂停，否则它可能在部署窗口内拉起新进程"
+  fi
 fi
 
 echo "[deploy] 同步代码 → $HOST:$TARGET"

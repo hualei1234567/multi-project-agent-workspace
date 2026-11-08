@@ -27,6 +27,8 @@ def _write(path: Path, text: str) -> None:
 @pytest.fixture(autouse=True)
 def _no_real_ccusage(monkeypatch):
     monkeypatch.setattr(sources, "ccusage_session_costs", list)
+    # 测试不读真实的 ~/.claude.json；默认视为已信任，未信任场景单独覆盖
+    monkeypatch.setattr(team, "_trusted", lambda repo: True)
 
 
 @pytest.fixture()
@@ -75,6 +77,7 @@ def test_preflight_surfaces_every_blocker(env, monkeypatch):
     assert keys["cli"]["ok"] is False
     assert keys["switch"]["ok"] is False
     assert keys["repo"]["ok"] is True
+    assert "trust" in keys
 
 
 def test_launch_requires_executor_switch(env, monkeypatch):
@@ -136,3 +139,16 @@ def test_status_merges_live_sessions(env, monkeypatch):
     assert status["total"] == 1 and status["running"] == 1
     assert status["sessions"][0]["sessionId"] == SESSION
     assert status["executor_enabled"] is True
+
+
+def test_untrusted_workspace_blocks_launch(env, monkeypatch):
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(team, "_trusted", lambda repo: False)
+    pre = team.preflight(_project(env))
+    trust = next(c for c in pre["checks"] if c["key"] == "trust")
+    assert trust["ok"] is False
+    assert "claude" in trust["detail"]
+    with pytest.raises(team.TeamError) as err:
+        team.launch_team(_project(env), "开始")
+    assert "工作区信任" in err.value.message
