@@ -146,6 +146,8 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
         prompt = _build_prompt(project, agent, task)
 
         settings = store.loads_json(project["settings_json"], {}) or {}
+        allow_bash = bool(settings.get("execution_bash_enabled"))
+        agent_settings = Path(project["repo_root"]) / ".claude" / "agent-settings.json"
         try:
             spec = policy.build_spec(
                 project_code=project["code"],
@@ -158,7 +160,11 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
                 max_turns=settings.get("dispatch_max_turns"),
                 timeout_s=settings.get("dispatch_timeout_s"),
                 # 项目级 Bash 开关：默认关闭；开启后仍只放行前缀白名单。
-                allow_bash=bool(settings.get("execution_bash_enabled")),
+                allow_bash=allow_bash,
+                # 仅平台调度时注入仓库守卫 hook；主会话不加载该文件。
+                settings_file=str(agent_settings)
+                if allow_bash and agent_settings.is_file()
+                else None,
             )
         except policy.ExecutorError as exc:
             _fail(conn, item_id, exc.code, exc.message)

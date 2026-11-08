@@ -245,6 +245,39 @@ def test_argv_bash_disabled_by_default_for_new_project(tmp_path, monkeypatch):
     assert "Bash(git status:*)" not in argv
 
 
+def test_settings_file_injected_when_provided(tmp_path, monkeypatch):
+    """平台调度时注入仓库守卫 hook；主会话不加载该文件。"""
+    monkeypatch.setenv(policy.ENV_SWITCH, "on")
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    settings = repo / ".claude" / "agent-settings.json"
+    settings.write_text("{}", encoding="utf-8")
+
+    spec = policy.build_spec(
+        project_code="ddp", repo_root=repo, role_key="backend-engineer",
+        execution_mode="worktree", prompt="x", allow_bash=True,
+        settings_file=str(settings),
+    )
+    argv = spec.argv()
+    assert "--settings" in argv
+    assert argv[argv.index("--settings") + 1] == str(settings.resolve())
+
+
+def test_settings_file_outside_repo_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv(policy.ENV_SWITCH, "on")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(policy.ExecutorError, match="必须位于项目仓库内"):
+        policy.build_spec(
+            project_code="ddp", repo_root=repo, role_key="backend-engineer",
+            execution_mode="worktree", prompt="x", allow_bash=True,
+            settings_file=str(outside),
+        )
+
+
 def test_max_turns_and_timeout_clamped(tmp_path, monkeypatch):
     monkeypatch.setenv(policy.ENV_SWITCH, "on")
     repo = tmp_path / "repo"

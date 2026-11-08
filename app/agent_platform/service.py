@@ -1259,6 +1259,7 @@ def execution_timeline(
         ).fetchall()
         counts = {key: 0 for key in TIMELINE_STATES}
         items: list[dict[str, Any]] = []
+        agent_map: dict[str, dict[str, Any]] = {}
         for row in rows:
             event = dict(row)
             event["state"] = _event_state(event, fresh_cutoff)
@@ -1266,12 +1267,34 @@ def execution_timeline(
             event["type_label"] = _EVENT_TYPE_LABEL.get(event["event_type"], event["event_type"])
             counts[event["state"]] += 1
             items.append(event)
+            # items 已按时间倒序：每个 Agent 的第一条就是它的最近一次事件
+            key = event["agent_id"] or "unassigned"
+            entry = agent_map.get(key)
+            if entry is None:
+                entry = {
+                    "agent_id": event["agent_id"],
+                    "agent_name": event["agent_name"] or event["role_key"]
+                    or event["agent_id"] or "未归属",
+                    "role_key": event["role_key"],
+                    "state": event["state"],
+                    "state_label": event["state_label"],
+                    "last_activity_at": event["occurred_at"],
+                    "counts": {k: 0 for k in TIMELINE_STATES},
+                }
+                agent_map[key] = entry
+            entry["counts"][event["state"]] += 1
+        agents = sorted(
+            agent_map.values(),
+            key=lambda x: str(x["last_activity_at"] or ""),
+            reverse=True,
+        )
         total = len(items)
         shown = [item for item in items if not state or item["state"] == state][:limit]
         return {
             "items": shown,
             "total": total,
             "counts": counts,
+            "agents": agents,
             "state": state,
             "status": "no_evidence" if total == 0 else "has_evidence",
             "last_activity_at": items[0]["occurred_at"] if items else None,

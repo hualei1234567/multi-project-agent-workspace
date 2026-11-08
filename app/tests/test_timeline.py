@@ -120,3 +120,18 @@ def test_limit_is_capped(env):
         _event(f"x{i}", "tool_use", 1, i + 1)
     tl = service.execution_timeline("default", limit=2)
     assert len(tl["items"]) == 2 and tl["total"] == 5
+
+
+def test_agent_summary_uses_latest_event(env):
+    _event("a1", "subagent_run", 1, 30)
+    _event("a2", "tool_use", 0, 10)
+    _event("b1", "subagent_run", 1, 20)
+    tl = service.execution_timeline("default")
+    by_name = {a["agent_id"]: a for a in tl["agents"]}
+    # 两条事件都没有 agent_id，归入同一「未归属」桶
+    assert list(by_name) == [None]
+    entry = by_name[None]
+    assert entry["agent_name"] == "未归属"
+    assert entry["state"] == "failed"          # 最近一条是失败
+    assert entry["counts"] == {"running": 0, "failed": 1, "unverified": 0, "ok": 2}
+    assert entry["last_activity_at"] == tl["items"][0]["occurred_at"]

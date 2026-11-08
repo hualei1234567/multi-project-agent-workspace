@@ -156,6 +156,8 @@ class ExecutionSpec:
     agent_arg: str = ""
     #: 项目级开关：是否允许 Bash（仍受前缀白名单与 deny 规则约束）。
     allow_bash: bool = False
+    #: 额外的 Claude Code settings 文件（仅平台调度时注入，主会话不加载）。
+    settings_file: str = ""
 
     def argv(self) -> list[str]:
         """拼装 argv（shell=False，不接受任意字符串）。"""
@@ -179,6 +181,8 @@ class ExecutionSpec:
             "--max-turns", str(self.max_turns),
             "--allowedTools", *allowed,
         ]
+        if self.settings_file:
+            argv.extend(["--settings", self.settings_file])
         if disallowed:
             argv.extend(["--disallowedTools", *disallowed])
         argv.extend(["--append-system-prompt", CHINESE_ONLY_RULE])
@@ -255,6 +259,7 @@ def build_spec(
     max_turns: int | None = None,
     timeout_s: int | None = None,
     allow_bash: bool = False,
+    settings_file: str | None = None,
 ) -> ExecutionSpec:
     """构造并校验执行规格。任一校验失败抛 ExecutorError。"""
     if not executor_enabled():
@@ -276,6 +281,17 @@ def build_spec(
         raise ExecutorError("binary_missing", 500, "找不到 claude 可执行文件")
 
     workdir = validate_cwd(project_code, repo_root, cwd or repo_root)
+    settings_path = ""
+    if settings_file:
+        candidate = Path(settings_file).expanduser().resolve()
+        if not candidate.is_file():
+            raise ExecutorError("settings_missing", 422, f"settings 文件不存在：{candidate}")
+        try:
+            candidate.relative_to(Path(repo_root).expanduser().resolve())
+        except ValueError as exc:
+            raise ExecutorError("invalid_settings_path", 422, "settings 必须位于项目仓库内") from exc
+        settings_path = str(candidate)
+
     return ExecutionSpec(
         project_code=project_code,
         role_key=role_key,
@@ -285,4 +301,5 @@ def build_spec(
         max_turns=max(1, min(200, int(max_turns or DEFAULT_MAX_TURNS))),
         timeout_s=max(60, min(7200, int(timeout_s or DEFAULT_TIMEOUT_S))),
         allow_bash=bool(allow_bash),
+        settings_file=settings_path,
     )

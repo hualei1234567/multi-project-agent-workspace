@@ -598,6 +598,8 @@ async function main() {
     const tlStates = await page.locator(".tl-row .tl-state").allInnerTexts().catch(() => []);
     check(tlStates.includes("运行中") && tlStates.includes("失败") && tlStates.includes("未验证") && tlStates.includes("成功"),
       "时间线逐条标注状态", tlStates.join("/"));
+    const agentCards = await page.locator('[data-testid="tl-agent-card"]').allInnerTexts().catch(() => []);
+    check(agentCards.length >= 1 && agentCards[0].includes("未归属"), "时间线按 Agent 汇总最近状态", agentCards.join(" | ").replace(/\s+/g, " ").slice(0, 80));
     const tlNote = await page.locator(".tl-note").innerText().catch(() => "");
     check(tlNote.includes("只有明确 ok 的事件才是「成功」"), "时间线说明成功口径", tlNote.slice(0, 60));
 
