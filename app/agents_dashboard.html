@@ -919,6 +919,16 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 @media (pointer: coarse) {
   .btn:hover, .sb-proj:hover { background: inherit; }
 }
+
+.ctx-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: 10px; }
+.ctx-bar[hidden] { display: none; }
+.ctx-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.ctx-chip.mono { font-family: var(--mono, ui-monospace, monospace); color: var(--muted); }
+.ctx-chip.muted { color: var(--muted); }
+.ctx-chip.warn { color: var(--warn, #d29922); border-color: currentColor; }
+.ctx-chip.link { color: var(--accent); text-decoration: none; }
+@media (max-width: 900px) { .ctx-bar { display: none; } }
+
 /* ---------- 工作空间视图（我的工作 / 项目组合 / 消息中心） ---------- */
 
 
@@ -1020,6 +1030,7 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
     <header class="topbar">
       <button class="menu-btn" id="btn-menu" aria-label="打开项目导航">☰</button>
       <nav class="crumb" aria-label="面包屑" id="crumb"></nav>
+      <div class="ctx-bar" id="ctx-bar" hidden></div>
       <div class="toolbar">
         <label class="search global-search">
           <span style="color:var(--muted)" aria-hidden="true">⌕</span>
@@ -1584,6 +1595,32 @@ function updateResourcePool() {
   tok.title = tokenNote;
 }
 
+
+/* ---------- 项目上下文条（常显当前项目作用域） ---------- */
+function updateContextBar() {
+  const el = $("#ctx-bar");
+  if (!el) return;
+  const p = ROUTE.kind === "project" ? APP.currentProject : null;
+  if (!p) { el.hidden = true; el.innerHTML = ""; return; }
+  const status = p.status || "unknown";
+  const st = APP.state || {};
+  const updated = st.generated_at || p.updated_at || null;
+  const stale = APP.stateErr ? "数据异常" : (APP.state ? (APP.state.cache?.stale ? "数据陈旧" : "数据就绪") : "加载中");
+  const dot = status === "active" ? "active" : status === "archived" ? "paused" : "risk";
+  el.hidden = false;
+  el.innerHTML = `
+    <span class="ctx-chip"><span class="pdot ${dot}"></span>${esc(p.name)}</span>
+    <span class="ctx-chip mono">${esc(p.code || "")}</span>
+    <span class="ctx-chip">${esc(statusLabel(status))}</span>
+    <span class="ctx-chip ${APP.stateErr ? "warn" : ""}">${esc(stale)}</span>
+    <span class="ctx-chip muted">更新 ${esc(updated ? ago(updated) : "—")}</span>
+    <a class="ctx-chip link" href="#/projects">切换项目</a>`;
+}
+
+function statusLabel(status) {
+  return { active: "进行中", archived: "已归档", paused: "已暂停" }[status] || status;
+}
+
 function renderSidebar() {
   const list = APP.projects.filter(matchesProject);
   const activeId = ROUTE.kind === "project" ? String(APP.currentProject?.id || "") : "";
@@ -1625,6 +1662,7 @@ function renderSidebar() {
   const conn = $("#sb-conn-text");
   if (conn) conn.textContent = APP.projectsErr ? "后端连接异常" : APP.paused ? "已暂停刷新" : "实时连接正常";
   updateResourcePool();
+  updateContextBar();
 }
 
 

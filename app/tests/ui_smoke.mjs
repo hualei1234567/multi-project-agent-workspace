@@ -293,6 +293,10 @@ async function main() {
     await page.locator('#sb-projects .sb-proj[data-pid="material"]').click();
     await page.waitForFunction(() => location.hash === "#/p/material/overview", null, { timeout: 5000 });
     await waitOverviewReady(page);
+    // 项目上下文条：作用域常显，平台页隐藏
+    check(await page.locator("#ctx-bar").isVisible(), "项目页显示项目上下文条");
+    const ctxText = await page.locator("#ctx-bar").innerText();
+    check(/material/.test(ctxText) && ctxText.includes("进行中"), "上下文条含项目代号与状态", ctxText.replace(/\s+/g, " ").slice(0, 60));
     const materialToken = await kpiValue(page, "今日 Token");
     // 两条口径：UI 读 /api/state 的实时 transcript 扫描，/api/projects 的 stats 读回填进库的
     // token_usage_events。不先回填，活跃会话持续增长就会让两者越拉越远（不是 bug，是没对齐）。
