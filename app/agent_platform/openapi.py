@@ -118,6 +118,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/team/launch"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/instruct"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/stop"),
+    ("GET", "/api/projects/{project_id}/team/{session_id}/logs"),
     ("GET", "/api/projects/{project_id}/sessions/{session_id}"),
     ("PUT", "/api/projects/{project_id}/favorite"),
     ("DELETE", "/api/projects/{project_id}/favorite"),
@@ -756,6 +757,11 @@ def _paths() -> dict[str, Any]:
             "post": project_op("post", "向 General Owner 会话下达指令（--bg --resume）",
                                params=[_param("session_id", "path", required=True)],
                                body={"type": "object"}, errors=(404, 409, 422, 504))[2]
+        },
+        "/api/projects/{project_id}/team/{session_id}/logs": {
+            "get": project_op("get", "读取真实会话最近输出（claude logs，只读）",
+                              params=[_param("session_id", "path", required=True), _param("lines", typ="integer")],
+                              ok_schema={"type": "object"}, errors=(404, 409, 504))[2]
         },
         "/api/projects/{project_id}/team/{session_id}/stop": {
             "post": project_op("post", "停止项目 Agent Team 会话",

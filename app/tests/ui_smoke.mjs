@@ -725,6 +725,16 @@ async function main() {
     check(/预检/.test(preflightText), "预检给出可执行结论", preflightText.slice(0, 90));
     const launchBtn = page.locator('[data-testid="team-launch"]');
     check((await launchBtn.count()) === 1, "有启动团队入口（测试里不实际启动）");
+    const teamRows = await page.locator('[data-testid="team-list"] .team-row').count();
+    if (teamRows) {
+      await page.locator('[data-team-logs]').first().click();
+      await page.locator("#team-log").waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+      const logText = await page.locator("#team-log").innerText().catch(() => "");
+      check(logText.length > 0, "真实会话可查看实时日志", `${logText.length} 字符`);
+      await page.locator("#team-log-close").click().catch(() => {});
+    } else {
+      check(true, "当前无运行中的真实会话（跳过日志查看）", "empty");
+    }
 
     // ------------------------------------------------ 8.55) 交付保存视图 + focus 直达
     await page.goto(`${BASE}/#/p/${code}/deliveries`, { waitUntil: "domcontentloaded" });

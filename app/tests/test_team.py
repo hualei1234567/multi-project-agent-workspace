@@ -94,9 +94,10 @@ def test_launch_parses_session_and_records(env, monkeypatch):
     calls = _fake_run(monkeypatch, stdout=f"started {SESSION}\n")
     result = team.launch_team(_project(env), "把 DDP-105 做完")
     assert result["session_id"] == SESSION
-    launch_call = next(c for c in calls if c["args"][1] == "--bg")
-    assert launch_call["args"][:2] == ["/usr/bin/claude", "--bg"]
-    assert "General Owner" in launch_call["args"][2]
+    launch_call = next(c for c in calls if "--bg" in c["args"])
+    assert launch_call["args"][:2] == ["/usr/bin/claude", "--agent"]
+    assert launch_call["args"][2] == "general-owner"
+    assert "General Owner" in launch_call["args"][-1]
     assert launch_call["cwd"] == str(env.repo)
     conn = store.connect()
     try:
@@ -171,3 +172,41 @@ def test_short_session_id_is_resolved_to_full(env, monkeypatch):
     )
     result = team.launch_team(_project(env), "只回复 OK")
     assert result["session_id"] == SESSION
+
+
+def test_launch_uses_configured_owner_agent(env, monkeypatch):
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    service.patch_project("default", {"settings_json": {"team_owner_agent": "system-architect"}})
+    calls = _fake_run(monkeypatch, stdout=f"started {SESSION}\n")
+    team.launch_team(_project(env), "做架构评估")
+    launch = next(c for c in calls if "--bg" in c["args"])
+    assert launch["args"][:3] == ["/usr/bin/claude", "--agent", "system-architect"]
+
+
+def test_session_logs_returns_tail(env, monkeypatch):
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    lines = "\n".join(f"line-{i}" for i in range(500))
+    _fake_run(monkeypatch, stdout=lines, agents_stdout=json.dumps([
+        {"id": "94eaba41", "sessionId": SESSION, "cwd": str(env.repo),
+         "kind": "background", "status": "busy"},
+    ]))
+    out = team.session_logs(_project(env), "94eaba41", lines=50)
+    assert out["ok"] is True
+    # CLI 认短 id：请求传全 id 也要换回短 id
+    out2 = team.session_logs(_project(env), SESSION, lines=50)
+    assert out2["ok"] is True
+    assert out["line_count"] == 50
+    assert out["log"].splitlines()[-1] == "line-499"
+    assert out["session_id"] == SESSION
+    assert out["supported"] is True
+
+
+def test_session_logs_explains_interactive_sessions(env, monkeypatch):
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    _fake_run(monkeypatch, agents_stdout=json.dumps([
+        {"sessionId": SESSION, "cwd": str(env.repo), "kind": "interactive", "status": "idle"},
+    ]))
+    out = team.session_logs(_project(env), SESSION)
+    assert out["ok"] is True and out["supported"] is False
+    assert "交互式" in out["log"]

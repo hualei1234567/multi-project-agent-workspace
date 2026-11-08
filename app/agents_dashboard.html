@@ -3136,6 +3136,7 @@ function paintTeam() {
         <span class="sess-id mono">${esc(String(it.sessionId || "").slice(0, 8))}</span>
         <span class="sess-meta">${it.kind === "background" ? "后台" : "交互"} · pid ${esc(String(it.pid || "—"))}</span>
         <span class="team-actions">
+          <button class="btn sm" data-team-logs="${esc(it.sessionId || "")}">看日志</button>
           <button class="btn sm" data-team-instruct="${esc(it.sessionId || "")}">下达指令</button>
           <button class="btn sm" data-team-stop="${esc(it.sessionId || "")}">停止</button>
         </span>
@@ -3146,12 +3147,43 @@ function paintTeam() {
         <span class="lb">${esc(h.status)}</span>
         <span class="dt">${esc(String(h.instruction || "").slice(0, 90))}${h.session_id ? ` · ${esc(String(h.session_id).slice(0, 8))}` : ""}</span>
       </li>`).join("")}</ul>` : ""}`;
+  $$("#team-list [data-team-logs]").forEach(btn => {
+    btn.onclick = () => teamLogs(btn.dataset.teamLogs);
+  });
   $$("#team-list [data-team-instruct]").forEach(btn => {
     btn.onclick = () => instructTeam(btn.dataset.teamInstruct);
   });
   $$("#team-list [data-team-stop]").forEach(btn => {
     btn.onclick = () => stopTeam(btn.dataset.teamStop);
   });
+}
+
+async function teamLogs(sessionId) {
+  if (!sessionId) return;
+  rememberFocus();
+  $("#modal-title").textContent = "会话实时日志";
+  $("#modal-body").innerHTML = skeletonBox(160);
+  mask.classList.add("show"); modal.classList.add("show");
+  const load = async () => {
+    try {
+      const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/${encodeURIComponent(sessionId)}/logs?lines=200`);
+      $("#modal-body").innerHTML = `
+        <div class="kv">
+          <span class="k">会话</span><span class="v mono">${esc(d.session_id)}</span>
+          <span class="k">行数</span><span class="v">${d.line_count}</span>
+        </div>
+        <pre class="pre" id="team-log" style="max-height:60vh">${esc(d.log || "（暂无输出）")}</pre>
+        <div class="form-actions">
+          <button type="button" class="btn" id="team-log-refresh">刷新</button>
+          <button type="button" class="btn" id="team-log-close">关闭</button>
+        </div>`;
+      $("#team-log-refresh").onclick = load;
+      $("#team-log-close").onclick = closeAll;
+    } catch (e) {
+      $("#modal-body").innerHTML = `<div class="form-err" role="alert">${esc(errText(e))}</div>`;
+    }
+  };
+  load();
 }
 
 async function launchTeam() {

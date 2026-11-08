@@ -1398,6 +1398,10 @@ def _team_instruct(project_id: str, session_id: str, instruction: str, *,
     return team_service.instruct_team(_project_dict(project_id), session_id, instruction, actor=actor)
 
 
+def _team_logs(project_id: str, session_id: str, *, lines: int = 200) -> dict[str, Any]:
+    return team_service.session_logs(_project_dict(project_id), session_id, lines=lines)
+
+
 def _team_stop(project_id: str, session_id: str, *, actor: str = "local") -> dict[str, Any]:
     return team_service.stop_team(_project_dict(project_id), session_id, actor=actor)
 
@@ -2587,6 +2591,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["team", "preflight"]:
                 self._platform(_team_preflight, project_id)
+                return
+            if len(rest) == 3 and rest[0] == "team" and rest[2] == "logs":
+                self._platform(
+                    _team_logs, project_id, rest[1],
+                    lines=int((query.get("lines") or ["200"])[0]),
+                )
                 return
             if rest == ["sessions"]:
                 self._platform(platform_service.list_sessions, project_id)

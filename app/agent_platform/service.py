@@ -32,6 +32,7 @@ PATCHABLE_SETTINGS = frozenset({
     "dispatch_max_turns",
     "dispatch_timeout_s",
     "dispatch_max_attempts",
+    "team_owner_agent",
 })
 ACTIVE_AGENT_STATUSES = ("working", "running")
 IDLE_AGENT_STATUSES = ("idle", "available")
