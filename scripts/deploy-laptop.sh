@@ -45,5 +45,4 @@ ssh "$HOST" "curl -s -m 5 http://127.0.0.1:8099/healthz" || {
   exit 1
 }
 echo
-echo "[deploy] 完成。局域网访问：http://<LAN_HOST>:8099/"
-echo "[deploy] 远端访问需要令牌：ssh $HOST 'cat $TARGET/data/token'"
+echo "[deploy] 完成。局域网访问：http://<LAN_HOST>:8099/（无需令牌）"

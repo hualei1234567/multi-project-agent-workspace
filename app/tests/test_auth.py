@@ -21,6 +21,8 @@ class _Headers(dict):
 def token_env(tmp_path, monkeypatch):
     path = tmp_path / "token"
     monkeypatch.setenv("DDP_AGENT_PLATFORM_TOKEN_FILE", str(path))
+    # 这些用例验证的是"开启鉴权"时的行为；默认已改为 off，这里显式打开。
+    monkeypatch.setenv("DDP_AGENT_PLATFORM_AUTH", "on")
     auth.reset_cache()
     yield path
     auth.reset_cache()
@@ -106,3 +108,31 @@ def test_public_paths_need_no_token(token_env):
     for path in ("/healthz", "/api/auth/token"):
         ok, _ = _check(path=path, addr="100.117.129.23")
         assert ok, path
+
+
+# ---------------------------------------------------------------------------
+# 鉴权关闭时（默认）：非回环也放行，但 /api/open 仍只限本机
+# ---------------------------------------------------------------------------
+def _check_off(path, addr, headers=None, query=None):
+    return auth.check_request(
+        path=path, client_address=addr, headers=_Headers(headers or {}),
+        query_params=query or {}, auth_enabled=False,
+    )
+
+
+def test_disabled_allows_remote_without_token(token_env):
+    ok, reason = _check_off("/api/projects", "203.0.113.7")
+    assert ok is True and reason == ""
+
+
+def test_disabled_still_blocks_open_endpoint_for_remote(token_env):
+    ok, reason = _check_off("/api/open", "203.0.113.7")
+    assert ok is False and reason == "loopback_only"
+
+
+def test_default_env_is_off(monkeypatch, token_env):
+    monkeypatch.delenv("DDP_AGENT_PLATFORM_AUTH", raising=False)
+    ok, _ = auth.check_request(
+        path="/api/projects", client_address="203.0.113.7", headers=_Headers({})
+    )
+    assert ok is True

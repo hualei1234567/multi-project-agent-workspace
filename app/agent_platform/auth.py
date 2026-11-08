@@ -77,6 +77,13 @@ def reset_cache() -> None:
     _CACHED = None
 
 
+def auth_enabled() -> bool:
+    """远端令牌校验是否开启（默认关闭）。"""
+    return os.environ.get("DDP_AGENT_PLATFORM_AUTH", "off").strip().lower() in {
+        "on", "1", "true", "yes",
+    }
+
+
 def is_loopback(address: str | None) -> bool:
     if not address:
         return False
@@ -110,18 +117,21 @@ def check_request(
 
     enabled = auth_enabled
     if enabled is None:
-        enabled = os.environ.get("DDP_AGENT_PLATFORM_AUTH", "auto").strip().lower()
-        # auto = 有令牌文件或开启了 tailscale 就启用远端校验；回环始终放行
-        enabled = True
+        # 默认关闭：局域网内单用户使用，不强制令牌。
+        # 需要时用 DDP_AGENT_PLATFORM_AUTH=on 打开远端校验。
+        enabled = os.environ.get("DDP_AGENT_PLATFORM_AUTH", "off").strip().lower() in {
+            "on", "1", "true", "yes",
+        }
+
+    # /api/open 会用系统默认程序打开本机文件：无论鉴权是否开启，
+    # 都不允许非回环来源触发。这一条不受开关影响。
+    if path in LOOPBACK_ONLY_PATHS and not is_loopback(client_address):
+        return False, "loopback_only"
 
     if not enabled:
         return True, ""
     if is_loopback(client_address):
-        # 本机放行；但 loopback-only 路径本来就只给本机
         return True, ""
-
-    if path in LOOPBACK_ONLY_PATHS:
-        return False, "loopback_only"
 
     supplied = _extract_token(headers, query_params)
     if not supplied:

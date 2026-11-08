@@ -21,8 +21,19 @@ scripts/deploy-laptop.sh            # 只更新代码
 scripts/deploy-laptop.sh --with-data  # 连库一起推（首次部署用）
 ```
 
-局域网访问：<http://<LAN_HOST>:8099/>；非回环访问必须带令牌
-（`ssh <ssh-alias> 'cat /opt/agent-platform/data/token'`）。
+局域网访问：<http://<LAN_HOST>:8099/> —— **默认无需令牌**（2026-11-08 起）。
+
+鉴权开关：`DDP_AGENT_PLATFORM_AUTH`（默认 `off`）。设成 `on` 后非回环访问需
+`Authorization: Bearer <data/token>`。**无论开关如何，`/api/open` 只允许回环来源。**
+打开鉴权：
+
+```bash
+ssh <ssh-alias> 'sudo tee /etc/systemd/system/agent-platform.service.d/auth.conf <<EOF
+[Service]
+Environment=DDP_AGENT_PLATFORM_AUTH=on
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart agent-platform'
+```
 
 Mac 上如需临时起一份本地实例调试：`scripts/start.sh 8099`（用本地库，与服务器实例互不影响）。
 

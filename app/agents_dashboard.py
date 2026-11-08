@@ -1408,8 +1408,11 @@ class Handler(BaseHTTPRequestHandler):
             conn = platform_store.connect()
             try:
                 address = self.client_address[0] if self.client_address else None
+                # 鉴权关闭时（默认），所有来源都按本机所有者处理：
+                # 没有令牌就没有"远端主体"这个概念，避免新建项目后自己被 403。
+                loopback = auth_service.is_loopback(address) or not auth_service.auth_enabled()
                 self.principal = p4_governance.resolve_principal(
-                    conn, is_loopback=auth_service.is_loopback(address)
+                    conn, is_loopback=loopback
                 )
                 blocked, why = p4_killswitch.is_blocked(conn)
                 if blocked:
