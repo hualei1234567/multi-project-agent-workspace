@@ -14,9 +14,9 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from agent_platform import executor_policy as policy
-
 import shutil as _shutil
+
+from agent_platform import executor_policy as policy
 
 # 执行器依赖 claude CLI；没有该二进制的机器（如部署服务器）跳过本模块，
 # 不把"环境缺依赖"伪装成"测试通过"。
