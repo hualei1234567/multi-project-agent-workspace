@@ -121,7 +121,7 @@ def _resolve_session(repo: Path, session_id: str) -> str | None:
     """短 id → 全 id。CLI 打印短 id，agents --json 里才有完整 sessionId。"""
     if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id or ""):
         return session_id
-    sessions, _err = _agents(repo)
+    sessions, _err = _agents(repo, include_finished=True)
     for item in sessions:
         full = str(item.get("sessionId") or "")
         if str(item.get("id") or "") == session_id or (full and full.startswith(session_id)):
@@ -195,8 +195,15 @@ def owner_session_info(project: dict[str, Any]) -> dict[str, Any]:
     session_id = str(saved["session_id"])
     repo = Path(str(project.get("repo_root") or "")).expanduser()
     sessions, error = _agents(repo, include_finished=True) if repo.is_dir() else ([], "仓库不存在")
-    found = next((s for s in sessions if str(s.get("sessionId")) == session_id), None)
-    live = bool(found) and str((found or {}).get("status") or "") in ("busy", "idle", "running")
+
+    def _matches(item: dict[str, Any]) -> bool:
+        short = str(item.get("id") or "")
+        full = str(item.get("sessionId") or "")
+        return session_id in (short, full) or (full and full.startswith(session_id))
+
+    found = next((s for s in sessions if _matches(s)), None)
+    state = str((found or {}).get("status") or (found or {}).get("state") or "")
+    live = state in ("busy", "idle", "running")
     if not found:
         note = "会话当前不在运行；「继续对话」会以 --bg --resume 在同一 id 上继续。"
     elif live:
@@ -209,7 +216,7 @@ def owner_session_info(project: dict[str, Any]) -> dict[str, Any]:
         "agent": saved.get("agent"),
         "launched_at": saved.get("launched_at"),
         "running": live,
-        "status": (found or {}).get("status"),
+        "status": state or None,
         "kind": (found or {}).get("kind"),
         "pid": (found or {}).get("pid"),
         "error": error,
@@ -239,7 +246,8 @@ def team_status(project: dict[str, Any], conn) -> dict[str, Any]:
         "executor_enabled": executor_enabled(),
         "error": error,
         "total": len(mine),
-        "running": sum(1 for s in mine if s.get("status") == "busy"),
+        "running": sum(1 for s in mine
+                       if (s.get("status") or s.get("state")) == "busy"),
         "sessions": mine,
         "history": history,
     }
