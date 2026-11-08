@@ -3192,7 +3192,7 @@ function renderAgentsPage(el) {
       <div class="panel"><div class="panel-body"><div class="sess-list" id="sessions-list" data-testid="sessions-list"></div></div></div>
     </section>
     <section>
-      <div class="sec-head"><h2>执行记录</h2><span class="desc">最近运行的 Subagent · 点击展开执行流</span><span class="count" id="agent-count"></span></div>
+      <div class="sec-head"><h2>Subagent 执行流</h2><span class="desc">仅列出有 transcript 的 Subagent；执行次数见上方汇总 · 点击展开</span><span class="count" id="agent-count"></span></div>
       <div class="agents" id="agents"></div>
       <button class="more" id="agents-more" style="display:none"></button>
     </section>`;
@@ -5028,7 +5028,7 @@ function renderAgents(rows) {
   if (!el) return;
   const list = rows.filter(a => filtered(a.role) || filtered(a.description) || filtered(a.last_tool));
   $("#agent-count").textContent = `${list.length} / ${rows.length}`;
-  if (!rows.length) { el.innerHTML = emptyBox("暂无执行记录", "该项目还没有 Subagent 运行记录"); return; }
+  if (!rows.length) { el.innerHTML = emptyBox("没有可展开的 Subagent transcript", "执行次数见上方汇总；完整记录可在「执行记录」页查看"); return; }
   if (!list.length) { el.innerHTML = emptyBox("没有匹配的执行记录", "请调整筛选关键词"); return; }
   el.innerHTML = list.slice(0, agentsExpanded ? list.length : 9).map(a => `
     <article class="acard ${esc(a.status)}" data-agent="${esc(a.id)}" role="button" tabindex="0" aria-label="查看执行流 ${esc(a.role)}">
