@@ -112,3 +112,12 @@ def test_unknown_session_is_not_found(env):
     with pytest.raises(service.PlatformError) as err:
         service.session_trace("default", "nope")
     assert err.value.code == "not_found" and err.value.status == 404
+
+
+def test_project_slugs_union_derived(env):
+    """配置里的 slug 可能是别的机器的；扫描时始终并上由 repo_root 推导的本机 slug。"""
+    from agent_platform import sources as src
+
+    project = service.get_project("default")
+    derived = str(project["repo_root"]).replace("/", "-")
+    assert derived in src.project_slugs(project)

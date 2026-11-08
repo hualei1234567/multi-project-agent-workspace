@@ -667,7 +667,7 @@ def backfill_events_and_tokens(conn: sqlite3.Connection, project: dict[str, Any]
     raw_cursors = settings.get("transcript_cursors", {})
     cursors = raw_cursors if isinstance(raw_cursors, dict) else {}
 
-    for slug in project.get("session_slugs") or []:
+    for slug in project_slugs(project):
         slug_dir = root / slug
         if not slug_dir.is_dir():
             continue
@@ -951,6 +951,21 @@ def backfill(conn: sqlite3.Connection, project: dict[str, Any]) -> dict[str, int
 SESSION_STALE_SECONDS = 300
 
 
+def project_slugs(project: dict[str, Any]) -> list[str]:
+    """配置里的 slug + 由 repo_root 推导的本机 slug。
+
+    配置常从别的机器抄来（Mac 的 ``-Users-hualei-*`` 到服务器上并不存在），
+    只按配置扫会得到 0 个会话，所以扫描时始终并上本机推导值。
+    """
+    slugs = [str(x) for x in (project.get("session_slugs") or [])]
+    repo_root = str(project.get("repo_root") or "").strip()
+    if repo_root:
+        derived = repo_root.replace("/", "-")
+        if derived not in slugs:
+            slugs.append(derived)
+    return slugs
+
+
 def session_files(project: dict[str, Any]) -> list[dict[str, Any]]:
     """按项目登记的 slug 列出会话 transcript 文件。
 
@@ -959,7 +974,7 @@ def session_files(project: dict[str, Any]) -> list[dict[str, Any]]:
     """
     root = projects_root()
     out: list[dict[str, Any]] = []
-    for slug in project.get("session_slugs") or []:
+    for slug in project_slugs(project):
         slug_dir = root / str(slug)
         if not slug_dir.is_dir():
             continue
