@@ -24,6 +24,14 @@ DEFAULT_PROJECT_NAME = "默认项目"
 DEFAULT_PROJECT_DESCRIPTION = "未配置纳管项目时的占位项目"
 PROJECT_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,23}$")
 PROJECT_STATUSES = frozenset({"active", "paused", "risk", "archived"})
+#: 允许通过 PATCH 项目改的行为开关；采集游标等内部状态不在此列。
+PATCHABLE_SETTINGS = frozenset({
+    "auto_complete_task_on_accept",
+    "execution_enabled",
+    "dispatch_max_turns",
+    "dispatch_timeout_s",
+    "dispatch_max_attempts",
+})
 ACTIVE_AGENT_STATUSES = ("working", "running")
 IDLE_AGENT_STATUSES = ("idle", "available")
 PAGE_SIZE_MAX = 100
@@ -569,6 +577,28 @@ def patch_project(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             updates.append("settings_json = ?")
             params.append(store.dumps_json(settings))
             detail["default_branch"] = branch
+        # 行为开关只放行白名单，采集游标（transcript_cursors）等内部状态不接受外部写入
+        if "settings" in payload or "settings_json" in payload:
+            raw = payload.get("settings", payload.get("settings_json"))
+            if not isinstance(raw, dict):
+                raise PlatformError("invalid_payload", 422, "settings 必须是对象")
+            unknown = sorted(set(raw) - PATCHABLE_SETTINGS)
+            if unknown:
+                raise PlatformError(
+                    "invalid_payload", 422, "不支持的设置项：" + ",".join(unknown),
+                )
+            patch = dict(raw)
+            for key in ("dispatch_max_turns", "dispatch_timeout_s", "dispatch_max_attempts"):
+                if key in patch:
+                    try:
+                        patch[key] = int(patch[key])
+                    except (TypeError, ValueError):
+                        raise PlatformError("invalid_payload", 422, f"{key} 必须是整数")
+            settings = dict(project.get("settings_json") or {})
+            settings.update(patch)
+            updates.append("settings_json = ?")
+            params.append(store.dumps_json(settings))
+            detail["settings"] = patch
         if status is not None:
             updates.append("status = ?")
             params.append(status)
@@ -2005,6 +2035,52 @@ def _delivery_dict(row: sqlite3.Row, task_key: str | None = None) -> dict[str, A
     return item
 
 
+def _auto_complete_task(
+    conn: sqlite3.Connection,
+    project: dict[str, Any],
+    delivery_row: sqlite3.Row,
+    delivery_id: str,
+    now: str,
+) -> dict[str, Any] | None:
+    """验收通过后把关联任务从 review 推到 done。
+
+    只做这一条确定路径：任务必须是 ``review``，且状态机允许 review -> done。
+    其它状态一律不动——验收交付不等于替人改任务状态。
+    项目可用 ``settings_json.auto_complete_task_on_accept = false`` 关闭。
+    """
+    task_id = delivery_row["task_id"]
+    if not task_id:
+        return None
+    settings = project.get("settings_json") or {}
+    if isinstance(settings, str):
+        settings = store.loads_json(settings, {})
+    if isinstance(settings, dict) and settings.get("auto_complete_task_on_accept") is False:
+        return None
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project["id"]),
+    ).fetchone()
+    if row is None or row["source"] == "mirror":
+        return None
+    current = row["status"]
+    if current != "review" or "done" not in TASK_TRANSITIONS.get(current, set()):
+        return None
+    conn.execute(
+        "UPDATE tasks SET status = 'done', updated_at = ?, version = version + 1,"
+        " completed_at = ?, blocked_reason = NULL WHERE id = ?",
+        (now, now, task_id),
+    )
+    audit(
+        conn, project["id"], "task.auto_done", "task", task_id,
+        detail={"task_key": row["task_key"], "from": current, "to": "done",
+                "delivery_id": delivery_id},
+    )
+    _insert_task_event(
+        conn, project["id"], task_id, "task_transition",
+        f"{row['task_key']} review -> done（交付验收通过）",
+    )
+    return {"task_id": task_id, "task_key": row["task_key"], "from": current, "to": "done"}
+
+
 def create_delivery(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PlatformError("invalid_json", 400)
@@ -2113,6 +2189,9 @@ def review_delivery(
                     "title": row["title"], "validation_state": state,
                     "failed_checks": [c["key"] for c in checks if c["state"] == "fail"]},
         )
+        auto_done = None
+        if decision == "accepted":
+            auto_done = _auto_complete_task(conn, project, row, delivery_id, now)
         updated = conn.execute(
             "SELECT d.*, t.task_key FROM deliveries d "
             "LEFT JOIN tasks t ON t.id = d.task_id AND t.project_id = d.project_id "
@@ -2122,6 +2201,7 @@ def review_delivery(
         return {
             "delivery": _delivery_dict(updated, updated["task_key"]),
             "validation": snapshot,
+            "task_auto_completed": auto_done,
         }
     finally:
         conn.close()

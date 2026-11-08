@@ -1256,6 +1256,7 @@ const APP = {
   deliveriesFallback: null,
   deliveriesLoading: false,
   deliveryError: null,
+  deliveryNotice: null,
   deliveryPage: 1,
   deliveryPageSize: 20,
   deliveryTotal: 0,
@@ -3849,6 +3850,7 @@ async function runDeliveryValidate(id, btn) {
   } catch (e) {
     APP.deliveryError = errText(e);
   }
+  APP.deliveryNotice = null;
   APP.deliveriesFallback = null;
   await loadDeliveriesFallback(true);
 }
@@ -3871,6 +3873,8 @@ function renderDeliveriesPage(el) {
     <section>
       <div class="sec-head"><h2>交付记录</h2><span class="desc">提交 → 校验 → 验收 → 返工；镜像行只读</span><span class="count">${list.length} / ${rows.length}</span></div>
       ${deliveryStageBar(pipeline, stage)}
+      ${APP.deliveryNotice ? `<div class="banner" data-testid="delivery-notice"><b>验收完成</b><span class="grow">${esc(APP.deliveryNotice)}</span>
+        <button class="btn sm" id="delivery-notice-close">知道了</button></div>` : ""}
       ${APP.deliveryError ? `<div class="banner" role="alert" data-testid="delivery-error"><span class="grow">${esc(APP.deliveryError)}</span>
         <button class="btn sm" id="delivery-err-close">知道了</button></div>` : ""}
       ${APP.deliveriesFallback?.error ? `<div class="banner warn"><b>交付接口不可用</b><span class="grow">${esc(APP.deliveriesFallback.error)}；当前展示 state 快照（只读）。</span>
@@ -3901,6 +3905,8 @@ function renderDeliveriesPage(el) {
   });
   const closeErr = $("#delivery-err-close");
   if (closeErr) closeErr.onclick = () => { APP.deliveryError = null; renderProjectContent(); };
+  const closeNotice = $("#delivery-notice-close");
+  if (closeNotice) closeNotice.onclick = () => { APP.deliveryNotice = null; renderProjectContent(); };
   $$("#deliveries .file-row", el).forEach(rowEl => {
     if (!rowEl.dataset.deliveryId) return;
     const fn = () => openDeliveryDetail(rowEl.dataset.deliveryId);
@@ -4127,13 +4133,17 @@ function openDeliveryReview(row) {
     const btn = $("#dr-submit");
     btn.disabled = true; btn.textContent = "提交中…";
     try {
-      await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/deliveries/${encodeURIComponent(row.id)}/review`, {
+      const res = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/deliveries/${encodeURIComponent(row.id)}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, comment: comment || undefined }),
       });
       closeAll();
       APP.deliveryError = null;
+      const auto = res?.task_auto_completed;
+      APP.deliveryNotice = auto
+        ? `验收通过，关联任务 ${auto.task_key} 已自动标记为完成`
+        : (decision === "rejected" ? `已退回，等待 ${row.task || "提交人"} 返工后重新提交` : null);
       await loadDeliveriesFallback(true);
     } catch (e) {
       errEl.textContent = errText(e);

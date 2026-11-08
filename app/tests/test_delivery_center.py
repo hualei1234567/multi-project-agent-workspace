@@ -176,3 +176,45 @@ def test_mirror_delivery_is_not_validatable(env):
     with pytest.raises(service.PlatformError) as err:
         service.validate_delivery("default", mirror["id"])
     assert err.value.code == "readonly_resource" and err.value.status == 409
+
+
+def test_accept_auto_completes_review_task(env):
+    task = _ready_task()
+    for target in ("in_progress", "review"):
+        current = service.get_task("default", task["id"])["task"]
+        service.transition_task("default", task["id"], {
+            "to_status": target, "expected_version": current["version"],
+        })
+    delivery = _delivery(env, title="验收完成", kind="other", task_id=task["id"])
+    result = service.review_delivery("default", delivery["id"], {"decision": "accepted"})
+    assert result["delivery"]["status"] == "accepted"
+    assert result["task_auto_completed"]["to"] == "done"
+    assert service.get_task("default", task["id"])["task"]["status"] == "done"
+    logs = service.list_audit_logs(project="default", action="task.auto_done")
+    assert logs["total"] == 1
+
+
+def test_accept_does_not_touch_task_outside_review(env):
+    task = _ready_task()  # todo
+    delivery = _delivery(env, title="任务还没做", kind="other", task_id=task["id"])
+    result = service.review_delivery("default", delivery["id"], {"decision": "accepted"})
+    assert result["task_auto_completed"] is None
+    assert service.get_task("default", task["id"])["task"]["status"] == "todo"
+
+
+def test_auto_complete_can_be_disabled_per_project(env):
+    task = _ready_task()
+    for target in ("in_progress", "review"):
+        current = service.get_task("default", task["id"])["task"]
+        service.transition_task("default", task["id"], {
+            "to_status": target, "expected_version": current["version"],
+        })
+    service.patch_project("default", {"settings_json": {"auto_complete_task_on_accept": False}})
+    # 内部采集游标不接受外部写入
+    with pytest.raises(service.PlatformError) as err:
+        service.patch_project("default", {"settings_json": {"transcript_cursors": {}}})
+    assert err.value.code == "invalid_payload"
+    delivery = _delivery(env, title="手动处理", kind="other", task_id=task["id"])
+    result = service.review_delivery("default", delivery["id"], {"decision": "accepted"})
+    assert result["task_auto_completed"] is None
+    assert service.get_task("default", task["id"])["task"]["status"] == "review"

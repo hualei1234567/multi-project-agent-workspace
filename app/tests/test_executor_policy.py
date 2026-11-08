@@ -200,13 +200,49 @@ def test_argv_uses_whitelisted_binary_and_no_shell(tmp_path, monkeypatch):
     )
     argv = spec.argv()
     assert argv[0] == "claude"
-    # 不给 Bash：执行器层面先禁用，避免前缀白名单被绕过
+    # 默认不给 Bash：执行器层面先禁用，避免前缀白名单被绕过
     assert "--disallowedTools" in argv
     assert argv[argv.index("--disallowedTools") + 1] == "Bash"
     assert "--output-format" in argv
     assert "stream-json" in argv
     # prompt 作为独立参数，不拼进 shell 字符串
     assert "实现接口" in argv
+
+
+def test_argv_allows_bash_with_prefix_rules_when_enabled(tmp_path, monkeypatch):
+    """项目显式开启 Bash 后：放行前缀规则，同时保留高危 deny 规则。"""
+    monkeypatch.setenv(policy.ENV_SWITCH, "on")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec = policy.build_spec(
+        project_code="ddp", repo_root=repo, role_key="backend-engineer",
+        execution_mode="worktree", prompt="跑测试", allow_bash=True,
+    )
+    argv = spec.argv()
+
+    assert "Bash" in argv
+    assert "Bash(git status:*)" in argv
+    assert "Bash(python -m pytest:*)" in argv
+    assert "Bash(git push:*)" in argv
+
+    # 不允许再用裸 Bash 整体禁用
+    if "--disallowedTools" in argv:
+        tail = argv[argv.index("--disallowedTools") + 1:]
+        assert "Bash" not in tail
+
+
+def test_argv_bash_disabled_by_default_for_new_project(tmp_path, monkeypatch):
+    """默认值必须保持关闭；任何项目都不能因为忘记配置而自动获得 Bash。"""
+    monkeypatch.setenv(policy.ENV_SWITCH, "on")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec = policy.build_spec(
+        project_code="ddp", repo_root=repo, role_key="backend-engineer",
+        execution_mode="worktree", prompt="x",
+    )
+    argv = spec.argv()
+    assert argv[argv.index("--disallowedTools") + 1] == "Bash"
+    assert "Bash(git status:*)" not in argv
 
 
 def test_max_turns_and_timeout_clamped(tmp_path, monkeypatch):

@@ -11,7 +11,9 @@
 3. **命令白名单**：只能执行 ``claude`` 一个可执行文件，参数由模板拼装，
    不接受任意 shell 字符串；``shell=False``。
 4. **工作目录**：必须是项目仓库根，或 ``~/agent-team/<code>-team/worktrees/*`` 下。
-5. **工具白名单**：只给读写代码所需的最小集合，Bash 只放行构建/测试前缀。
+5. **工具白名单**：只给读写代码所需的最小集合；Bash 默认禁用。
+   项目可在 settings 中显式开启 Bash，开启后仍只放行
+   ``ALLOWED_BASH_PREFIXES``，并叠加 ``BASH_DENY_RULES``。
 6. **显式禁止**：push / 部署 / 删数据 / 改配置的形态一律拒绝。
 """
 
@@ -90,6 +92,33 @@ DENIED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+#: 项目级开启 Bash 时，传给 Claude Code 的「允许」规则。
+#: Claude Code 的权限规则语法：Bash(<前缀>:*)。
+BASH_ALLOW_RULES: tuple[str, ...] = tuple(
+    f"Bash({prefix}:*)" for prefix in ALLOWED_BASH_PREFIXES
+)
+
+#: 项目级开启 Bash 时仍然显式拒绝的高危命令（deny 优先于 allow）。
+BASH_DENY_RULES: tuple[str, ...] = (
+    "Bash(git push:*)",
+    "Bash(git reset --hard:*)",
+    "Bash(git clean:*)",
+    "Bash(git checkout --:*)",
+    "Bash(rm:*)",
+    "Bash(docker:*)",
+    "Bash(kubectl:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(curl:*)",
+    "Bash(wget:*)",
+    "Bash(sudo:*)",
+    "Bash(chmod:*)",
+    "Bash(chown:*)",
+    "Bash(migrate:*)",
+    "Bash(psql:*)",
+    "Bash(mysql:*)",
+)
+
 #: 允许的执行模式（与 scheduler.EXECUTABLE_MODES 一致）。
 EXECUTABLE_MODES = frozenset({"worktree", "subagent"})
 
@@ -125,20 +154,35 @@ class ExecutionSpec:
     allowed_tools: list[str] = field(default_factory=lambda: list(ALLOWED_TOOLS))
     #: 实际传给 --agent 的值（可能与 role_key 不同）
     agent_arg: str = ""
+    #: 项目级开关：是否允许 Bash（仍受前缀白名单与 deny 规则约束）。
+    allow_bash: bool = False
 
     def argv(self) -> list[str]:
         """拼装 argv（shell=False，不接受任意字符串）。"""
-        return [
+        allowed = list(self.allowed_tools)
+        disallowed: list[str] = []
+
+        if self.allow_bash:
+            if "Bash" not in allowed:
+                allowed.append("Bash")
+            allowed.extend(BASH_ALLOW_RULES)
+            disallowed.extend(BASH_DENY_RULES)
+        else:
+            disallowed.append("Bash")
+
+        argv = [
             ALLOWED_BINARY,
             "-p", self.prompt,
             "--agent", self.agent_arg or self.role_key,
             "--output-format", "stream-json",
             "--verbose",  # stream-json 在 --print 模式下必须配 --verbose
             "--max-turns", str(self.max_turns),
-            "--allowedTools", *self.allowed_tools,
-            "--disallowedTools", "Bash",
-            "--append-system-prompt", CHINESE_ONLY_RULE,
+            "--allowedTools", *allowed,
         ]
+        if disallowed:
+            argv.extend(["--disallowedTools", *disallowed])
+        argv.extend(["--append-system-prompt", CHINESE_ONLY_RULE])
+        return argv
 
 
 def executor_enabled() -> bool:
@@ -210,6 +254,7 @@ def build_spec(
     cwd: Path | str | None = None,
     max_turns: int | None = None,
     timeout_s: int | None = None,
+    allow_bash: bool = False,
 ) -> ExecutionSpec:
     """构造并校验执行规格。任一校验失败抛 ExecutorError。"""
     if not executor_enabled():
@@ -239,4 +284,5 @@ def build_spec(
         agent_arg=resolve_agent_arg(workdir, role_key),
         max_turns=max(1, min(200, int(max_turns or DEFAULT_MAX_TURNS))),
         timeout_s=max(60, min(7200, int(timeout_s or DEFAULT_TIMEOUT_S))),
+        allow_bash=bool(allow_bash),
     )

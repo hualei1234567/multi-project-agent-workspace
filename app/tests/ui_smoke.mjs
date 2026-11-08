@@ -522,6 +522,46 @@ async function main() {
     const afterResubmit = await page.locator(`tr[data-delivery-id="${dlvId}"]`).innerText().catch(() => "");
     check(afterResubmit.includes("返工 1 次") && afterResubmit.includes("已提交"), "重新提交回到已提交并累计返工次数", afterResubmit.replace(/\s+/g, " ").slice(0, 80));
 
+    // 验收通过 → 关联任务（review）自动完成
+    const taskRes = await fetch(`${BASE}/api/projects/${code}/tasks`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_key: "TEAM-901", title: "冒烟关联任务" }),
+    }).then((r) => r.json()).catch(() => ({}));
+    const linkedTaskId = taskRes?.task?.id;
+    let taskVersion = Number(taskRes?.task?.version ?? 1);
+    for (const to of ["in_progress", "review"]) {
+      const r = await fetch(`${BASE}/api/projects/${code}/tasks/${linkedTaskId}/transition`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to_status: to, expected_version: taskVersion }),
+      }).then((x) => x.json()).catch(() => ({}));
+      taskVersion = Number(r?.task?.version ?? taskVersion + 1);
+    }
+    const linked = await fetch(`${BASE}/api/projects/${code}/deliveries`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "验收自动完成任务", kind: "other", task_id: linkedTaskId, summary: "完成" }),
+    }).then((r) => r.json()).catch(() => ({}));
+    const linkedId = linked?.delivery?.id;
+    check(Boolean(linkedId), "创建关联任务的交付", String(linkedId || JSON.stringify(linked).slice(0, 60)));
+
+    await page.goto(`${BASE}/#/p/${code}/deliveries`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });   // 新建的交付要让列表重新拉取
+    await page.locator(`[data-testid="delivery-detail-${linkedId}"]`).waitFor({ state: "visible", timeout: 15000 });
+    await page.locator(`[data-testid="delivery-detail-${linkedId}"]`).click();
+    await page.locator('[data-testid="delivery-detail-review"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    await page.locator('[data-testid="delivery-detail-review"]').click();
+    await page.locator("#dr-submit").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    await page.locator("#dr-submit").click();
+    await page.locator('[data-testid="delivery-notice"]').waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+    const notice = await page.locator('[data-testid="delivery-notice"]').innerText().catch(() => "");
+    check(notice.includes("自动标记为完成"), "验收通过后提示任务自动完成", notice.replace(/\s+/g, " ").slice(0, 70));
+    const taskAfter = await new Promise((resolve) => {
+      setTimeout(async () => {
+        const r = await fetch(`${BASE}/api/projects/${code}/tasks/${linkedTaskId}`).then((x) => x.json()).catch(() => ({}));
+        resolve(r?.task?.status || "");
+      }, 300);
+    });
+    check(taskAfter === "done", "关联任务状态变为 done", String(taskAfter));
+
     // 环节筛选：写进 URL，刷新不丢
     await page.locator('.dlv-stage[data-stage="rejected"]').click();
     await sleep(500);

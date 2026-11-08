@@ -157,6 +157,8 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
                 # 项目可通过 settings 缩短单次执行，验收/试跑时很有用
                 max_turns=settings.get("dispatch_max_turns"),
                 timeout_s=settings.get("dispatch_timeout_s"),
+                # 项目级 Bash 开关：默认关闭；开启后仍只放行前缀白名单。
+                allow_bash=bool(settings.get("execution_bash_enabled")),
             )
         except policy.ExecutorError as exc:
             _fail(conn, item_id, exc.code, exc.message)
