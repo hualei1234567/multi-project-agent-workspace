@@ -25,6 +25,9 @@ from . import store
 
 EXECUTOR_ENV = "AGWS_PLATFORM_EXECUTOR"
 SESSION_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: `claude --bg` 打印的是短 id（backgrounded · 94eaba41 / claude attach 94eaba41）
+SHORT_ID_RE = re.compile(r"backgrounded\s*·\s*([0-9a-zA-Z-]{6,64})")
+ATTACH_ID_RE = re.compile(r"claude (?:attach|stop)\s+([0-9a-zA-Z-]{6,64})")
 LAUNCH_TIMEOUT_S = 120
 QUERY_TIMEOUT_S = 20
 
@@ -80,6 +83,18 @@ def _trusted(repo: Path) -> bool | None:
         return None
     entry = (data.get("projects") or {}).get(str(repo)) or {}
     return bool(entry.get("hasTrustDialogAccepted"))
+
+
+def _resolve_session(repo: Path, session_id: str) -> str | None:
+    """短 id → 全 id。CLI 打印短 id，agents --json 里才有完整 sessionId。"""
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id or ""):
+        return session_id
+    sessions, _err = _agents(repo)
+    for item in sessions:
+        full = str(item.get("sessionId") or "")
+        if str(item.get("id") or "") == session_id or (full and full.startswith(session_id)):
+            return full or None
+    return None
 
 
 def preflight(project: dict[str, Any]) -> dict[str, Any]:
@@ -197,6 +212,11 @@ def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "loca
     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
     match = SESSION_ID_RE.search(output)
     session_id = match.group(0) if match else None
+    if session_id is None:
+        short = SHORT_ID_RE.search(output) or ATTACH_ID_RE.search(output)
+        if short:
+            # 短 id 解析成全 id：后续 --resume / stop 与 agents --json 对得上
+            session_id = _resolve_session(repo, short.group(1)) or short.group(1)
     if proc.returncode != 0 and not session_id:
         raise TeamError(
             "team_launch_failed", 409,
@@ -243,10 +263,14 @@ def instruct_team(project: dict[str, Any], session_id: str, instruction: str,
     text = (instruction or "").strip()
     if not text:
         raise TeamError("invalid_payload", 422, "指令不能为空")
-    if not re.fullmatch(r"[0-9a-f-]{36}", session_id or ""):
+    if not re.fullmatch(r"[0-9a-zA-Z-]{6,64}", session_id or ""):
         raise TeamError("invalid_payload", 422, "session_id 非法")
-    binary = _claude()
     repo = Path(str(project["repo_root"])).expanduser()
+    resolved = _resolve_session(repo, session_id)
+    if resolved is None:
+        raise TeamError("not_found", 404, "找不到该会话；请刷新会话列表后重试")
+    session_id = resolved
+    binary = _claude()
     try:
         proc = _run([binary, "--bg", "--resume", session_id, text], repo, LAUNCH_TIMEOUT_S)
     except subprocess.TimeoutExpired:

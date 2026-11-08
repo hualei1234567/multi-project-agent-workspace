@@ -121,7 +121,10 @@ def test_instruct_validates_and_resumes(env, monkeypatch):
     assert instruct_call["args"][3] == SESSION
     with pytest.raises(team.TeamError) as bad:
         team.instruct_team(_project(env), "not-a-session", "x")
-    assert bad.value.code == "invalid_payload"
+    assert bad.value.code == "not_found"  # 解析不到会话，明确 404 而不是误发指令
+    with pytest.raises(team.TeamError) as invalid:
+        team.instruct_team(_project(env), "bad id!", "x")
+    assert invalid.value.code == "invalid_payload"
 
 
 def test_status_merges_live_sessions(env, monkeypatch):
@@ -152,3 +155,19 @@ def test_untrusted_workspace_blocks_launch(env, monkeypatch):
     with pytest.raises(team.TeamError) as err:
         team.launch_team(_project(env), "开始")
     assert "工作区信任" in err.value.message
+
+
+def test_short_session_id_is_resolved_to_full(env, monkeypatch):
+    """claude --bg 只打印短 id；要能通过 agents --json 解析成全 id。"""
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    short = "94eaba41"
+    live = [{"pid": 1, "cwd": str(env.repo), "kind": "background",
+             "id": short, "sessionId": SESSION, "status": "busy"}]
+    _fake_run(
+        monkeypatch,
+        stdout=f"backgrounded · {short}\n  claude attach {short}\n",
+        agents_stdout=json.dumps(live),
+    )
+    result = team.launch_team(_project(env), "只回复 OK")
+    assert result["session_id"] == SESSION
