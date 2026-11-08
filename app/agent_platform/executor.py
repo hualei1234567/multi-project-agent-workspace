@@ -189,6 +189,7 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
             " started_at=?, updated_at=? WHERE id=?",
             (started, started, item_id),
         )
+        _set_agent_status(conn, item["agent_id"], "working", item["task_id"])
         _event(conn, item_id, "started", "leased", "running",
                {"role": spec.role_key, "cwd": str(spec.cwd)})
 
@@ -324,8 +325,24 @@ def _append_log(conn, item_id: str, stream: str, seq: int, content: str) -> None
         pass
 
 
-def _finish(conn, item_id: str, status: str, exit_code: int | None,
-            error_code: str | None, error_summary: str | None, task,
+def _set_agent_status(conn, agent_id: str | None, status: str,
+                      task_id: str | None) -> None:
+    """同步 Agent 状态与心跳，供资源池/看板展示。
+
+    执行器不写这三列时，调度过的 Agent 会一直停留在 offline，底部资源池
+    永远显示 0。这里只更新调度相关字段，不触碰团队配置。
+    """
+    if not agent_id:
+        return
+    now = store.now_iso()
+    conn.execute(
+        "UPDATE project_agents SET status=?, current_task_id=?,"
+        " last_heartbeat_at=?, last_seen_at=? WHERE id=?",
+        (status, task_id, now, now, agent_id),
+    )
+
+
+def _finish(conn, item_id: str, status: str, exit_code: int | None,            error_code: str | None, error_summary: str | None, task,
             extra: dict[str, Any] | None = None) -> None:
     now = store.now_iso()
     with store.write_tx(conn):
@@ -341,10 +358,12 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,
         })
         _refresh_plan_status(conn, item_id)
         row = conn.execute(
-            "SELECT project_id, task_id, role_key, attempt FROM dispatch_items WHERE id = ?",
+            "SELECT project_id, task_id, role_key, attempt, agent_id FROM dispatch_items WHERE id = ?",
             (item_id,),
         ).fetchone()
         if row is not None:
+            # 执行结束后回到 idle，资源池才能把它算作「可用」。
+            _set_agent_status(conn, row["agent_id"], "idle", None)
             _record_execution(conn, item_id, row, status, exit_code)
             _safe_audit(
                 conn, row["project_id"], "dispatch.item.finish", "dispatch_item", item_id,

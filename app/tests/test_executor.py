@@ -248,3 +248,54 @@ def test_agent_uses_role_when_definition_exists(env):
     item = _item(env, "EX-201")
     argv = executor.run_item(item["id"], dry_run=True)["argv"]
     assert argv[argv.index("--agent") + 1] == "frontend-engineer"
+
+
+# ---------------------------------------------------------------------------
+# Agent 状态同步（底部资源池）
+# ---------------------------------------------------------------------------
+def test_agent_status_synced_working_then_idle(env):
+    """执行开始写 working、结束写 idle，否则资源池永远显示 0。"""
+    agent = _agent(env, "backend-engineer")
+    conn = _conn(env)
+    try:
+        with store.write_tx(conn):
+            executor._set_agent_status(conn, agent["id"], "working", "task-1")
+        row = conn.execute(
+            "SELECT status, current_task_id, last_heartbeat_at FROM project_agents"
+            " WHERE id = ?", (agent["id"],)
+        ).fetchone()
+        assert row["status"] == "working"
+        assert row["current_task_id"] == "task-1"
+        assert row["last_heartbeat_at"]
+
+        with store.write_tx(conn):
+            executor._set_agent_status(conn, agent["id"], "idle", None)
+        row = conn.execute(
+            "SELECT status, current_task_id FROM project_agents WHERE id = ?",
+            (agent["id"],),
+        ).fetchone()
+        assert row["status"] == "idle"
+        assert row["current_task_id"] is None
+
+        assert service.overview(conn)["agent_idle"] >= 1
+    finally:
+        conn.close()
+
+
+def test_set_agent_status_ignores_missing_agent():
+    """没有 agent_id 时静默返回，不影响调度结果。"""
+    executor._set_agent_status(None, None, "idle", None)
+
+
+def test_bootstrapped_agents_start_idle_and_counted(env):
+    """平台创建的 Agent 默认 idle，底部资源池才能显示「可用」。"""
+    conn = _conn(env)
+    try:
+        rows = conn.execute(
+            "SELECT status FROM project_agents WHERE project_id='default'"
+        ).fetchall()
+        assert len(rows) == 7
+        assert all(row["status"] == "idle" for row in rows)
+        assert service.overview(conn)["agent_idle"] == 7
+    finally:
+        conn.close()

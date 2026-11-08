@@ -182,7 +182,7 @@ def ensure_project_agents(
                  execution_mode, status, current_task_id, parent_agent_id,
                  current_branch, worktree_path, last_heartbeat_at, metadata_json,
                  role_snapshot_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', NULL, NULL, NULL, NULL, NULL, '{}', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', NULL, NULL, NULL, NULL, NULL, '{}', ?)
             """,
             (
                 agent_id,
@@ -1186,6 +1186,22 @@ def _norm_role_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+_EXEC_STATE = {
+    "succeeded": "ok", "completed": "ok", "success": "ok", "ok": "ok", "done": "ok",
+    "failed": "failed", "error": "failed",
+    "running": "running", "in_progress": "running",
+}
+
+
+def _exec_state(execution: dict[str, Any]) -> str:
+    """执行记录自身的结果；未知状态一律「未验证」。"""
+    status = str(execution.get("status") or "").strip().lower()
+    state = _EXEC_STATE.get(status)
+    if state == "running" and execution.get("finished_at"):
+        return "ok"
+    return state or "unverified"
+
+
 def _agent_state(
     agent: dict[str, Any],
     events: list[dict[str, Any]],
@@ -1194,7 +1210,7 @@ def _agent_state(
 ) -> str:
     """单个 Agent 的当前执行状态。
 
-    顺序：明确的自报且心跳新鲜 → 运行中；再看执行证据；最后看执行记录。
+    顺序：明确的自报且心跳新鲜 → 运行中；再看执行事件；没有事件就看执行记录。
     没有任何证据时返回 ``none``（页面显示「无执行记录」），绝不默认「正常」。
     """
     heartbeat = str(agent.get("last_heartbeat_at") or "")
@@ -1204,11 +1220,13 @@ def _agent_state(
         state = _event_state(events[0], fresh_cutoff)
         if state in {"running", "failed"}:
             return state
-    for ex in executions:
-        if ex.get("status") == "running" and not ex.get("finished_at"):
-            return "running"
     if events:
         return _event_state(events[0], fresh_cutoff)
+    for ex in executions:
+        if _exec_state(ex) == "running":
+            return "running"
+    if executions:
+        return _exec_state(executions[0])
     return "none"
 
 
@@ -1232,6 +1250,14 @@ def agent_activity(project_id: str) -> dict[str, Any]:
                 "SELECT id, task_key FROM tasks WHERE project_id = ?", (project_id,)
             )
         }
+        # executions.agent_id 可能存 Agent 主键，也可能存 role_key（历史采集口径不一致），
+        # 两种都要归到同一个 Agent 上，否则卡片会显示「无执行记录」。
+        alias: dict[str, str] = {}
+        for agent in agents:
+            alias[agent["id"]] = agent["id"]
+            alias[agent["role_key"]] = agent["id"]
+            alias[_norm_role_key(agent["role_key"])] = agent["id"]
+            alias[_norm_role_key(agent["display_name"])] = agent["id"]
         events_by_agent: dict[str, list[dict[str, Any]]] = {}
         event_total = 0
         last_event_at = None
@@ -1248,7 +1274,9 @@ def agent_activity(project_id: str) -> dict[str, Any]:
             item["state"] = _event_state(item, fresh_cutoff)
             item["state_label"] = TIMELINE_STATE_LABEL[item["state"]]
             item["type_label"] = _EVENT_TYPE_LABEL.get(item["event_type"], item["event_type"])
-            events_by_agent.setdefault(row["agent_id"] or "", []).append(item)
+            raw = row["agent_id"] or ""
+            probe = raw if raw in alias else (alias.get(_norm_role_key(raw)) or raw)
+            events_by_agent.setdefault(probe, []).append(item)
         exec_by_agent: dict[str, list[dict[str, Any]]] = {}
         execution_total = 0
         for row in conn.execute(
@@ -1257,7 +1285,9 @@ def agent_activity(project_id: str) -> dict[str, Any]:
             (project_id,),
         ):
             execution_total += 1
-            exec_by_agent.setdefault(row["agent_id"] or "", []).append(dict(row))
+            raw = row["agent_id"] or ""
+            key = alias.get(raw) or alias.get(_norm_role_key(raw)) or raw
+            exec_by_agent.setdefault(key, []).append(dict(row))
 
         out: list[dict[str, Any]] = []
         for agent in agents:
@@ -1287,6 +1317,7 @@ def agent_activity(project_id: str) -> dict[str, Any]:
                 "last_event_type": events[0]["type_label"] if events else None,
                 "last_message": events[0]["message"] if events else None,
                 "counts": counts,
+                "execution_total": len(execs),
                 "last_execution": last_exec,
                 "executions": execs[:AGENT_EXEC_LIMIT],
                 "events": events[:AGENT_EVENT_LIMIT],
@@ -1702,7 +1733,7 @@ def apply_team(project_id: str, payload: dict[str, Any] | None = None) -> dict[s
                     INSERT INTO project_agents
                         (id, project_id, role_key, display_name, instance_key, agent_type,
                          execution_mode, status, metadata_json, role_snapshot_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', '{}', ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', '{}', ?)
                     """,
                     (
                         agent_id,

@@ -3068,6 +3068,14 @@ function agentExecLine(act) {
   if (counts.failed) bits.push(`失败 ${counts.failed}`);
   if (counts.unverified) bits.push(`未验证 ${counts.unverified}`);
   const dot = act.state === "running" ? "live active" : esc(act.state);
+  if (!act.last_event_at && act.execution_total) {
+    const exState = act.last_execution ? act.last_execution.status : "unknown";
+    return `<div class="role-exec ${esc(act.state)}" data-testid="role-exec-${esc(agentRoleKey(act.role_key))}">
+      <span class="pdot ${dot}"></span>
+      <span class="re-label">${esc(act.state_label)}</span>
+      <span class="re-sub">执行 ${act.execution_total} 次 · 最近 ${esc(ago(act.last_execution?.finished_at || act.last_execution?.started_at))} · ${esc(exState)}</span>
+    </div>`;
+  }
   if (!act.last_event_at) {
     return `<div class="role-exec ${esc(act.state)}" data-testid="role-exec-${esc(agentRoleKey(act.role_key))}">
       <span class="pdot ${dot}"></span>
