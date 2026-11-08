@@ -281,9 +281,15 @@ def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "loca
     binary = _claude()
     repo = Path(str(project["repo_root"])).expanduser()
     agent = owner_agent(project)
+    # 项目没有 .claude/agents/<agent>.md 时，--agent 只会报警并退回默认模板；
+    # 与其发一条永远失败的会话，不如显式去掉 --agent，并在结果里说明。
+    agent_defined = (repo / ".claude" / "agents" / f"{agent}.md").is_file()
+    args = [binary, "--bg", _team_prompt(project, text)]
+    if agent_defined:
+        args = [binary, "--agent", agent, "--bg", _team_prompt(project, text)]
     try:
         # --agent 决定这个真实会话以哪个角色运行；--bg 让它作为后台会话存在
-        proc = _run([binary, "--agent", agent, "--bg", _team_prompt(project, text)], repo, LAUNCH_TIMEOUT_S)
+        proc = _run(args, repo, LAUNCH_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise TeamError("team_timeout", 504, "启动后台会话超时")
     except OSError as exc:
@@ -341,6 +347,12 @@ def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "loca
         "ok": True,
         "record_id": record_id,
         "session_id": session_id,
+        "agent": agent,
+        "agent_defined": agent_defined,
+        "note": None if agent_defined else (
+            f"项目未定义 .claude/agents/{agent}.md，本次用默认模板启动；"
+            "角色约束已写进指令正文，行为不受影响。"
+        ),
         "output": output[:2000],
         "status": status,
     }

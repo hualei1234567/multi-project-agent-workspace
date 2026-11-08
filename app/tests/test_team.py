@@ -39,6 +39,8 @@ def env(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     _write(repo / "ai-team" / "TASK_BOARD.md", "# Board\n\n| Task ID | 标题 |\n|---|---|\n")
+    # 默认项目定义好总负责人角色（真实项目里有 .claude/agents/general-owner.md）
+    _write(repo / ".claude" / "agents" / "general-owner.md", "# General Owner\n")
     monkeypatch.setenv("AGWS_PLATFORM_DB", str(db_path))
     config_file = tmp_path / "projects.json"
     config_file.write_text(json.dumps({"projects": []}), encoding="utf-8")
@@ -177,11 +179,25 @@ def test_short_session_id_is_resolved_to_full(env, monkeypatch):
 def test_launch_uses_configured_owner_agent(env, monkeypatch):
     monkeypatch.setenv(team.EXECUTOR_ENV, "on")
     monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    _write(env.repo / ".claude" / "agents" / "system-architect.md", "# System Architect\n")
     service.patch_project("default", {"settings_json": {"team_owner_agent": "system-architect"}})
     calls = _fake_run(monkeypatch, stdout=f"started {SESSION}\n")
     team.launch_team(_project(env), "做架构评估")
     launch = next(c for c in calls if "--bg" in c["args"])
     assert launch["args"][:3] == ["/usr/bin/claude", "--agent", "system-architect"]
+
+
+def test_launch_skips_agent_when_definition_missing(env, monkeypatch):
+    """项目没有 .claude/agents/<role>.md 时不要传 --agent（CLI 只会警告并退回默认模板）。"""
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    (env.repo / ".claude" / "agents" / "general-owner.md").unlink()
+    calls = _fake_run(monkeypatch, stdout=f"backgrounded · {SESSION}\n")
+    result = team.launch_team(_project(env), "待命")
+    launch = next(c for c in calls if "--bg" in c["args"])
+    assert "--agent" not in launch["args"]
+    assert result["agent_defined"] is False
+    assert "默认模板" in (result["note"] or "")
 
 
 def test_session_logs_returns_tail(env, monkeypatch):
