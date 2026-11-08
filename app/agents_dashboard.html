@@ -156,6 +156,7 @@ a { color: var(--primary); }
 }
 .search:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent); }
 .search input { border: 0; outline: 0; background: transparent; color: var(--text); width: 100%; font-size: 13px; min-width: 0; text-overflow: ellipsis; }
+
 .search input::placeholder { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .btn {
   border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px;
@@ -792,7 +793,7 @@ td.wrap2 { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 }
 
 /* ---------- v3 深色科技风 ---------- */
-.topbar .toolbar { flex-wrap: nowrap; gap: 6px; }
+.topbar .toolbar { flex-wrap: nowrap; gap: 6px; min-width: 0; flex-shrink: 1; }
 .icon-btn {
   width: 30px; height: 30px; flex: none; display: inline-grid; place-items: center;
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text-2);
@@ -1156,7 +1157,7 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .nsel.open .nsel-arrow { transform: translateY(1px) rotate(-135deg); }
 .nsel-menu {
   position: absolute; left: 0; top: calc(100% + 7px); min-width: max(100%, 132px); width: max-content; max-width: 280px;
-  padding: 6px; border-radius: 14px; z-index: 80;
+  padding: 6px 6px 8px; border-radius: 14px; z-index: 900;
   background: linear-gradient(180deg, var(--panel), color-mix(in srgb, var(--panel) 94%, black 6%));
   -webkit-backdrop-filter: blur(16px) saturate(1.15); backdrop-filter: blur(16px) saturate(1.15);
   border: 1px solid var(--line-strong, var(--line));
@@ -1272,6 +1273,24 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .tdl.failed { color: var(--bad, #f85149); border-color: currentColor; }
 .tdl.dispatched, .tdl.pending { color: var(--accent); border-color: currentColor; }
 
+
+.re-win { font-size: 11px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px; padding: 1px 8px; }
+
+/* 顶栏在窄屏不再顶出视口：控件优先保留，面包屑/上下文条先让位 */
+.topbar .toolbar { flex: 0 0 auto; }
+.topbar .crumb { flex: 0 1 auto; min-width: 0; }
+#ctx-bar { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+#ctx-bar > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.global-search { flex: 0 1 340px; min-width: 96px; }
+.global-search input { min-width: 0; width: 100%; }
+.toolbar .icon-btn, .toolbar .iv-quick, .toolbar .live { flex: none; }
+@media (max-width: 1420px) { .user-chip .user-name { display: none; } }
+@media (max-width: 1360px) { .global-search { flex-basis: 220px; } .crumb .cur { max-width: 28vw; } }
+@media (max-width: 1300px) { #btn-help, .global-search kbd { display: none; } .global-search { flex-basis: 170px; } }
+@media (max-width: 1220px) { #btn-notify, #nav-settings-top { display: none; } }
+@media (max-width: 1140px) { .iv-cap, .live .sync { display: none; } }
+@media (max-width: 1080px) { .crumb { display: none; } }
 </style>
 </head>
 <body>
@@ -3682,6 +3701,10 @@ function agentExecLine(act) {
       <span class="re-sub">未采集到该角色的事件或执行记录</span>
     </div>`;
   }
+  const win = act.window;
+  const winLine = win
+    ? `<span class="re-win" title="项目总负责人窗口：平台里选定的那个 Claude CLI 窗口">窗口 ${esc(win.name || String(win.session_id || "").slice(0, 8))} · ${esc(win.device_id)} · ${win.online ? (win.status === "busy" ? "运行中" : "在线") : "离线"}</span>`
+    : "";
   const wt = (APP.state?.worktrees || []).find(w => agentRoleKey(w.role) === agentRoleKey(act.role_key));
   const wtLine = wt
     ? (wt.present === false
@@ -3693,6 +3716,7 @@ function agentExecLine(act) {
     <span class="re-label">${esc(act.state_label)}</span>
     <span class="re-sub">最近 ${esc(ago(act.last_event_at))}</span>
     ${bits.length ? `<span class="re-counts">${esc(bits.join(" · "))}</span>` : ""}
+    ${winLine}
     ${wtLine}
   </div>`;
 }
@@ -7065,18 +7089,47 @@ function enhanceSelect(sel) {
         <span>${esc(o.textContent.trim())}</span><i class="nsel-check" aria-hidden="true"></i>
       </button>`).join("");
   };
+  // 浮层用 fixed 定位：面板普遍是 overflow:hidden，absolute 会被裁掉底部（真实缺陷）。
+  const positionMenu = (rect) => {
+    const gap = 7, vh = window.innerHeight, vw = window.innerWidth;
+    const width = Math.max(rect.width, 168);
+    const maxH = Math.max(180, Math.min(320, Math.round(vh * 0.55)));
+    menu.style.position = "fixed";
+    menu.style.maxHeight = `${maxH}px`;
+    menu.style.overflowY = "auto";
+    menu.style.minWidth = `${width}px`;
+    menu.style.maxWidth = `${Math.min(340, vw - 24)}px`;
+    menu.style.left = `${Math.max(12, Math.min(rect.left, vw - width - 12))}px`;
+    const below = vh - rect.bottom - gap;
+    const above = rect.top - gap;
+    if (below < Math.min(maxH, 220) && above > below) {
+      wrap.classList.add("up");
+      menu.style.top = "auto";
+      menu.style.bottom = `${vh - rect.top + gap}px`;
+    } else {
+      wrap.classList.remove("up");
+      menu.style.bottom = "auto";
+      menu.style.top = `${rect.bottom + gap}px`;
+    }
+  };
+  const onViewportChange = () => { if (wrap.classList.contains("open")) close(); };
   const open = () => {
     if (sel.disabled) return;
     closeAllPickers(wrap);
     buildMenu();
     wrap.classList.add("open");
-    const rect = wrap.getBoundingClientRect();
-    wrap.classList.toggle("up", rect.bottom + 260 > window.innerHeight);
+    positionMenu(wrap.getBoundingClientRect());
     const on = menu.querySelector(".nsel-opt.on");
     if (on) on.scrollIntoView({ block: "nearest" });
     bindPickerOutside();
+    window.addEventListener("scroll", onViewportChange, true);
+    window.addEventListener("resize", onViewportChange);
   };
-  const close = () => wrap.classList.remove("open");
+  const close = () => {
+    wrap.classList.remove("open");
+    window.removeEventListener("scroll", onViewportChange, true);
+    window.removeEventListener("resize", onViewportChange);
+  };
   const choose = (idx) => {
     if (idx < 0 || idx >= sel.options.length) return;
     if (sel.options[idx].disabled) return;

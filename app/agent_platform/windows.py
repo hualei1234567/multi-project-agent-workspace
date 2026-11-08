@@ -115,7 +115,7 @@ def bind_window(project_id: str, device_id: str, session_id: str, *,
         ).fetchone()
         if target is None:
             raise WindowError("not_found", 404, "该窗口未登记；请先在对应机器启动桥接")
-        settings = store.loads_json(project.get("settings_json"), {}) or {}
+        settings = dict(_settings(project))
         settings[BIND_SETTING] = {
             "device_id": device_id,
             "session_id": session_id,
@@ -129,8 +129,37 @@ def bind_window(project_id: str, device_id: str, session_id: str, *,
     return {"project_id": project_id, "bound": settings[BIND_SETTING]}
 
 
+def bound_window(conn: sqlite3.Connection, project: dict[str, Any]) -> dict[str, Any] | None:
+    """项目绑定的总负责人窗口 + 该窗口的实时状态（离线也返回，便于页面显示「已离线」）。"""
+    bound = _bound(project)
+    if not bound:
+        return None
+    row = conn.execute(
+        "SELECT * FROM device_sessions WHERE device_id = ? AND session_id = ?",
+        (bound.get("device_id"), bound.get("session_id")),
+    ).fetchone()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ONLINE_SECONDS)).isoformat(timespec="seconds")
+    live = dict(row) if row else {}
+    return {
+        **bound,
+        "name": live.get("name"),
+        "status": live.get("status"),
+        "pid": live.get("pid"),
+        "cwd": live.get("cwd"),
+        "online": bool(live) and str(live.get("reported_at") or "") >= cutoff,
+    }
+
+
+def _settings(project: dict[str, Any]) -> dict[str, Any]:
+    """settings_json 可能是字符串，也可能已经被上层解析成 dict。"""
+    raw = project.get("settings_json")
+    if isinstance(raw, dict):
+        return raw
+    return store.loads_json(raw, {}) or {}
+
+
 def _bound(project: dict[str, Any]) -> dict[str, Any] | None:
-    settings = store.loads_json(project.get("settings_json"), {}) or {}
+    settings = _settings(project)
     value = settings.get(BIND_SETTING)
     return value if isinstance(value, dict) else None
 

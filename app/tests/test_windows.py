@@ -95,3 +95,16 @@ def test_unknown_window_and_empty_instruction(env):
     with pytest.raises(windows.WindowError) as err2:
         windows.enqueue_command("default", "mac-1", "s-1", "   ")
     assert err2.value.code == "invalid_payload"
+
+
+def test_agent_activity_exposes_bound_window_on_owner(env):
+    """绑定后：总负责人卡片要能拿到「窗口」信息（settings_json 是字符串或 dict 都要支持）。"""
+    _report(env.repo)
+    windows.bind_window("default", "mac-1", "s-1")
+    data = service.agent_activity("default")
+    owner = next((a for a in data["agents"] if a.get("window")), None)
+    assert owner is not None, "没有任何 Agent 带上窗口信息"
+    assert owner["window"]["session_id"] == "s-1"
+    assert owner["window"]["device_id"] == "mac-1"
+    assert owner["window"]["online"] is True
+    assert str(owner.get("role_key") or "").lower() in ("general-owner", "owner")

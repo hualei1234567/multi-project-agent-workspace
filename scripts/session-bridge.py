@@ -32,24 +32,37 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
 SHORT_ID_RE = re.compile(r"backgrounded\s*·\s*([0-9a-zA-Z-]{6,64})")
 
 
 def _http(method: str, url: str, payload: dict | None = None, token: str = "", timeout: int = 20) -> dict:
+    """走 curl，不用 urllib。
+
+    原因（实测）：这台 Mac 上 python 进程访问局域网会直接 EHOSTUNREACH，
+    而 curl / nc / ssh 都能连通——属于系统层面对 python 二进制的网络限制。
+    桥接必须稳定连上平台，所以统一用 curl 传输，python 只负责流程。
+    """
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
+    cmd = ["curl", "-sS", "--max-time", str(timeout), "-X", method,
+           "-H", "Content-Type: application/json"]
     if token:
-        req.add_header("Authorization", f"Bearer {token}")
+        cmd += ["-H", f"Authorization: Bearer {token}"]
+    if data is not None:
+        cmd += ["--data-binary", "@-"]
+    cmd.append(url)
+    proc = subprocess.run(cmd, input=data, capture_output=True, timeout=timeout + 10, check=False)
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:300]
+        raise RuntimeError(f"{method} {url} → curl 退出码 {proc.returncode}：{err}")
+    text = (proc.stdout or b"").decode("utf-8", "replace")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:300]
-        raise RuntimeError(f"{method} {url} → {exc.code} {body}") from exc
+        payload_out = json.loads(text or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{method} {url} → 响应不是 JSON：{text[:200]}") from exc
+    if isinstance(payload_out, dict) and payload_out.get("ok") is False:
+        raise RuntimeError(f"{method} {url} → {payload_out.get('error')}: {payload_out.get('message')}")
+    return payload_out
 
 
 def claude_bin() -> str:

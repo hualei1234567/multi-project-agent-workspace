@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import activity, sources, store, templates
+from . import activity, sources, store, templates, windows
 
 #: 只有在**没有任何纳管配置**时才使用的占位项目（测试 / 裸环境）。
 #: 配了 config/projects.json 时不会创建它。
@@ -1334,6 +1334,15 @@ def agent_activity(project_id: str) -> dict[str, Any]:
                 "executions": execs[:AGENT_EXEC_LIMIT],
                 "events": events[:AGENT_EVENT_LIMIT],
             })
+        # 项目总负责人 = 平台里选定的那个窗口（没有绑定就不加这个字段）
+        bound = windows.bound_window(conn, project)
+        if bound:
+            owner = next(
+                (a for a in out if str(a.get("role_key") or "").lower() in ("general-owner", "owner")),
+                out[0] if out else None,
+            )
+            if owner is not None:
+                owner["window"] = bound
         repo_root = str(project.get("repo_root") or "")
         note = None
         if not agents:
