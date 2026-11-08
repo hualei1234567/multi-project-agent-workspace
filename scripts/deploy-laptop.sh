@@ -24,33 +24,53 @@ done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# 守护：systemd 重启会清掉执行器拉起的 claude 进程组。有在途调度项时默认拒绝重启。
+# 守护：systemd 重启会清掉执行器拉起的 claude 进程组。
+# 只查一次会有竞态（查的时候还 queued，重启前刚好 running），所以有两个动作：
+#   1) 部署开始时先做一次快速检查，明显在跑就直接退出；
+#   2) **重启前**再走一道静默门：要求最近 90 秒无调度活动，且连续两次采样都安静。
+QUIET_WINDOW_SECONDS=90
+
+dispatch_state() {
+  ssh "$HOST" "cd $TARGET && .venv/bin/python - <<'PY' 2>/dev/null || echo ERR
+import sqlite3, datetime
+c = sqlite3.connect('data/platform.db')
+now = datetime.datetime.now(datetime.timezone.utc)
+cut = (now - datetime.timedelta(seconds=$QUIET_WINDOW_SECONDS)).isoformat(timespec='seconds')
+run = c.execute(
+    \"select count(*) from dispatch_items where status in ('running','leased')\"
+).fetchone()[0]
+recent = c.execute(
+    \"select count(*) from dispatch_items where coalesce(finished_at, started_at) >= ?\", (cut,)
+).fetchone()[0]
+queued = c.execute(
+    \"select count(*) from dispatch_items where status = 'queued'\"
+).fetchone()[0]
+print(f'run={run} recent={recent} queued={queued}')
+PY"
+}
+
+parse_state() {
+  RUNNING="$(echo "$1" | sed -n 's/.*run=\([0-9]*\).*/\1/p')"
+  RECENT="$(echo "$1" | sed -n 's/.*recent=\([0-9]*\).*/\1/p')"
+  QUEUED="$(echo "$1" | sed -n 's/.*queued=\([0-9]*\).*/\1/p')"
+}
+
 if (( ! FORCE )); then
   echo "[deploy] 检查在途调度项"
-  STATE="$(ssh "$HOST" "cd $TARGET && .venv/bin/python - <<'PY' 2>/dev/null || true
-import sqlite3
-c = sqlite3.connect('data/platform.db')
-rows = dict(c.execute(
-    \"select status, count(*) from dispatch_items where status in ('running','leased','queued') group by 1\"
-).fetchall())
-print(f\"running={rows.get('running', 0)} leased={rows.get('leased', 0)} queued={rows.get('queued', 0)}\")
-PY"
-)"
-  RUNNING="$(echo "$STATE" | sed -n 's/.*running=\([0-9]*\).*/\1/p')"
-  LEASED="$(echo "$STATE" | sed -n 's/.*leased=\([0-9]*\).*/\1/p')"
-  QUEUED="$(echo "$STATE" | sed -n 's/.*queued=\([0-9]*\).*/\1/p')"
+  STATE="$(dispatch_state)"
+  parse_state "$STATE"
   if [[ -z "$RUNNING" ]]; then
     echo "[deploy] ⚠ 读不到调度状态（$STATE），按有风险处理；确认无影响后加 --force"
     exit 2
   fi
-  if (( RUNNING > 0 || LEASED > 0 )); then
+  if (( RUNNING > 0 )); then
     echo "[deploy] ✘ 有正在执行的调度项：$STATE"
     echo "         重启会杀掉执行器拉起的 claude 进程；等它们结束，或确认无影响后加 --force"
     exit 2
   fi
-  echo "[deploy] ✓ 无运行中的执行器进程（$STATE）"
+  echo "[deploy] ✓ 部署开始时无运行中的执行器进程（$STATE）"
   if (( QUEUED > 0 )); then
-    echo "[deploy] ⚠ 仍有 $QUEUED 个排队项；请确认派发器已暂停，否则它可能在部署窗口内拉起新进程"
+    echo "[deploy] ⚠ 仍有 $QUEUED 个排队项；重启前会再检查一次是否被派发"
   fi
 fi
 
@@ -77,6 +97,39 @@ ssh "$HOST" "grep -rqs 'AGWS_PLATFORM_' /etc/systemd/system/agent-platform.servi
 
 echo "[deploy] 远端跑测试"
 ssh "$HOST" "cd $TARGET && .venv/bin/python -m pytest app/tests -q 2>&1 | tail -3"
+
+# 重启前静默门：堵住「检查时还 queued、重启时已 running」的竞态
+if (( ! FORCE )); then
+  echo "[deploy] 重启前静默检查（最近 ${QUIET_WINDOW_SECONDS}s 无调度活动，连续 2 次）"
+  quiet=0
+  for ((i = 0; i < 18; i++)); do
+    STATE="$(dispatch_state)"
+    parse_state "$STATE"
+    if [[ -z "$RUNNING" ]]; then
+      echo "[deploy] ⚠ 读不到调度状态（$STATE），跳过重启；确认后可加 --force 重跑" >&2
+      exit 2
+    fi
+    if (( RUNNING > 0 )); then
+      echo "[deploy] ✘ 重启前发现执行器已启动：$STATE" >&2
+      echo "         已跳过重启（代码已同步，服务仍在跑旧版本）；等任务结束后重跑本脚本" >&2
+      exit 2
+    fi
+    if (( RECENT == 0 )); then
+      quiet=$((quiet + 1))
+    else
+      quiet=0
+    fi
+    if (( quiet >= 2 )); then
+      echo "[deploy] ✓ 静默窗口确认（$STATE）"
+      break
+    fi
+    sleep 10
+  done
+  if (( quiet < 2 )); then
+    echo "[deploy] ✘ 180 秒内没有形成静默窗口（$STATE）；已跳过重启" >&2
+    exit 2
+  fi
+fi
 
 echo "[deploy] 重启服务"
 ssh "$HOST" "sudo systemctl restart agent-platform && sleep 3 && systemctl is-active agent-platform"

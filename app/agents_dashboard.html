@@ -2786,7 +2786,10 @@ function renderOverviewPage(el) {
   const rate = (done != null && allTasks) ? Math.round(done / allTasks * 100) : null;
   const tokens = s.project_usage?.token_24h ?? null;
   const tokenSource = s.project_usage?.source || null;
-  const models = Array.isArray(s.usage?.model_breakdown) ? s.usage.model_breakdown : null;
+  // 模型构成优先用平台库（usage_breakdown），本机扫描只作兜底
+  const models = Array.isArray(s.usage_breakdown?.model_breakdown) && s.usage_breakdown.model_breakdown.length
+    ? s.usage_breakdown.model_breakdown
+    : (Array.isArray(s.usage?.model_breakdown) ? s.usage.model_breakdown : null);
   const modelCount = models ? models.length : null;
   const topModel = models && models.length ? [...models].sort((a, b) => (b.tokens || 0) - (a.tokens || 0))[0] : null;
   const stalled = hasRoster ? counts.stalled : null;
@@ -2895,17 +2898,20 @@ function renderUsageRich(s, container) {
   const cost = pu?.cost_24h ?? u?.cost_usd ?? null;
   const costScope = pu?.cost_24h != null ? "项目口径" : (u?.cost_usd != null ? "本机口径" : "—");
   const source = pu?.source || (u?.source === "ccusage" ? "ccusage" : u?.source || "—");
-  const cache = u?.cache_read_tokens;
-  const inp = u?.input_tokens;
-  const out = u?.output_tokens;
+  // 优先用平台库（token_usage_events）的明细；本机 ccusage 只作兜底
+  const ub = s.usage_breakdown && s.usage_breakdown.available ? s.usage_breakdown : null;
+  const cache = ub ? ub.today_tokens.cache_read : u?.cache_read_tokens;
+  const inp = ub ? ub.today_tokens.input : u?.input_tokens;
+  const out = ub ? ub.today_tokens.output : u?.output_tokens;
   const sum = (cache || 0) + (inp || 0) + (out || 0);
-  const compOk = Boolean(u) && sum > 0;
-  const days = Array.isArray(u?.days) ? u.days.slice(-6) : [];
+  const compOk = sum > 0;
+  const days = ub ? (ub.days || []).slice(-6) : (Array.isArray(u?.days) ? u.days.slice(-6) : []);
   const maxDay = Math.max(1, ...days.map(d => d.tokens || 0));
-  const models = Array.isArray(u?.model_breakdown) ? u.model_breakdown : [];
+  const models = ub ? (ub.model_breakdown || []) : (Array.isArray(u?.model_breakdown) ? u.model_breakdown : []);
   const maxModel = Math.max(1, ...models.map(m => m.tokens || 0));
+  const scopeLabel = ub ? "项目口径" : "本机口径";
   const srcEl = $("#usage-src");
-  if (srcEl) srcEl.textContent = u?.source === "ccusage" ? "ccusage" : "本机口径";
+  if (srcEl) srcEl.textContent = ub ? "平台库" : (u?.source === "ccusage" ? "ccusage" : "本机口径");
 
   container.innerHTML = `
     <div>
@@ -2919,7 +2925,7 @@ function renderUsageRich(s, container) {
     </div>
     <div class="divider"></div>
     <div>
-      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">本机口径</span></div>
+      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">${scopeLabel}</span></div>
       ${compOk ? `<div class="usage-bar" style="display:flex;margin-top:6px">
         <i style="width:${(cache/sum*100).toFixed(1)}%;border-radius:0"></i>
         <i style="width:${(inp/sum*100).toFixed(1)}%;background:#7b5cff;border-radius:0"></i>
@@ -2931,7 +2937,7 @@ function renderUsageRich(s, container) {
     </div>
     <div class="divider"></div>
     <div>
-      <div class="u-label">近 6 天用量 <span class="chip">本机口径</span></div>
+      <div class="u-label">近 6 天用量 <span class="chip">${scopeLabel}</span></div>
       ${days.length ? `<div class="mini-bars">${days.map((d, i) => `
         <div class="mb" title="${esc(d.date)} · ${fmtNum(d.tokens)} tokens">
           <i style="height:${Math.max(3, ((d.tokens || 0) / maxDay) * 100)}%;${i === days.length - 1 ? "background:#7b5cff" : ""}"></i>
@@ -2940,7 +2946,7 @@ function renderUsageRich(s, container) {
     </div>
     <div class="divider"></div>
     <div>
-      <div class="u-label">模型构成 <span class="chip">本机口径</span></div>
+      <div class="u-label">模型构成 <span class="chip">${scopeLabel}</span></div>
       ${models.length ? `<div class="model-list" style="margin-top:6px">${models.map(m => `
         <div class="ml">
           <div class="row"><span>${esc(m.name || "unknown")}</span><span>${fmtNum(m.tokens)}</span></div>

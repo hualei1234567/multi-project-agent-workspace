@@ -213,3 +213,30 @@ def test_portfolio_flags_mostly_unverified_execution(conn):
     assert p2["execution"]["counts"]["unverified"] == 3
     assert p2["risk"] in {"medium", "high"}
     assert any("未验证" in r for r in p2["risk_reasons"])
+
+
+def test_usage_breakdown_from_platform_db(conn):
+    """用量构成/趋势/模型必须来自平台库，而不是本机 ccusage。"""
+    from agent_platform import service
+
+    today = NOW[:10]
+    rows = [
+        ("u1", "model-a", 100, 20, 30, 5, 150, f"{today}T01:00:00+00:00"),
+        ("u2", "model-b", 50, 10, 0, 0, 60, f"{today}T02:00:00+00:00"),
+        ("u3", "model-a", 10, 5, 0, 0, 15, "2026-11-01T01:00:00+00:00"),
+    ]
+    for rid, model, inp, out, cr, cw, total, at in rows:
+        conn.execute(
+            "INSERT INTO token_usage_events (id, project_id, session_id, message_uuid, model,"
+            " input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,"
+            " source, occurred_at) VALUES (?, 'p1', 's1', ?, ?, ?, ?, ?, ?, ?, 'transcript', ?)",
+            (rid, rid, model, inp, out, cr, cw, total, at),
+        )
+    data = service.usage_breakdown("p1", days=6)
+    assert data["available"] is True and data["source"] == "platform"
+    assert data["today_tokens"]["input"] == 150
+    assert data["today_tokens"]["output"] == 30
+    assert data["today_tokens"]["cache_read"] == 30
+    models = {m["name"]: m["tokens"] for m in data["model_breakdown"]}
+    assert models == {"model-a": 150, "model-b": 60}
+    assert sum(d["tokens"] for d in data["days"]) == 210

@@ -1492,6 +1492,63 @@ def session_trace(project_id: str, session_id: str, *, limit: int = 160) -> dict
     }
 
 
+def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
+    """项目用量明细：今日构成 / 近 N 天趋势 / 模型构成（来源：平台库 token_usage_events）。
+
+    与 ``project_usage``（24h 汇总）互补；数据为空时返回 ``available: false``，
+    前端再回退到本机扫描，并在 UI 上标注口径，不把两种来源混在一起。
+    """
+    days = max(1, min(int(days or 6), 30))
+    with store.session() as conn:
+        _require_project(conn, project_id)
+        today = datetime.now(timezone.utc).date()
+        start = (today - timedelta(days=days - 1)).isoformat()
+        rows = conn.execute(
+            "SELECT occurred_at, model, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_write_tokens, total_tokens, cost_usd"
+            " FROM token_usage_events WHERE project_id = ? AND occurred_at >= ?"
+            " ORDER BY occurred_at ASC",
+            (project_id, f"{start}T00:00:00"),
+        ).fetchall()
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+    per_day = {d.isoformat(): 0 for d in
+               [today - timedelta(days=days - 1 - i) for i in range(days)]}
+    models: dict[str, int] = {}
+    cost = 0.0
+    today_key = today.isoformat()
+    for row in rows:
+        occurred = str(row["occurred_at"] or "")
+        day = occurred[:10]
+        total = int(row["total_tokens"] or 0)
+        if day in per_day:
+            per_day[day] += total
+        if row["cost_usd"] is not None:
+            cost += float(row["cost_usd"])
+        if day != today_key:
+            continue
+        totals["input"] += int(row["input_tokens"] or 0)
+        totals["output"] += int(row["output_tokens"] or 0)
+        totals["cache_read"] += int(row["cache_read_tokens"] or 0)
+        totals["cache_write"] += int(row["cache_write_tokens"] or 0)
+        totals["total"] += total
+        name = str(row["model"] or "unknown")
+        models[name] = models.get(name, 0) + total
+    return {
+        "project_id": project_id,
+        "source": "platform",
+        "available": bool(rows),
+        "window_days": days,
+        "today": today_key,
+        "today_tokens": totals,
+        "days": [{"date": d, "tokens": per_day[d]} for d in sorted(per_day)],
+        "model_breakdown": [
+            {"name": name, "tokens": n}
+            for name, n in sorted(models.items(), key=lambda kv: kv[1], reverse=True)
+        ],
+        "cost_usd": round(cost, 6) if cost else None,
+    }
+
+
 def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
     page, size = _pagination(page, page_size)
     with store.session() as conn:

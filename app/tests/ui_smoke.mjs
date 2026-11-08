@@ -424,12 +424,14 @@ async function main() {
 
     // 全局搜索：服务端权限过滤 + 分组
     await page.goto(`${BASE}/#/search?q=material`, { waitUntil: "domcontentloaded" });
-    await settle(page, 900);
+    await page.waitForFunction(() => (document.querySelector("#view")?.innerText || "").includes("检索范围"),
+      null, { timeout: 20000 }).catch(() => {});
     const searchText = await page.locator("#view").innerText().catch(() => "");
     check(searchText.includes("检索范围"), "搜索页展示检索范围", searchText.replace(/\s+/g, " ").slice(0, 60));
     check(/项目/.test(searchText), "搜索有结果分组", searchText.replace(/\s+/g, " ").slice(0, 80));
     await page.goto(`${BASE}/#/search?q=zzz-no-such-thing`, { waitUntil: "domcontentloaded" });
-    await settle(page, 700);
+    await page.waitForFunction(() => (document.querySelector("#view")?.innerText || "").includes("检索范围"),
+      null, { timeout: 20000 }).catch(() => {});
     const emptySearch = await page.locator("#view").innerText().catch(() => "");
     check(/没有|无匹配|空/.test(emptySearch), "搜索无结果时有明确空态", emptySearch.replace(/\s+/g, " ").slice(0, 60));
 
@@ -493,7 +495,9 @@ async function main() {
     // ------------------------------------------------ 5) 旧链接与主题保留
     const legacyAgent = "legacy-agent-smoke";
     await page.goto(`${BASE}/?agent=${legacyAgent}&theme=dark`, { waitUntil: "domcontentloaded" });
-    await settle(page, 1000);
+    // 启动要先拉项目列表再决定落点；固定 sleep 在项目多/接口慢时会误判
+    await page.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 20000 }).catch(() => {});
+    await settle(page, 300);
     const legacyHash = new URL(page.url()).hash;
     const legacySearch = new URL(page.url()).search;
     const theme = await page.locator("html").getAttribute("data-theme");
@@ -710,6 +714,14 @@ async function main() {
     check(hist.includes("执行历史"), "角色抽屉展示执行历史", hist.replace(/\s+/g, " ").slice(0, 70));
     await page.locator("#drawer-close").click().catch(() => {});
     await settle(page, 300);
+
+    // ------------------------------------------------ 8.5) 用量面板口径
+    await page.goto(`${BASE}/#/p/material/overview`, { waitUntil: "domcontentloaded" });
+    await settle(page, 1500);
+    const usageText = (await page.locator("#usage-rich").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/项目口径/.test(usageText), "用量面板标注项目口径", usageText.slice(0, 80));
+    check(/缓存读/.test(usageText) && !/暂无构成数据/.test(usageText), "用量构成来自平台库", usageText.slice(0, 100));
+    check(/deepseek|claude|gpt|模型/.test(usageText), "模型构成有数据", usageText.slice(-80));
 
     // ------------------------------------------------ 8.51) 任务筛选 + 保存视图
     await page.goto(`${BASE}/#/p/material/tasks`, { waitUntil: "domcontentloaded" });

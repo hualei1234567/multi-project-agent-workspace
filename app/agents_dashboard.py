@@ -1192,6 +1192,11 @@ def build_state_for_project(project_id: str) -> dict[str, Any]:
     state["project"] = meta
     # 旧 usage 字段保持原样；项目用量单独给出，成本为 ccusage 会话成本近似归集。
     state["project_usage"] = platform_service.project_usage(project_id)
+    # 用量明细走平台库（token_usage_events）；本机 ccusage 只作为兜底
+    try:
+        state["usage_breakdown"] = platform_service.usage_breakdown(project_id)
+    except Exception:  # noqa: BLE001 - 用量明细失败不影响主状态
+        state["usage_breakdown"] = None
     return state
 
 
