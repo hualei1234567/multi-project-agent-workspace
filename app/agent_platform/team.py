@@ -1,0 +1,282 @@
+"""项目 Agent Team：管理真实的 Claude Code 后台会话。
+
+设计要点（对应用户要求）：
+
+* 团队不是平台里模拟出来的角色，而是真实的 ``claude`` 进程：
+  ``claude agents --json`` 读取真实会话，``claude --bg`` 启动，``claude --bg --resume``
+  继续下达指令，``claude stop`` 停止。
+* 平台只做三件事：启动、下达指令、观测。任务怎么拆、Subagent 怎么派、worktree
+  怎么开，由项目里的 General Owner 会话自己决定。
+* 默认关闭（``AGWS_PLATFORM_EXECUTOR=on`` 才允许启动），与执行器共用同一个总开关。
+* 预检失败时返回可执行的修复提示，不假装成功。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import uuid
+from pathlib import Path
+from typing import Any
+
+from . import store
+
+EXECUTOR_ENV = "AGWS_PLATFORM_EXECUTOR"
+SESSION_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+LAUNCH_TIMEOUT_S = 120
+QUERY_TIMEOUT_S = 20
+
+
+class TeamError(Exception):
+    def __init__(self, code: str, status: int = 400, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+        self.status = status
+        self.message = message or code
+
+
+def executor_enabled() -> bool:
+    import os
+
+    return os.environ.get(EXECUTOR_ENV, "off").strip().lower() in {"1", "on", "true", "yes"}
+
+
+def _claude() -> str:
+    return shutil.which("claude") or ""
+
+
+def _run(args: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout, check=False,
+    )
+
+
+def _agents(cwd: Path) -> tuple[list[dict[str, Any]], str | None]:
+    """读取本机真实 Claude Code 会话（含交互式与后台）。"""
+    binary = _claude()
+    if not binary:
+        return [], "未找到 claude CLI"
+    try:
+        proc = _run([binary, "agents", "--json"], cwd, QUERY_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"读取会话失败：{exc}"
+    if proc.returncode != 0:
+        return [], (proc.stderr or proc.stdout or "claude agents 失败").strip()[:300]
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return [], "claude agents 返回非 JSON"
+    return data if isinstance(data, list) else [], None
+
+
+def preflight(project: dict[str, Any]) -> dict[str, Any]:
+    """启动前检查：CLI、仓库、开关、信任状态。每条都给出可执行的处理方式。"""
+    repo = Path(str(project.get("repo_root") or "")).expanduser()
+    checks: list[dict[str, Any]] = []
+
+    binary = _claude()
+    checks.append({
+        "key": "cli", "label": "claude CLI", "ok": bool(binary),
+        "detail": binary or "未找到 claude，请先安装 Claude Code",
+    })
+    repo_ok = repo.is_dir()
+    checks.append({
+        "key": "repo", "label": "项目仓库", "ok": repo_ok,
+        "detail": str(repo) if repo_ok else f"{repo} 不存在",
+    })
+    enabled = executor_enabled()
+    checks.append({
+        "key": "switch", "label": "执行器开关", "ok": enabled,
+        "detail": "已开启" if enabled else f"未开启：在服务端设置 {EXECUTOR_ENV}=on 后重启",
+    })
+    sessions, error = _agents(repo) if repo_ok and binary else ([], None)
+    mine = [s for s in sessions if str(s.get("cwd") or "") == str(repo)]
+    checks.append({
+        "key": "sessions", "label": "会话读取", "ok": error is None,
+        "detail": error or f"当前该项目有 {len(mine)} 个真实会话",
+    })
+    return {
+        # 注意：不要用 ``ok`` 作为业务字段，HTTP 层的 ``ok`` 是错误包封口
+        "ready": all(c["ok"] for c in checks),
+        "project_id": project.get("id"),
+        "repo_root": str(repo),
+        "checks": checks,
+        "sessions": mine,
+        "hint": (
+            None if repo_ok and binary
+            else "首次在该目录后台运行前，需要先在终端里 cd 到仓库跑一次 claude 并接受信任提示"
+        ),
+    }
+
+
+def team_status(project: dict[str, Any], conn) -> dict[str, Any]:
+    """真实会话 + 平台记录的启动历史。"""
+    repo = Path(str(project.get("repo_root") or "")).expanduser()
+    sessions, error = _agents(repo) if repo.is_dir() else ([], "仓库不存在")
+    mine = [s for s in sessions if str(s.get("cwd") or "") == str(repo)]
+    rows = conn.execute(
+        "SELECT id, project_id, session_id, agent, status, instruction, created_at, updated_at"
+        " FROM team_sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT 20",
+        (project["id"],),
+    ).fetchall()
+    live_ids = {str(s.get("sessionId")) for s in mine}
+    history = []
+    for row in rows:
+        item = dict(row)
+        item["live"] = str(item.get("session_id") or "") in live_ids
+        history.append(item)
+    return {
+        "project_id": project["id"],
+        "repo_root": str(repo),
+        "executor_enabled": executor_enabled(),
+        "error": error,
+        "total": len(mine),
+        "running": sum(1 for s in mine if s.get("status") == "busy"),
+        "sessions": mine,
+        "history": history,
+    }
+
+
+def _team_prompt(project: dict[str, Any], instruction: str) -> str:
+    """给 General Owner 的团队协议：明确分工与边界。"""
+    return (
+        f"你是项目「{project.get('name') or project.get('id')}」的 General Owner（总负责人）。\n"
+        "工作方式（必须遵守）：\n"
+        "1. 你是真实 Claude Code 会话的负责人，负责接收平台指令、拆解任务、分派与验收。\n"
+        "2. 复杂任务用 Agent Team 协作推进；专项分析、代码审查用 Subagent 完成。\n"
+        "3. 并行开发必须用 Git Worktree 隔离，一个角色一个 worktree，不共享工作区。\n"
+        "4. 每个任务的产出要可验证：写清改了什么、怎么验证、失败原因。\n"
+        "5. 不要执行 push、部署、删数据或修改 .claude 配置。\n\n"
+        f"本次平台指令：\n{instruction}"
+    )
+
+
+def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "local") -> dict[str, Any]:
+    pre = preflight(project)
+    if not pre["ready"]:
+        failed = [c for c in pre["checks"] if not c["ok"]]
+        raise TeamError(
+            "team_preflight_failed", 409,
+            "；".join(f"{c['label']}：{c['detail']}" for c in failed),
+        )
+    text = (instruction or "").strip()
+    if not text:
+        raise TeamError("invalid_payload", 422, "指令不能为空")
+    binary = _claude()
+    repo = Path(str(project["repo_root"])).expanduser()
+    try:
+        proc = _run([binary, "--bg", _team_prompt(project, text)], repo, LAUNCH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise TeamError("team_timeout", 504, "启动后台会话超时")
+    except OSError as exc:
+        raise TeamError("team_launch_failed", 500, str(exc))
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    match = SESSION_ID_RE.search(output)
+    session_id = match.group(0) if match else None
+    if proc.returncode != 0 and not session_id:
+        raise TeamError(
+            "team_launch_failed", 409,
+            output[:400] or "启动失败",
+        )
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        now = store.now_iso()
+        record_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO team_sessions (id, project_id, session_id, agent, status, instruction,"
+            " output, created_at, updated_at) VALUES (?, ?, ?, 'general-owner', 'launched', ?, ?, ?, ?)",
+            (record_id, project["id"], session_id, text[:2000], output[:2000], now, now),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs (id, project_id, actor, action, resource_type, resource_id,"
+            " result, detail_json, created_at) VALUES (?, ?, ?, 'team.launch', 'team_session', ?,"
+            " 'ok', ?, ?)",
+            (uuid.uuid4().hex, project["id"], actor, record_id,
+             store.dumps_json({"session_id": session_id, "instruction": text[:200]}), now),
+        )
+    finally:
+        conn.close()
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        status = team_status(project, conn)
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "record_id": record_id,
+        "session_id": session_id,
+        "output": output[:2000],
+        "status": status,
+    }
+
+
+def instruct_team(project: dict[str, Any], session_id: str, instruction: str,
+                  *, actor: str = "local") -> dict[str, Any]:
+    if not executor_enabled():
+        raise TeamError("executor_disabled", 409, f"执行器未开启：设置 {EXECUTOR_ENV}=on")
+    text = (instruction or "").strip()
+    if not text:
+        raise TeamError("invalid_payload", 422, "指令不能为空")
+    if not re.fullmatch(r"[0-9a-f-]{36}", session_id or ""):
+        raise TeamError("invalid_payload", 422, "session_id 非法")
+    binary = _claude()
+    repo = Path(str(project["repo_root"])).expanduser()
+    try:
+        proc = _run([binary, "--bg", "--resume", session_id, text], repo, LAUNCH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise TeamError("team_timeout", 504, "下达指令超时")
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        now = store.now_iso()
+        conn.execute(
+            "UPDATE team_sessions SET instruction = ?, output = ?, updated_at = ?,"
+            " status = 'instructed' WHERE project_id = ? AND session_id = ?",
+            (text[:2000], output[:2000], now, project["id"], session_id),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs (id, project_id, actor, action, resource_type, resource_id,"
+            " result, detail_json, created_at) VALUES (?, ?, ?, 'team.instruct', 'team_session', ?,"
+            " 'ok', ?, ?)",
+            (uuid.uuid4().hex, project["id"], actor, session_id,
+             store.dumps_json({"instruction": text[:200]}), now),
+        )
+    finally:
+        conn.close()
+    if proc.returncode != 0:
+        raise TeamError("team_instruct_failed", 409, output[:400] or "指令失败")
+    return {"ok": True, "session_id": session_id, "output": output[:2000]}
+
+
+def stop_team(project: dict[str, Any], session_id: str, *, actor: str = "local") -> dict[str, Any]:
+    if not executor_enabled():
+        raise TeamError("executor_disabled", 409, f"执行器未开启：设置 {EXECUTOR_ENV}=on")
+    binary = _claude()
+    repo = Path(str(project["repo_root"])).expanduser()
+    try:
+        proc = _run([binary, "stop", session_id], repo, QUERY_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TeamError("team_stop_failed", 500, str(exc))
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        now = store.now_iso()
+        conn.execute(
+            "UPDATE team_sessions SET status = 'stopped', updated_at = ?"
+            " WHERE project_id = ? AND session_id = ?",
+            (now, project["id"], session_id),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs (id, project_id, actor, action, resource_type, resource_id,"
+            " result, detail_json, created_at) VALUES (?, ?, ?, 'team.stop', 'team_session', ?,"
+            " 'ok', '{}', ?)",
+            (uuid.uuid4().hex, project["id"], actor, session_id, now),
+        )
+    finally:
+        conn.close()
+    return {"ok": True, "session_id": session_id, "output": ((proc.stdout or "") + (proc.stderr or ""))[:1000]}

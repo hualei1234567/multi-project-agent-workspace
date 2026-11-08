@@ -64,6 +64,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import scheduler as scheduler_service
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
+    from agent_platform import team as team_service
     from agent_platform import workspace as workspace_service
     from agent_platform.p4 import autonomy as autonomy_service
     from agent_platform.p4 import catalog as catalog_service
@@ -88,6 +89,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import scheduler as scheduler_service
     from app.agent_platform import service as platform_service
     from app.agent_platform import store as platform_store
+    from app.agent_platform import team as team_service
     from app.agent_platform import workspace as workspace_service
     from app.agent_platform.p4 import autonomy as autonomy_service
     from app.agent_platform.p4 import catalog as catalog_service
@@ -1361,6 +1363,45 @@ def _executor_status() -> dict[str, Any]:
     }
 
 
+def _project_dict(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        row = conn.execute("SELECT * FROM agent_projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise platform_service.PlatformError("project_not_found", 404)
+        return platform_service._project_dict(row)
+    finally:
+        conn.close()
+
+
+def _team_status(project_id: str) -> dict[str, Any]:
+    project = _project_dict(project_id)
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return team_service.team_status(project, conn)
+    finally:
+        conn.close()
+
+
+def _team_preflight(project_id: str) -> dict[str, Any]:
+    return team_service.preflight(_project_dict(project_id))
+
+
+def _team_launch(project_id: str, instruction: str, *, actor: str = "local") -> dict[str, Any]:
+    return team_service.launch_team(_project_dict(project_id), instruction, actor=actor)
+
+
+def _team_instruct(project_id: str, session_id: str, instruction: str, *,
+                   actor: str = "local") -> dict[str, Any]:
+    return team_service.instruct_team(_project_dict(project_id), session_id, instruction, actor=actor)
+
+
+def _team_stop(project_id: str, session_id: str, *, actor: str = "local") -> dict[str, Any]:
+    return team_service.stop_team(_project_dict(project_id), session_id, actor=actor)
+
+
 def _schedulable_for(project_id: str) -> dict[str, Any]:
     """某项目当前可调度与被跳过的任务（只读）。"""
     conn = platform_store.connect()
@@ -1971,7 +2012,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, fn(*args, **kwargs))
         except (platform_service.PlatformError, scheduler_service.SchedulerError,
                 resource_service.ResourceError, runtime_service.RuntimeError_,
-                workspace_service.ViewError) as exc:
+                workspace_service.ViewError, team_service.TeamError) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -2194,6 +2235,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if len(rest) == 3 and rest[0] == "tasks" and rest[2] == "dependencies":
             self._platform(platform_service.add_dependency, project_id, rest[1], self._body())
+            return
+        if rest == ["team", "launch"]:
+            body = self._body()
+            self._platform(_team_launch, project_id, str(body.get("instruction") or ""),
+                           actor=self._principal_id())
+            return
+        if (len(rest) == 3 and rest[0] == "team" and rest[2] in ("instruct", "stop")):
+            body = self._body() if rest[2] == "instruct" else {}
+            if rest[2] == "instruct":
+                self._platform(_team_instruct, project_id, rest[1],
+                               str(body.get("instruction") or ""), actor=self._principal_id())
+            else:
+                self._platform(_team_stop, project_id, rest[1], actor=self._principal_id())
             return
         if rest == ["deliveries"]:
             self._platform(platform_service.create_delivery, project_id, self._body())
@@ -2527,6 +2581,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["agents", "activity"]:
                 self._platform(platform_service.agent_activity, project_id)
+                return
+            if rest == ["team"]:
+                self._platform(_team_status, project_id)
+                return
+            if rest == ["team", "preflight"]:
+                self._platform(_team_preflight, project_id)
                 return
             if rest == ["sessions"]:
                 self._platform(platform_service.list_sessions, project_id)

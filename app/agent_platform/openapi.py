@@ -113,6 +113,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/timeline"),
     ("GET", "/api/projects/{project_id}/agents/activity"),
     ("GET", "/api/projects/{project_id}/sessions"),
+    ("GET", "/api/projects/{project_id}/team"),
+    ("GET", "/api/projects/{project_id}/team/preflight"),
+    ("POST", "/api/projects/{project_id}/team/launch"),
+    ("POST", "/api/projects/{project_id}/team/{session_id}/instruct"),
+    ("POST", "/api/projects/{project_id}/team/{session_id}/stop"),
     ("GET", "/api/projects/{project_id}/sessions/{session_id}"),
     ("PUT", "/api/projects/{project_id}/favorite"),
     ("DELETE", "/api/projects/{project_id}/favorite"),
@@ -196,7 +201,7 @@ def _operation(
         op["requestBody"] = {"required": True, "content": _json(body)}
     names = {400: "参数错误", 403: "无权限或项目已归档", 404: "资源不存在",
              409: "冲突（版本/状态/只读/幂等）", 412: "缺少预检令牌或确认",
-             422: "业务校验失败"}
+             422: "业务校验失败", 504: "上游超时（启动/指令等待过久）"}
     for code in errors:
         op["responses"][str(code)] = _ok(_ref("Error"), names[code])
     return op
@@ -734,6 +739,28 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/agents/activity": {
             "get": project_op("get", "Agent 执行状态与历史：当前状态、最近执行、事件与执行记录",
                               ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/team": {
+            "get": project_op("get", "项目真实 Claude Code 会话：运行状态与平台启动历史",
+                              ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/team/preflight": {
+            "get": project_op("get", "启动前预检：CLI / 仓库 / 执行器开关 / 会话读取",
+                              ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/team/launch": {
+            "post": project_op("post", "启动项目 Agent Team（真实 claude --bg 会话）",
+                               body={"type": "object"}, errors=(404, 409, 422, 504))[2]
+        },
+        "/api/projects/{project_id}/team/{session_id}/instruct": {
+            "post": project_op("post", "向 General Owner 会话下达指令（--bg --resume）",
+                               params=[_param("session_id", "path", required=True)],
+                               body={"type": "object"}, errors=(404, 409, 422, 504))[2]
+        },
+        "/api/projects/{project_id}/team/{session_id}/stop": {
+            "post": project_op("post", "停止项目 Agent Team 会话",
+                               params=[_param("session_id", "path", required=True)],
+                               errors=(404, 409))[2]
         },
         "/api/projects/{project_id}/sessions": {
             "get": project_op("get", "会话列表：主会话与 subagent 的实时状态、最后一步",

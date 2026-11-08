@@ -131,6 +131,9 @@ V13_TABLES = (
     "saved_views",
 )
 
+#: v15（Agent Team）：真实 Claude Code 后台会话的启动记录。
+V15_TABLES = ("team_sessions",)
+
 #: v14（交付中心）：交付校验结果与返工次数。校验结果只是证据快照，
 #: 交付状态仍以 ``deliveries.status`` 为唯一事实源。
 V14_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
@@ -395,6 +398,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         14,
         columns=V14_COLUMN_UPGRADES,
         description="交付中心：校验结果快照 + 返工次数",
+    ),
+    MigrationStep(
+        15,
+        tables=V15_TABLES,
+        description="Agent Team：真实 Claude Code 后台会话启动记录",
     ),
 )
 

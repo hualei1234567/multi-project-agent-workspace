@@ -1211,6 +1211,25 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   .sess-kind, .sess-id, .sess-step, .sess-meta { display: none; }
 }
 
+
+/* ---------- Agent Team ---------- */
+.team-compose { display: flex; gap: 10px; align-items: stretch; margin: 10px 0 12px; flex-wrap: wrap; }
+.team-compose textarea { flex: 1 1 420px; min-height: 64px; resize: vertical; padding: 9px 11px;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--fg);
+  font: inherit; font-size: 12.5px; line-height: 1.5; }
+.team-compose textarea:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.team-buttons { display: flex; flex-direction: column; gap: 8px; justify-content: flex-end; }
+.team-list { display: flex; flex-direction: column; gap: 6px; }
+.team-row { display: grid; grid-template-columns: auto 150px 84px 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font-size: 12.5px; }
+.team-actions { display: flex; gap: 6px; }
+.team-row .sess-meta { color: var(--muted); font-size: 11.5px; }
+@media (max-width: 900px) {
+  .team-row { grid-template-columns: auto 1fr auto; }
+  .team-row .sess-id, .team-row .sess-meta { display: none; }
+}
+
 </style>
 </head>
 <body>
@@ -3060,6 +3079,144 @@ function renderExecutionsPage(el) {
 /* ---------- Agent 页 ---------- */
 const AGENT_ACT = { data: null, projectId: null, at: 0, busy: false, error: null };
 const SESS = { data: null, projectId: null, at: 0, busy: false, error: null };
+const TEAM = { data: null, projectId: null, at: 0, busy: false, error: null, notice: null };
+
+async function loadTeam(force = false) {
+  const p = APP.currentProject;
+  if (!p) return;
+  const fresh = TEAM.projectId === p.id && Date.now() - TEAM.at < 8000;
+  if (!force && fresh) return;
+  if (TEAM.busy) return;
+  TEAM.busy = true;
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/team`);
+    if (APP.currentProject?.id !== p.id) return;
+    TEAM.data = d; TEAM.projectId = p.id; TEAM.at = Date.now(); TEAM.error = null;
+  } catch (e) {
+    if (APP.currentProject?.id !== p.id) return;
+    TEAM.error = errText(e) || "会话状态不可用";
+    TEAM.data = null;
+  } finally {
+    TEAM.busy = false;
+    paintTeam();
+  }
+}
+
+function teamStatusChip(st) {
+  const map = { busy: ["running", "运行中"], idle: ["ok", "空闲"] };
+  const [cls, label] = map[st] || ["none", st || "未知"];
+  return `<span class="sess-state ${cls}">${esc(label)}</span>`;
+}
+
+function paintTeam() {
+  const bar = $("#team-bar"), list = $("#team-list"), counter = $("#team-count");
+  if (!bar || !list) return;
+  if (TEAM.error) {
+    bar.innerHTML = `<div class="banner warn">${esc(TEAM.error)}</div>`;
+    list.innerHTML = "";
+    return;
+  }
+  const d = TEAM.data;
+  if (!d) { bar.innerHTML = ""; list.innerHTML = skeletonBox(90); return; }
+  if (counter) counter.textContent = `${d.running || 0} 运行中 / ${d.total || 0}`;
+  bar.innerHTML = `
+    <span class="aa-chip ${d.executor_enabled ? "ok" : "unverified"}">
+      <b>${d.executor_enabled ? "开" : "关"}</b>执行器开关</span>
+    <span class="aa-chip running"><b>${d.running || 0}</b>运行中</span>
+    <span class="aa-chip"><b>${d.total || 0}</b>真实会话</span>
+    <span class="aa-meta mono">${esc(d.repo_root || "")}</span>
+    ${TEAM.notice ? `<span class="aa-meta">${esc(TEAM.notice)}</span>` : ""}`;
+  const sessions = d.sessions || [];
+  const history = d.history || [];
+  list.innerHTML = `
+    <div class="team-sessions">${sessions.length ? sessions.map(it => `
+      <div class="team-row" data-session="${esc(it.sessionId || "")}">
+        ${teamStatusChip(it.status)}
+        <span class="sess-agent">${esc(it.name || "Claude Code")}</span>
+        <span class="sess-id mono">${esc(String(it.sessionId || "").slice(0, 8))}</span>
+        <span class="sess-meta">${it.kind === "background" ? "后台" : "交互"} · pid ${esc(String(it.pid || "—"))}</span>
+        <span class="team-actions">
+          <button class="btn sm" data-team-instruct="${esc(it.sessionId || "")}">下达指令</button>
+          <button class="btn sm" data-team-stop="${esc(it.sessionId || "")}">停止</button>
+        </span>
+      </div>`).join("") : `<div class="empty">该项目当前没有运行中的真实会话</div>`}</div>
+    ${history.length ? `<div class="tl-note">平台启动记录（最近 ${history.length} 条）</div>
+      <ul class="dlv-hist">${history.map(h => `<li>
+        <span class="at mono">${esc(ago(h.created_at))}</span>
+        <span class="lb">${esc(h.status)}</span>
+        <span class="dt">${esc(String(h.instruction || "").slice(0, 90))}${h.session_id ? ` · ${esc(String(h.session_id).slice(0, 8))}` : ""}</span>
+      </li>`).join("")}</ul>` : ""}`;
+  $$("#team-list [data-team-instruct]").forEach(btn => {
+    btn.onclick = () => instructTeam(btn.dataset.teamInstruct);
+  });
+  $$("#team-list [data-team-stop]").forEach(btn => {
+    btn.onclick = () => stopTeam(btn.dataset.teamStop);
+  });
+}
+
+async function launchTeam() {
+  const input = $("#team-input");
+  const text = (input?.value || "").trim();
+  if (!text) { if (input) input.focus(); return; }
+  TEAM.notice = "正在启动真实 Claude Code 团队…";
+  paintTeam();
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/launch`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: text }),
+    });
+    TEAM.notice = d.session_id ? `已启动会话 ${String(d.session_id).slice(0, 8)}` : "已下发启动指令";
+    if (input) input.value = "";
+  } catch (e) {
+    TEAM.notice = `启动失败：${errText(e)}`;
+  }
+  await loadTeam(true);
+}
+
+async function instructTeam(sessionId) {
+  if (!sessionId) return;
+  const input = $("#team-input");
+  const text = (input?.value || "").trim();
+  if (!text) { TEAM.notice = "请先在上方输入指令内容"; paintTeam(); if (input) input.focus(); return; }
+  TEAM.notice = "正在下达指令…";
+  paintTeam();
+  try {
+    await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/${encodeURIComponent(sessionId)}/instruct`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: text }),
+    });
+    TEAM.notice = "指令已送达";
+    if (input) input.value = "";
+  } catch (e) {
+    TEAM.notice = `指令失败：${errText(e)}`;
+  }
+  await loadTeam(true);
+}
+
+async function stopTeam(sessionId) {
+  if (!sessionId) return;
+  try {
+    await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/${encodeURIComponent(sessionId)}/stop`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    TEAM.notice = "已停止";
+  } catch (e) {
+    TEAM.notice = `停止失败：${errText(e)}`;
+  }
+  await loadTeam(true);
+}
+
+async function preflightTeam() {
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/preflight`);
+    const failed = (d.checks || []).filter(c => !c.ok);
+    TEAM.notice = d.ready ? "预检通过，可以启动" :
+      `预检未通过：${failed.map(c => `${c.label}（${c.detail}）`).join("；")}`;
+  } catch (e) {
+    TEAM.notice = `预检失败：${errText(e)}`;
+  }
+  paintTeam();
+}
 
 async function loadSessions(force = false) {
   const p = APP.currentProject;
@@ -3223,6 +3380,20 @@ function renderAgentsPage(el) {
       <div class="roster" id="roster"></div>
     </section>
     <section>
+      <div class="sec-head"><h2>Agent Team</h2><span class="desc">真实的 Claude Code 后台会话；平台只负责启动、下达指令、观测</span><span class="count" id="team-count"></span></div>
+      <div class="panel"><div class="panel-body">
+        <div class="aa-strip" id="team-bar" data-testid="team-bar"></div>
+        <div class="team-compose">
+          <textarea id="team-input" placeholder="给项目总负责人的指令，例如：推进 DDP-105，FE 用 worktree 隔离，先出审查结论" data-testid="team-input"></textarea>
+          <div class="team-buttons">
+            <button class="btn primary" id="team-launch" data-testid="team-launch">启动团队</button>
+            <button class="btn" id="team-preflight" data-testid="team-preflight">预检</button>
+          </div>
+        </div>
+        <div class="team-list" id="team-list" data-testid="team-list"></div>
+      </div></div>
+    </section>
+    <section>
       <div class="sec-head"><h2>实时会话</h2><span class="desc">点开看 Agent 真正在跑什么 · 5 秒刷新</span><span class="count" id="sessions-count"></span></div>
       <div class="panel"><div class="panel-body"><div class="sess-list" id="sessions-list" data-testid="sessions-list"></div></div></div>
     </section>
@@ -3233,9 +3404,15 @@ function renderAgentsPage(el) {
     </section>`;
   renderRoster(roster);
   renderAgents(agents);
+  const launchBtn = $("#team-launch");
+  if (launchBtn) launchBtn.onclick = launchTeam;
+  const preBtn = $("#team-preflight");
+  if (preBtn) preBtn.onclick = preflightTeam;
   paintSessions();
+  paintTeam();
   loadAgentActivity();
   loadSessions();
+  loadTeam();
 }
 
 function _unusedRenderAgentsPage(el) {

@@ -1010,3 +1010,22 @@ CREATE TABLE IF NOT EXISTS saved_views (
   updated_at    TEXT NOT NULL,
   UNIQUE(principal_id, scope, name)
 );
+
+-- ---------------------------------------------------------------------------
+-- v15（Agent Team）：真实 Claude Code 后台会话的启动与指令记录
+-- 只记录「平台启动过什么」，会话本身的真相仍以 claude agents --json 为准
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS team_sessions (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  session_id  TEXT,
+  agent       TEXT NOT NULL DEFAULT 'general-owner',
+  status      TEXT NOT NULL DEFAULT 'launched',  -- launched / instructed / stopped
+  instruction TEXT,
+  output      TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_sessions_project
+  ON team_sessions(project_id, created_at DESC);

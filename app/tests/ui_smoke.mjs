@@ -711,6 +711,21 @@ async function main() {
     await page.locator("#drawer-close").click().catch(() => {});
     await settle(page, 300);
 
+    // ------------------------------------------------ 8.52) Agent Team 真实会话面板
+    await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="team-bar"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const teamBar = (await page.locator('[data-testid="team-bar"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/执行器开关/.test(teamBar) && /真实会话/.test(teamBar), "Agent Team 面板展示真实会话状态", teamBar.slice(0, 80));
+    await page.locator('[data-testid="team-preflight"]').click();
+    await page.waitForFunction(() => {
+      const bar = document.querySelector('[data-testid="team-bar"]');
+      return Boolean(bar && /预检/.test(bar.innerText));
+    }, null, { timeout: 20000 }).catch(() => {});
+    const preflightText = (await page.locator('[data-testid="team-bar"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/预检/.test(preflightText), "预检给出可执行结论", preflightText.slice(0, 90));
+    const launchBtn = page.locator('[data-testid="team-launch"]');
+    check((await launchBtn.count()) === 1, "有启动团队入口（测试里不实际启动）");
+
     // ------------------------------------------------ 8.55) 交付保存视图 + focus 直达
     await page.goto(`${BASE}/#/p/${code}/deliveries`, { waitUntil: "domcontentloaded" });
     await page.reload({ waitUntil: "domcontentloaded" });
