@@ -40,6 +40,16 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
   process.exit(2);
 })());
 
+// 远端实例需要令牌：设置 AGWS_TOKEN 后，每个页面加载前先写进 localStorage。
+const TOKEN = process.env.AGWS_TOKEN || "";
+const AUTH = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+async function prepareContext(context) {
+  if (!TOKEN) return;
+  await context.addInitScript((t) => {
+    try { localStorage.setItem("agws-token", t); } catch { /* 隐私模式忽略 */ }
+  }, TOKEN);
+}
+
 const BASE = (process.env.AGWS_URL || "http://127.0.0.1:8098").replace(/\/$/, "");
 // 清理测试项目要写**被测实例**的库：优先 AGWS_DB，其次实例启动用的 DDP_AGENT_PLATFORM_DB，
 // 最后回落到工作区默认库。以前默认写死一个 /tmp 路径，清理悄悄落在别的库上，
@@ -59,7 +69,7 @@ function check(cond, label, detail = "") {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(path) {
-  const res = await fetch(BASE + path, { cache: "no-store" });
+  const res = await fetch(BASE + path, { cache: "no-store", headers: AUTH });
   const body = await res.json().catch(() => null);
   return { status: res.status, body };
 }
@@ -181,17 +191,20 @@ async function main() {
   const baselineIds = projects.items.map((p) => p.id).filter((id) => id !== "demo-b");
   const baselineCount = baselineIds.length;
   let fixtureCreated = false;
+  const isRemote = !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(BASE);
   if (!projects.items.some((p) => p.id === "demo-b")) {
     // 平台拒绝不存在的仓库路径，夹具目录自己建（收尾一并清理）
-    mkdirSync("/tmp/projects/demo-b", { recursive: true });
+    // 远端实例看不到测试机上的目录，用服务端一定存在的 /tmp 当仓库根
+    const fixtureRepo = isRemote ? "/tmp" : "/tmp/projects/demo-b";
+    if (!isRemote) mkdirSync("/tmp/projects/demo-b", { recursive: true });
     const r = await fetch(`${BASE}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...AUTH },
       body: JSON.stringify({
         code: "demo-b",
         name: "演示项目 B",
         description: "隔离验证",
-        repo_root: "/tmp/projects/demo-b",
+        repo_root: fixtureRepo,
       }),
     });
     if (!r.ok) {
@@ -207,6 +220,7 @@ async function main() {
   const chromePath = process.env.AGWS_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   const browser = await chromium.launch({ headless: true, executablePath: chromePath });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await prepareContext(context);
   const page = await context.newPage();
 
   try {
@@ -283,7 +297,7 @@ async function main() {
     // 两条口径：UI 读 /api/state 的实时 transcript 扫描，/api/projects 的 stats 读回填进库的
     // token_usage_events。不先回填，活跃会话持续增长就会让两者越拉越远（不是 bug，是没对齐）。
     // 比较前触发一次回填并重取 API，让两条口径落在同一时刻。
-    await fetch(`${BASE}/api/projects/material/backfill`, { method: "POST" });
+    await fetch(`${BASE}/api/projects/material/backfill`, { method: "POST", headers: AUTH });
     projects = (await api("/api/projects")).body;
     const materialTokenApi = projects.items.find((p) => p.id === "material").stats.token_24h;
     check(withinTolerance(materialToken, materialTokenApi), "回填后 material 今日 Token 与 API 一致（±2%）", `UI ${materialToken} / API ${fmtNum(materialTokenApi)}`);

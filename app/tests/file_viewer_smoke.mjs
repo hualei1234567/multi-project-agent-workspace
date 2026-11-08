@@ -33,6 +33,16 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
   process.exit(2);
 })());
 
+// 远端实例需要令牌：设置 AGWS_TOKEN 后，每个页面加载前先写进 localStorage。
+const TOKEN = process.env.AGWS_TOKEN || "";
+const AUTH = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+async function prepareContext(context) {
+  if (!TOKEN) return;
+  await context.addInitScript((t) => {
+    try { localStorage.setItem("agws-token", t); } catch { /* 隐私模式忽略 */ }
+  }, TOKEN);
+}
+
 const BASE = (process.env.AGWS_URL || "http://127.0.0.1:8098").replace(/\/$/, "");
 const results = [];
 const check = (cond, label, detail = "") => {
@@ -41,7 +51,7 @@ const check = (cond, label, detail = "") => {
 };
 
 async function api(path) {
-  const res = await fetch(BASE + path, { cache: "no-store" });
+  const res = await fetch(BASE + path, { cache: "no-store", headers: AUTH });
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
@@ -59,7 +69,7 @@ async function openModalAndGetHref(page, hash) {
 
 async function verifyView(page, href, label) {
   const out = await page.evaluate(async (u) => {
-    const r = await fetch(u, { cache: "no-store" });
+    const r = await fetch(u, { cache: "no-store", headers: AUTH });
     const text = await r.text();
     return {
       status: r.status,
@@ -94,6 +104,7 @@ async function main() {
   const chromePath = process.env.AGWS_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   const browser = await chromium.launch({ headless: true, executablePath: chromePath });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await prepareContext(context);
   const page = await context.newPage();
   try {
     const deliveryHref = await openModalAndGetHref(page, "#/p/material/deliveries");
@@ -106,7 +117,7 @@ async function main() {
 
     // 目录穿越必须被拒绝
     const bad = await page.evaluate(async () => {
-      const r = await fetch("/view?path=" + encodeURIComponent("../../etc/passwd") + "&project=material", { cache: "no-store" });
+      const r = await fetch("/view?path=" + encodeURIComponent("../../etc/passwd") + "&project=material", { cache: "no-store", headers: AUTH });
       return { status: r.status, text: await r.text() };
     });
     check(bad.status === 404, "目录穿越路径被拒绝", String(bad.status));

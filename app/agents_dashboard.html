@@ -1211,7 +1211,7 @@ function toggleFavorite(id) {
   renderSidebar();
   syncFavoriteButton();
   if (PLATFORM_KINDS.includes(ROUTE.kind)) renderPlatform(ROUTE.kind);
-  fetch(`/api/projects/${encodeURIComponent(key)}/favorite`, { method: on ? "PUT" : "DELETE", cache: "no-store" })
+  apiFetch(`/api/projects/${encodeURIComponent(key)}/favorite`, { method: on ? "PUT" : "DELETE", cache: "no-store" })
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
     .catch((e) => {
       if (APP.favWarned) return;
@@ -1225,7 +1225,7 @@ function touchRecent(id) {
   const list = readIdList(RECENT_KEY).filter(x => x !== key);
   list.unshift(key);
   writeIdList(RECENT_KEY, list.slice(0, 8));
-  fetch(`/api/projects/${encodeURIComponent(key)}/visit`, { method: "POST", cache: "no-store" })
+  apiFetch(`/api/projects/${encodeURIComponent(key)}/visit`, { method: "POST", cache: "no-store" })
     .catch((e) => {
       if (APP.visitWarned) return;
       APP.visitWarned = true;
@@ -1295,9 +1295,40 @@ function stateInterval() {
 }
 function intervalLabel(ms) { return `${Math.round(ms / 1000)} 秒`; }
 
+/* ---------- 访问令牌（远端浏览器） ---------- */
+// 远端访问需要 Bearer 令牌。首次用 ?token=xxx 打开后存进 localStorage，
+// 之后所有请求自动带上；同时把 token 从地址栏抹掉，避免被复制/截图带出去。
+const TOKEN_KEY = "agws-token";
+
+function authToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+}
+
+function authHeaders(extra) {
+  const t = authToken();
+  const h = Object.assign({}, extra || {});
+  if (t) h["Authorization"] = `Bearer ${t}`;
+  return h;
+}
+
+function apiFetch(url, opts = {}) {
+  return fetch(url, { ...opts, headers: authHeaders(opts.headers) });
+}
+
+(function captureTokenFromUrl() {
+  try {
+    const url = new URL(location.href);
+    const t = url.searchParams.get("token");
+    if (!t) return;
+    localStorage.setItem(TOKEN_KEY, t);
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.pathname + (url.search || "") + (url.hash || ""));
+  } catch { /* 隐私模式下 localStorage 不可用，忽略 */ }
+})();
+
 /* ---------- 请求 ---------- */
 async function fetchJSON(url, opts = {}) {
-  const res = await fetch(url, { cache: "no-store", ...opts });
+  const res = await apiFetch(url, { cache: "no-store", ...opts });
   let body = null;
   try { body = await res.json(); } catch {}
   if (!res.ok) {
@@ -3875,7 +3906,7 @@ function renderTrace(d) {
 async function loadTrace(agentId) {
   if (!agentId || APP.traceAgentId !== agentId) return;
   try {
-    const res = await fetch(`/api/agent/${encodeURIComponent(agentId)}`, { cache: "no-store" });
+    const res = await apiFetch(`/api/agent/${encodeURIComponent(agentId)}`, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
     if (!d.ok) throw new Error(d.error || "读取失败");
@@ -3931,7 +3962,7 @@ async function openFile(path) {
   else if (isHtml) preview = `<iframe src="${url}" style="width:100%;height:50vh;border:1px solid var(--line);border-radius:8px;background:#fff" title="文件预览"></iframe>`;
   else if (isText) {
     try {
-      const text = await (await fetch(url)).text();
+      const text = await (await apiFetch(url)).text();
       preview = `<pre class="pre" style="max-height:50vh">${esc(text.slice(0, 20000))}${text.length > 20000 ? "\n…（已截断）" : ""}</pre>`;
     } catch { preview = `<div class="banner">读取失败</div>`; }
   } else preview = `<div class="mono">该类型不支持内嵌预览，请用默认程序打开</div>`;
@@ -3946,7 +3977,7 @@ async function openFile(path) {
   btn.onclick = async () => {
     btn.textContent = "打开中…";
     try {
-      const r = await fetch(`/api/open?${qs}`, { method: "POST" });
+      const r = await apiFetch(`/api/open?${qs}`, { method: "POST" });
       const d = await r.json();
       btn.textContent = d.ok ? "已交给系统打开" : "打开失败（仅本机可用）";
     } catch { btn.textContent = "打开失败"; }

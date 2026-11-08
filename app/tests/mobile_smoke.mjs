@@ -18,13 +18,25 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || (() => {
   console.error("[smoke] 找不到 playwright，请先 npm install");
   process.exit(2);
 })());
+// 远端实例需要令牌：设置 AGWS_TOKEN 后，每个页面加载前先写进 localStorage。
+const TOKEN = process.env.AGWS_TOKEN || "";
+const AUTH = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+async function prepareContext(context) {
+  if (!TOKEN) return;
+  await context.addInitScript((t) => {
+    try { localStorage.setItem("agws-token", t); } catch { /* 隐私模式忽略 */ }
+  }, TOKEN);
+}
+
 const BASE = process.env.AGWS_URL || "http://127.0.0.1:8098";
 const browser = await chromium.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const results = [];
 const check = (ok, name, detail="") => { results.push({ok,name,detail}); console.log(`${ok?"[PASS]":"[FAIL]"} ${name}${detail?` — ${detail}`:""}`); };
 
 for (const vp of [{w:390,h:844,name:"iPhone"},{w:768,h:1024,name:"iPad"}]) {
-  const page = await browser.newPage({ viewport:{width:vp.w,height:vp.h}, isMobile: vp.w<500, hasTouch: vp.w<500 });
+  const context = await browser.newContext({ viewport:{width:vp.w,height:vp.h}, isMobile: vp.w<500, hasTouch: vp.w<500 });
+  await prepareContext(context);
+  const page = await context.newPage();
   const errs = []; page.on("pageerror", e=>errs.push(String(e)));
   await page.goto(`${BASE}/#/p/material/dispatch`, {waitUntil:"domcontentloaded"});
   await page.waitForTimeout(3500);
