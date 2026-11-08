@@ -1230,6 +1230,16 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   .team-row .sess-id, .team-row .sess-meta { display: none; }
 }
 
+
+.team-task-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; font-size: 12px; color: var(--muted); }
+.team-task-pick label { display: inline-flex; align-items: center; gap: 8px; }
+.re-wt { font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px; }
+.re-wt.warn { color: var(--warn, #d29922); border-color: currentColor; }
+
+
+.tf-q { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 9px; font-size: 12.5px; min-width: 140px; }
+
 </style>
 </head>
 <body>
@@ -1405,6 +1415,8 @@ const APP = {
   taskDetailErr: null,
   taskDetailLoading: false,
   taskError: null,
+  taskView: null,
+  taskAssignees: null,
   taskPendingTransition: null,
   taskErrApiId: null,
   taskErrDisplay: null,
@@ -3158,6 +3170,49 @@ function paintTeam() {
   });
 }
 
+const TEAM_OPEN_STATUSES = new Set(["todo", "in_progress", "review", "blocked"]);
+
+async function loadTeamTasks() {
+  const p = APP.currentProject;
+  const sel = $("#team-task");
+  if (!p || !sel) return;
+  let items = [];
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/tasks?page_size=100`);
+    items = d.items || [];
+  } catch {
+    items = (APP.state?.kanban || []).flatMap(c => (c.tasks || []).map(t => ({
+      id: t.id, task_key: t.id, title: t.title, status: t.status, priority: t.priority,
+      description: t.description, acceptance_criteria_json: "[]",
+    })));
+  }
+  const open = items.filter(t => TEAM_OPEN_STATUSES.has(String(t.status || "")));
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">（可选）选择任务</option>` + open.map(t =>
+    `<option value="${esc(String(t.id))}">${esc(`${t.task_key || t.id} · ${String(t.title || "").slice(0, 28)} · ${t.status}`)}</option>`
+  ).join("");
+  if (open.some(t => String(t.id) === cur)) sel.value = cur;
+  const counter = $("#team-task-count");
+  if (counter) counter.textContent = open.length ? `可下发 ${open.length} 个未完成任务` : "没有未完成任务";
+  sel.onchange = () => {
+    const task = open.find(t => String(t.id) === sel.value);
+    const input = $("#team-input");
+    if (!task || !input) return;
+    let criteria = [];
+    try { criteria = JSON.parse(task.acceptance_criteria_json || "[]"); } catch { criteria = []; }
+    const lines = [
+      `推进任务 ${task.task_key || task.id}《${task.title || ""}》`,
+      `优先级：${task.priority || "P2"}　当前状态：${task.status || "todo"}`,
+      task.description ? `任务描述：${String(task.description).slice(0, 300)}` : "",
+      criteria.length ? `验收标准：${criteria.map(c => c.text || c).join("；")}` : "验收标准：见任务描述",
+      "要求：先拆解再分派；专项分析与代码审查用 Subagent；并行开发用独立 Git Worktree 隔离；",
+      "完成后提交交付物（含验证方式），并在任务看板更新状态。",
+    ].filter(Boolean);
+    input.value = lines.join("\n");
+    input.focus();
+  };
+}
+
 async function teamLogs(sessionId) {
   if (!sessionId) return;
   rememberFocus();
@@ -3392,11 +3447,18 @@ function agentExecLine(act) {
       <span class="re-sub">未采集到该角色的事件或执行记录</span>
     </div>`;
   }
+  const wt = (APP.state?.worktrees || []).find(w => agentRoleKey(w.role) === agentRoleKey(act.role_key));
+  const wtLine = wt
+    ? (wt.present === false
+      ? `<span class="re-wt warn">worktree 未检出</span>`
+      : `<span class="re-wt">worktree ${esc(String(wt.path || "").split("/").pop() || "—")} · ${esc(wt.branch || "—")} · 未提交 ${esc(String(wt.dirty ?? "—"))}</span>`)
+    : "";
   return `<div class="role-exec ${esc(act.state)}" data-testid="role-exec-${esc(agentRoleKey(act.role_key))}">
     <span class="pdot ${dot}"></span>
     <span class="re-label">${esc(act.state_label)}</span>
     <span class="re-sub">最近 ${esc(ago(act.last_event_at))}</span>
     ${bits.length ? `<span class="re-counts">${esc(bits.join(" · "))}</span>` : ""}
+    ${wtLine}
   </div>`;
 }
 
@@ -3415,6 +3477,14 @@ function renderAgentsPage(el) {
       <div class="sec-head"><h2>Agent Team</h2><span class="desc">真实的 Claude Code 后台会话；平台只负责启动、下达指令、观测</span><span class="count" id="team-count"></span></div>
       <div class="panel"><div class="panel-body">
         <div class="aa-strip" id="team-bar" data-testid="team-bar"></div>
+        <div class="team-task-pick">
+          <label>从任务板选一个任务（自动生成指令）
+            <select id="team-task" data-testid="team-task">
+              <option value="">（可选）选择任务</option>
+            </select>
+          </label>
+          <span class="ws-sub" id="team-task-count"></span>
+        </div>
         <div class="team-compose">
           <textarea id="team-input" placeholder="给项目总负责人的指令，例如：推进 DDP-105，FE 用 worktree 隔离，先出审查结论" data-testid="team-input"></textarea>
           <div class="team-buttons">
@@ -3438,6 +3508,7 @@ function renderAgentsPage(el) {
   renderAgents(agents);
   const launchBtn = $("#team-launch");
   if (launchBtn) launchBtn.onclick = launchTeam;
+  loadTeamTasks();
   const preBtn = $("#team-preflight");
   if (preBtn) preBtn.onclick = preflightTeam;
   paintSessions();
@@ -3649,6 +3720,141 @@ function mapFallbackTasks(items) {
   return columnsFromApi(items || []);
 }
 
+function taskFilterBar() {
+  const f = taskFilters();
+  const items = APP.tasksFallback?.items || [];
+  const assignees = Array.from(new Set([...(APP.taskAssignees || []),
+    ...items.map(t => String(t.assignee || t.assignee_agent_id || "")).filter(Boolean)])).sort();
+  APP.taskAssignees = assignees;
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  return `<div class="ws-toolbar ws-filterbar" data-testid="task-filters">
+    <label>状态
+      <select id="tf-status">
+        ${opt("", "全部", f.status)}
+        ${opt("todo", "待开始", f.status)}${opt("in_progress", "进行中", f.status)}
+        ${opt("review", "评审中", f.status)}${opt("blocked", "阻塞", f.status)}
+        ${opt("done", "已完成", f.status)}
+      </select>
+    </label>
+    <label>优先级
+      <select id="tf-priority">
+        ${opt("", "全部", f.priority)}
+        ${["P0", "P1", "P2", "P3"].map(x => opt(x, x, f.priority)).join("")}
+      </select>
+    </label>
+    <label>负责人
+      <select id="tf-assignee">
+        ${opt("", "全部", f.assignee)}
+        ${assignees.map(x => opt(x, x, f.assignee)).join("")}
+      </select>
+    </label>
+    <input id="tf-q" class="tf-q" placeholder="关键词" value="${esc(f.q)}" />
+    <span class="ws-views">
+      <select id="tf-views" data-testid="tf-views"><option value="">保存的视图…</option></select>
+      <input id="tf-view-name" maxlength="60" placeholder="视图名称" data-testid="tf-view-name" />
+      <button type="button" class="btn sm" id="tf-view-save" data-testid="tf-view-save">保存</button>
+      <button type="button" class="btn sm" id="tf-view-del" data-testid="tf-view-del" hidden>删除视图</button>
+    </span>
+    <span class="ws-sub" id="tf-count"></span>
+  </div>`;
+}
+
+function bindTaskFilters() {
+  const f = taskFilters();
+  const apply = (patch) => {
+    const next = new URLSearchParams();
+    const merged = { ...f, ...patch };
+    Object.entries(merged).forEach(([k, v]) => { if (v) next.set(k, v); });
+    APP.taskPage = 1;
+    APP.taskDetail = null;
+    APP.tasksFallback = null;
+    const qs = next.toString();
+    history.replaceState(null, "", location.pathname + location.search
+      + `#/p/${encodeURIComponent(APP.currentProject.id)}/tasks${qs ? "?" + qs : ""}`);
+    ROUTE.params = next;
+    loadTasksFallback(true);
+  };
+  const bind = (id, key) => {
+    const el = $(id);
+    if (el) el.onchange = () => apply({ [key]: el.value });
+  };
+  bind("#tf-status", "status");
+  bind("#tf-priority", "priority");
+  bind("#tf-assignee", "assignee");
+  const q = $("#tf-q");
+  if (q) q.onchange = () => apply({ q: q.value.trim() });
+  const counter = $("#tf-count");
+  if (counter) {
+    const n = (APP.tasksFallback?.items || []).length;
+    counter.textContent = Object.values(f).some(Boolean) ? `筛选结果 ${n}` : `共 ${n} 项`;
+  }
+  bindTaskViews();
+}
+
+async function bindTaskViews() {
+  const sel = $("#tf-views"), nameInput = $("#tf-view-name");
+  const saveBtn = $("#tf-view-save"), delBtn = $("#tf-view-del");
+  if (!sel) return;
+  let views = [];
+  const current = () => {
+    const out = {};
+    Object.entries(taskFilters()).forEach(([k, v]) => { if (v) out[k] = v; });
+    return out;
+  };
+  const refresh = async () => {
+    try {
+      const d = await fetchJSON("/api/workspace/views?scope=tasks");
+      views = d.items || [];
+    } catch { views = []; }
+    const cur = APP.taskView || sel.value;
+    sel.innerHTML = `<option value="">保存的视图…</option>` + views.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    if (views.some(v => v.id === cur)) sel.value = cur; else APP.taskView = null;
+    if (delBtn) delBtn.hidden = !sel.value;
+  };
+  sel.onchange = () => {
+    APP.taskView = sel.value || null;
+    const v = views.find(x => x.id === sel.value);
+    if (delBtn) delBtn.hidden = !v;
+    if (!v) return;
+    const next = new URLSearchParams();
+    Object.entries(v.filters || {}).forEach(([k, val]) => { if (val) next.set(k, val); });
+    APP.taskPage = 1;
+    APP.tasksFallback = null;
+    const qs = next.toString();
+    history.replaceState(null, "", location.pathname + location.search
+      + `#/p/${encodeURIComponent(APP.currentProject.id)}/tasks${qs ? "?" + qs : ""}`);
+    ROUTE.params = next;
+    loadTasksFallback(true);
+  };
+  if (saveBtn) saveBtn.onclick = async () => {
+    const name = (nameInput?.value || "").trim();
+    if (!name) { if (nameInput) nameInput.focus(); return; }
+    try {
+      await fetchJSON("/api/workspace/views", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "tasks", name, filters: current() }),
+      });
+    } catch (e) {
+      if (nameInput) nameInput.placeholder = errText(e) || "保存失败";
+      return;
+    }
+    if (nameInput) { nameInput.value = ""; nameInput.placeholder = "视图名称"; }
+    await refresh();
+    const saved = views.find(v => v.name === name);
+    if (saved) { APP.taskView = saved.id; sel.value = saved.id; if (delBtn) delBtn.hidden = false; }
+  };
+  if (delBtn) delBtn.onclick = async () => {
+    if (!sel.value) return;
+    try {
+      await fetchJSON(`/api/workspace/views/${encodeURIComponent(sel.value)}`, { method: "DELETE" });
+    } catch { /* 已删除或无权删除 */ }
+    APP.taskView = null;
+    sel.value = "";
+    await refresh();
+  };
+  await refresh();
+}
+
 function renderTasksPage(el) {
   const api = taskApiItems();
   const hasStateKanban = Array.isArray(APP.state?.kanban) && APP.state.kanban.length;
@@ -3669,11 +3875,13 @@ function renderTasksPage(el) {
             title="${archived ? "项目已归档，写操作已禁用" : "新建任务"}">＋ 新建任务</button>
         </span>
       </div>
+      ${taskFilterBar()}
       ${APP.taskError ? `<div class="banner" role="alert" data-testid="task-error"><span class="grow">${esc(APP.taskError)}</span><button class="btn sm" onclick="APP.taskError=null;renderProjectContent()">知道了</button></div>` : ""}
       <div class="kanban" id="kanban"></div>
       ${api && APP.taskTotal > 0 ? pagerMarkup({ id: "tasks-pager", testid: "tasks-pager", total: APP.taskTotal, page: APP.taskPage, pageSize: APP.taskPageSize }) : ""}
       ${APP.tasksFallback?.error ? `<div class="banner warn"><b>任务接口不可用</b><span class="grow">${esc(APP.tasksFallback.error)}；当前展示 state 快照（只读）。</span><button class="btn sm" onclick="loadTasksFallback(true)">重试</button></div>` : ""}
     </section>`;
+  bindTaskFilters();
   const createBtn = $("#btn-task-create");
   if (createBtn && !archived) createBtn.onclick = openCreateTask;
   renderKanban(cols);
@@ -6121,6 +6329,23 @@ async function loadState(project, force = false) {
   }
 }
 
+function taskFilters() {
+  const params = ROUTE.params || new URLSearchParams();
+  return {
+    status: params.get("status") || "",
+    priority: params.get("priority") || "",
+    assignee: params.get("assignee") || "",
+    q: (params.get("q") || "").trim(),
+  };
+}
+
+function taskFilterQuery() {
+  const out = new URLSearchParams();
+  const f = taskFilters();
+  Object.entries(f).forEach(([k, v]) => { if (v) out.set(k, v); });
+  return out;
+}
+
 async function loadTasksFallback(force = false, renderAfter = true) {
   const p = APP.currentProject;
   if (!p || APP.tasksLoading) return;
@@ -6129,7 +6354,8 @@ async function loadTasksFallback(force = false, renderAfter = true) {
   if (force) APP.tasksFallback = null;
   if (renderAfter && ROUTE.kind === "project" && ROUTE.tab === "tasks") renderProjectContent();
   try {
-    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/tasks?page=${APP.taskPage}&page_size=${APP.taskPageSize}`);
+    const extra = taskFilterQuery().toString();
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/tasks?page=${APP.taskPage}&page_size=${APP.taskPageSize}${extra ? `&${extra}` : ""}`);
     if (APP.currentProject?.id !== p.id) return;
     APP.taskTotal = Number(d.total ?? (d.items || []).length) || 0;
     APP.tasksFallback = {

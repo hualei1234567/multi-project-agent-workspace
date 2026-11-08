@@ -733,9 +733,15 @@ def project_stats(
     cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=24)
     placeholders = ",".join("?" for _ in ACTIVE_AGENT_STATUSES)
     project_row = conn.execute(
-        "SELECT session_slugs FROM agent_projects WHERE id = ?", (project_id,)
+        "SELECT session_slugs, repo_root FROM agent_projects WHERE id = ?", (project_id,)
     ).fetchone()
-    slugs = store.loads_json(project_row["session_slugs"], []) if project_row else []
+    if project_row:
+        slugs = sources.project_slugs({
+            "session_slugs": store.loads_json(project_row["session_slugs"], []),
+            "repo_root": project_row["repo_root"],
+        })
+    else:
+        slugs = []
     if sessions is None:
         sessions = sources.ccusage_session_costs()
     tokens_by_session = {

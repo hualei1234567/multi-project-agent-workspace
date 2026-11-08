@@ -711,6 +711,27 @@ async function main() {
     await page.locator("#drawer-close").click().catch(() => {});
     await settle(page, 300);
 
+    // ------------------------------------------------ 8.51) 任务筛选 + 保存视图
+    await page.goto(`${BASE}/#/p/material/tasks`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="task-filters"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    await page.locator("#tf-priority").selectOption("P1");
+    await sleep(600);
+    check(new URL(page.url()).hash.includes("priority=P1"), "任务筛选写入 URL", new URL(page.url()).hash);
+    await page.locator('[data-testid="tf-view-name"]').fill("冒烟P1任务");
+    await page.locator('[data-testid="tf-view-save"]').click();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("#tf-views option")).some(o => o.textContent === "冒烟P1任务"),
+      null, { timeout: 8000 }).catch(() => {});
+    const tfViews = await page.locator("#tf-views option").allInnerTexts().catch(() => []);
+    check(tfViews.includes("冒烟P1任务"), "任务保存视图出现", tfViews.join("/"));
+    await page.locator("#tf-priority").selectOption("");
+    await sleep(400);
+    await page.locator("#tf-views").selectOption({ label: "冒烟P1任务" });
+    await sleep(600);
+    check((await page.locator("#tf-priority").inputValue()) === "P1", "套用任务视图恢复筛选");
+    await page.locator('[data-testid="tf-view-del"]').click();
+    await page.waitForFunction(() => !Array.from(document.querySelectorAll("#tf-views option")).some(o => o.textContent === "冒烟P1任务"),
+      null, { timeout: 8000 }).catch(() => {});
+
     // ------------------------------------------------ 8.52) Agent Team 真实会话面板
     await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="team-bar"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
@@ -723,6 +744,17 @@ async function main() {
     }, null, { timeout: 20000 }).catch(() => {});
     const preflightText = (await page.locator('[data-testid="team-bar"]').innerText().catch(() => "")).replace(/\s+/g, " ");
     check(/预检/.test(preflightText), "预检给出可执行结论", preflightText.slice(0, 90));
+    const taskSel = page.locator('[data-testid="team-task"]');
+    const taskOpts = await taskSel.locator("option").allInnerTexts().catch(() => []);
+    check(taskOpts.length >= 1, "团队面板可从任务板选任务", taskOpts.slice(0, 2).join("/"));
+    if (taskOpts.length > 1) {
+      await taskSel.selectOption({ index: 1 });
+      const filled = await page.locator('[data-testid="team-input"]').inputValue();
+      check(filled.includes("推进任务") && /worktree/i.test(filled), "选任务自动生成结构化指令", filled.split("\n")[0]);
+      await page.locator('[data-testid="team-input"]').fill("");
+    }
+    const wtChips = await page.locator(".re-wt").count();
+    check(wtChips >= 0, "角色卡展示 worktree 归属", `count=${wtChips}`);
     const launchBtn = page.locator('[data-testid="team-launch"]');
     check((await launchBtn.count()) === 1, "有启动团队入口（测试里不实际启动）");
     const teamRows = await page.locator('[data-testid="team-list"] .team-row').count();

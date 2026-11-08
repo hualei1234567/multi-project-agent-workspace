@@ -902,7 +902,7 @@ def backfill_executions(conn: sqlite3.Connection, project: dict[str, Any]) -> in
     role_agents = _role_map(conn, project["id"])
     owner_agent_id = role_agents.get("general-owner") or "general-owner"
     count = 0
-    for slug in project.get("session_slugs") or []:
+    for slug in project_slugs(project):
         slug_dir = root / slug
         if not slug_dir.is_dir():
             continue

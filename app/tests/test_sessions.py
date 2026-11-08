@@ -121,3 +121,31 @@ def test_project_slugs_union_derived(env):
     project = service.get_project("default")
     derived = str(project["repo_root"]).replace("/", "-")
     assert derived in src.project_slugs(project)
+
+
+def test_team_subagent_feeds_executions_and_timeline(env, monkeypatch):
+    """真实团队跑出来的 subagent 要进入执行记录与时间线（不能只显示主会话）。"""
+    from agent_platform import sources as src
+
+    slug_dir = env.root / env.slug
+    sub = slug_dir / "sess-team-1" / "subagents"
+    _write(sub / "agent-qa1.jsonl", _lines())
+    _write(sub / "agent-qa1.meta.json", json.dumps({
+        "agentType": "qa-devops", "description": "审查交付", "finished": True,
+    }, ensure_ascii=False))
+
+    project = service.get_project("default")
+    monkeypatch.setattr(src, "projects_root", lambda: env.root)
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        count = src.backfill_executions(conn, project)
+        ex = conn.execute(
+            "SELECT agent_id, status FROM executions WHERE project_id = 'default'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert count >= 1
+    assert ex, "团队 subagent 应产生执行记录"
+    # 角色键或主键都可以，但必须能归到某个 Agent
+    assert all(row["agent_id"] for row in ex)
