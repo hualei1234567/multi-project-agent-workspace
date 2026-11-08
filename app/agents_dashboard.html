@@ -920,6 +920,22 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   .btn:hover, .sb-proj:hover { background: inherit; }
 }
 /* ---------- 工作空间视图（我的工作 / 项目组合 / 消息中心） ---------- */
+
+
+.wz-steps { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.wz-step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+.wz-step i { font-style: normal; width: 16px; height: 16px; border-radius: 50%; background: var(--line); display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; }
+.wz-step.on { color: var(--fg); border-color: var(--accent); }
+.wz-step.on i { background: var(--accent); color: #fff; }
+.wz-step.done { color: var(--ok, #3fb950); border-color: currentColor; }
+.wz-templates { display: flex; flex-direction: column; gap: 8px; }
+.wz-tpl { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.wz-tpl.on { border-color: var(--accent); }
+.wz-tpl span { display: flex; flex-direction: column; gap: 2px; }
+.wz-tpl em { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.wz-summary { margin: 0; }
+.ws-searchbar { display: flex; gap: 10px; margin: 4px 0 16px; }
+.ws-searchbar input { flex: 1; }
 .ws-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 4px 0 16px; }
 .ws-metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
 .ws-metric b { font-size: 22px; font-weight: 650; }
@@ -1076,7 +1092,7 @@ const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
 const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "docs", "settings"];
 const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", docs: "文档配置", settings: "项目设置" };
-const PLATFORM_KINDS = ["platform", "work", "portfolio", "inbox", "projects", "favorites", "recent"];
+const PLATFORM_KINDS = ["platform", "search", "work", "portfolio", "inbox", "projects", "favorites", "recent"];
 const FAV_KEY = "agws-favorites";
 const RECENT_KEY = "agws-recent";
 const PROJECT_COLORS = ["#3b6fd8", "#7b5cff", "#12b76a", "#f79009", "#e0559a", "#2bb3c0", "#5b8def", "#a06bff"];
@@ -1441,6 +1457,7 @@ function parseRoute() {
   const path = hit[0] || "/";
   const params = new URLSearchParams(hit.slice(1).join("?"));
   if (path === "/" || path === "") return { kind: "platform", params };
+  if (path === "/search") return { kind: "search", params };
   if (path === "/work") return { kind: "work", params };
   if (path === "/portfolio") return { kind: "portfolio", params };
   if (path === "/inbox") return { kind: "inbox", params };
@@ -1667,6 +1684,58 @@ function wsMetric(label, value, cls = "") {
   return `<div class="ws-metric ${cls}"><b>${esc(String(value))}</b><span>${esc(label)}</span></div>`;
 }
 
+
+/* ---------- 全局搜索（服务端权限过滤） ---------- */
+const SEARCH_LABELS = {
+  project: "项目", task: "任务", agent: "Agent", delivery: "交付",
+  workflow: "工作流", knowledge: "知识", release: "发布",
+};
+
+async function renderSearchPage() {
+  const el = $("#view");
+  const q = (ROUTE.params && ROUTE.params.get("q")) || "";
+  el.innerHTML = `
+    <div class="page-head"><div><h2>全局搜索</h2>
+      <p class="desc">服务端按可见项目过滤后再匹配，不会返回无权资源，也不通过结果数量泄露其他项目。</p></div></div>
+    <form class="ws-searchbar" id="gs-form">
+      <input id="gs-input" type="search" value="${esc(q)}" placeholder="搜索项目、任务、Agent、交付、工作流、知识、发布…" autocomplete="off">
+      <button class="btn active" type="submit">搜索</button>
+    </form>
+    <div id="gs-body">${q ? emptyBox("搜索中…", "正在检索可见项目") : emptyBox("输入关键词", "按回车或点搜索；只检索你有权限的项目")}</div>`;
+  $("#gs-form").onsubmit = (e) => {
+    e.preventDefault();
+    const v = $("#gs-input").value.trim();
+    if (!v) return;
+    navigate(`#/search?q=${encodeURIComponent(v)}`);
+  };
+  $("#gs-input").focus();
+  if (!q) return;
+  let data = null;
+  try {
+    data = await fetchJSON(`/api/search?q=${encodeURIComponent(q)}&limit=50`);
+  } catch (e) {
+    $("#gs-body").innerHTML = emptyBox("搜索失败", e.message || "请求未成功");
+    return;
+  }
+  if (ROUTE.kind !== "search" || (ROUTE.params.get("q") || "") !== q) return; // 结果过期则丢弃
+  const body = $("#gs-body");
+  if (!body) return;
+  if (!data.count) {
+    body.innerHTML = emptyBox("没有匹配结果", `「${q}」在可见项目内无命中；数据缺失与无权是两件事，这里只会返回你可见的范围。`);
+    return;
+  }
+  const groups = {};
+  for (const r of data.results) (groups[r.type] = groups[r.type] || []).push(r);
+  const sections = Object.keys(groups).map(type => `
+    <section class="ws-panel"><h3>${esc(SEARCH_LABELS[type] || type)} · ${groups[type].length}</h3>
+      <ul>${groups[type].map(r => `
+        <li class="ws-row"><a class="ws-link" href="${esc(r.link)}">${esc(r.title || r.id)}</a>
+          <span class="ws-tag">${esc(r.subtitle || "")}</span>
+          <span class="ws-sub">${esc(r.project_code || "")}</span></li>`).join("")}</ul>
+    </section>`).join("");
+  body.innerHTML = `<div class="ws-note">「${esc(q)}」共 ${data.count} 条，检索范围：${(data.searched_projects || []).map(esc).join("、") || "无可见项目"}</div>${sections}`;
+}
+
 function renderWorkspacePage(kind) {
   const el = $("#view");
   const [title, desc] = WS_META[kind];
@@ -1804,6 +1873,7 @@ function renderPlatform(mode = ROUTE.kind) {
     renderWorkspacePage(mode);
     return;
   }
+  if (mode === "search") { renderSearchPage(); return; }
   const n = platformNumbers();
   const base = APP.projects.filter(p => matchesProject(p) && matchesProjectQuery(p));
   let list = base;
@@ -4261,69 +4331,164 @@ async function openFile(path) {
 }
 
 /* ---------- 新建项目 ---------- */
+const WIZ = { step: 1, form: {}, templates: null, templateKey: "", err: "" };
+
 function openCreateProject() {
+  WIZ.step = 1; WIZ.form = { name: "", code: "", description: "", repo_root: "" };
+  WIZ.templates = null; WIZ.templateKey = ""; WIZ.err = "";
   rememberFocus();
+  mask.classList.add("show"); modal.classList.add("show");
+  renderWizard();
+}
+
+function wizSteps() {
+  return ["项目信息", "Agent 团队", "确认初始化"];
+}
+
+function renderWizard() {
   $("#modal-title").textContent = "创建项目";
-  $("#modal-body").innerHTML = `
-    <p class="hint" style="margin:0;font-size:12.5px;color:var(--muted)">创建独立项目空间，并初始化 Agent 团队。</p>
-    <form id="create-project-form" novalidate>
+  const steps = wizSteps().map((label, idx) => {
+    const n = idx + 1;
+    const cls = n === WIZ.step ? "on" : (n < WIZ.step ? "done" : "");
+    return `<span class="wz-step ${cls}"><i>${n}</i>${esc(label)}</span>`;
+  }).join("");
+  const f = WIZ.form;
+  let body = "";
+  let nextLabel = "下一步";
+  if (WIZ.step === 1) {
+    body = `
       <div class="field"><label for="cp-name">项目名称 *</label>
-        <input id="cp-name" name="name" maxlength="60" placeholder="例如：具身智能数据闭环平台" autocomplete="off"></div>
+        <input id="cp-name" name="name" maxlength="60" value="${esc(f.name)}" placeholder="例如：具身智能数据闭环平台" autocomplete="off"></div>
       <div class="field"><label for="cp-code">项目代号 *</label>
-        <input id="cp-code" name="code" maxlength="24" placeholder="例如：material" autocomplete="off"></div>
+        <input id="cp-code" name="code" maxlength="24" value="${esc(f.code)}" placeholder="例如：material" autocomplete="off">
+        <span class="hint" style="font-size:11.5px">2–24 位字母、数字或短横线，创建后作为项目主键的一部分。</span></div>
       <div class="field"><label for="cp-desc">项目描述</label>
-        <textarea id="cp-desc" name="description" maxlength="500" placeholder="简要描述项目目标和范围"></textarea></div>
+        <textarea id="cp-desc" name="description" maxlength="500" placeholder="简要描述项目目标和范围">${esc(f.description)}</textarea></div>
       <div class="field"><label for="cp-repo">项目仓库路径（可选）</label>
-        <input id="cp-repo" name="repo_root" maxlength="512" placeholder="例如：/Users/you/work/my-project；留空则使用平台独立空工作区" autocomplete="off">
-        <span class="hint" style="font-size:11.5px">留空表示使用平台独立空工作区，不扫描本机仓库。</span></div>
-      <div class="form-err" id="create-err" role="alert"></div>
+        <input id="cp-repo" name="repo_root" maxlength="512" value="${esc(f.repo_root)}" placeholder="例如：/Users/you/work/my-project；留空则使用平台独立空工作区" autocomplete="off"></div>`;
+  } else if (WIZ.step === 2) {
+    const list = WIZ.templates;
+    if (!list) {
+      body = emptyBox("加载模板…", "正在读取团队模板");
+    } else {
+      body = `<p class="hint" style="margin:0 0 10px;font-size:12.5px;color:var(--muted)">选择 Agent 团队模板；模板只做初始化建议，不会静默创建外部资源。</p>
+        <div class="wz-templates">${list.map(t => {
+          const on = WIZ.templateKey === t.key;
+          return `<label class="wz-tpl ${on ? "on" : ""}">
+            <input type="radio" name="wz-tpl" value="${esc(t.key)}" ${on ? "checked" : ""}>
+            <span><b>${esc(t.name || t.key)}</b><em>${esc((t.roles || []).length)} 个角色 · v${esc(String(t.version || 1))}</em></span>
+          </label>`;
+        }).join("") || emptyBox("暂无模板", "平台没有可用的团队模板")}</div>
+        <label class="wz-tpl ${WIZ.templateKey === "" ? "on" : ""}" style="margin-top:8px">
+          <input type="radio" name="wz-tpl" value="" ${WIZ.templateKey === "" ? "checked" : ""}>
+          <span><b>暂不初始化团队</b><em>稍后可在项目设置里应用模板</em></span>
+        </label>`;
+    }
+  } else {
+    const tpl = (WIZ.templates || []).find(t => t.key === WIZ.templateKey);
+    body = `<div class="kv wz-summary">
+        <span class="k">项目名称</span><span class="v">${esc(f.name)}</span>
+        <span class="k">项目代号</span><span class="v mono">${esc(f.code)}</span>
+        <span class="k">描述</span><span class="v">${esc(f.description || "—")}</span>
+        <span class="k">仓库路径</span><span class="v mono">${esc(f.repo_root || "平台独立空工作区")}</span>
+        <span class="k">Agent 团队</span><span class="v">${tpl ? esc(tpl.name || tpl.key) + `（${(tpl.roles || []).length} 个角色）` : "暂不初始化"}</span>
+      </div>
+      <p class="hint" style="margin:8px 0 0;font-size:12px;color:var(--muted)">确认后调用既有项目创建与团队模板接口；结果会写入审计，不会创建任何未经授权的资源。</p>`;
+    nextLabel = "创建项目";
+  }
+  const err = WIZ.err ? `<div class="form-err" role="alert">${esc(WIZ.err)}</div>` : "";
+  $("#modal-body").innerHTML = `
+    <div class="wz-steps">${steps}</div>
+    <form id="wz-form" novalidate>${body}${err}
       <div class="form-actions">
-        <button type="button" class="btn" id="cp-cancel">取消</button>
-        <button type="submit" class="btn active" id="cp-submit">创建项目</button>
+        <button type="button" class="btn" id="wz-cancel">取消</button>
+        ${WIZ.step > 1 ? `<button type="button" class="btn" id="wz-prev">上一步</button>` : ""}
+        <button type="submit" class="btn active" id="wz-next">${nextLabel}</button>
       </div>
     </form>`;
-  mask.classList.add("show"); modal.classList.add("show");
-  $("#cp-name").focus();
-  $("#cp-cancel").onclick = closeAll;
-  const form = $("#create-project-form");
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const name = $("#cp-name").value.trim();
-    const code = $("#cp-code").value.trim();
-    const description = $("#cp-desc").value.trim();
-    const repoRoot = $("#cp-repo").value.trim();
-    const errEl = $("#create-err");
-    errEl.textContent = "";
-    if (name.length < 2 || name.length > 60) { errEl.textContent = "项目名称需为 2–60 个字符"; return; }
-    if (!/^[A-Za-z0-9-]{2,24}$/.test(code)) { errEl.textContent = "项目代号需为 2–24 位字母、数字或短横线"; return; }
-    if (description.length > 500) { errEl.textContent = "项目描述最多 500 字"; return; }
-    if (repoRoot.length > 512) { errEl.textContent = "项目仓库路径最多 512 个字符"; return; }
-    const btn = $("#cp-submit");
-    btn.disabled = true; btn.textContent = "创建中…";
-    try {
-      const d = await fetchJSON("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, name, description, repo_root: repoRoot }),
+  if ($("#cp-name")) $("#cp-name").focus();
+  $("#wz-cancel").onclick = closeAll;
+  if ($("#wz-prev")) $("#wz-prev").onclick = () => { WIZ.step -= 1; WIZ.err = ""; renderWizard(); };
+  $$('input[name="wz-tpl"]').forEach(r => {
+    r.onchange = () => {
+      WIZ.templateKey = r.value;
+      // 只切换高亮，不重渲染整棵 DOM：重渲染会让浏览器焦点与自动化点击抖动
+      $$(".wz-tpl").forEach(el => {
+        const input = el.querySelector('input[name="wz-tpl"]');
+        el.classList.toggle("on", Boolean(input && input.checked));
       });
-      const created = d?.project || null;
-      closeAll();
-      await ensureProjects(true);
-      let target = created ? resolveProject(created.id) : null;
-      if (!target && created) { APP.projects = APP.projects.concat([created]); target = created; }
-      if (!target) target = resolveProject(code) || APP.projects[0];
-      if (target) navigate(projectHash(target, "overview"));
-      else { navigate("#/"); }
-    } catch (err) {
-      const codeErr = err.body?.error || "";
-      if (err.status === 409 || codeErr === "project_code_exists") errEl.textContent = "项目代号已存在，请更换";
-      else if (err.status === 422 || codeErr === "invalid_project_code") errEl.textContent = "项目代号不合法（2–24 位字母、数字或短横线）";
-      else if (err.status === 404 || err.status === 405) errEl.textContent = "后端未提供创建项目接口（/api/projects）";
-      else errEl.textContent = `创建失败：${err.message}`;
-      btn.disabled = false; btn.textContent = "创建项目";
-    }
-  };
+    };
+  });
+  $("#wz-form").onsubmit = (e) => { e.preventDefault(); wizNext(); };
+  if (WIZ.step === 2 && !WIZ.templates) loadWizardTemplates();
 }
+
+async function loadWizardTemplates() {
+  try {
+    const d = await fetchJSON("/api/team-templates");
+    WIZ.templates = d.items || [];
+  } catch (e) {
+    WIZ.templates = [];
+    WIZ.err = `模板加载失败：${e.message || "未知错误"}`;
+  }
+  if (WIZ.step === 2) renderWizard();
+}
+
+async function wizNext() {
+  WIZ.err = "";
+  const f = WIZ.form;
+  if (WIZ.step === 1) {
+    f.name = $("#cp-name").value.trim();
+    f.code = $("#cp-code").value.trim();
+    f.description = $("#cp-desc").value.trim();
+    f.repo_root = $("#cp-repo").value.trim();
+    if (f.name.length < 2 || f.name.length > 60) { WIZ.err = "项目名称需为 2–60 个字符"; return renderWizard(); }
+    if (!/^[A-Za-z0-9-]{2,24}$/.test(f.code)) { WIZ.err = "项目代号需为 2–24 位字母、数字或短横线"; return renderWizard(); }
+    if (f.description.length > 500) { WIZ.err = "项目描述最多 500 字"; return renderWizard(); }
+    if (f.repo_root.length > 512) { WIZ.err = "项目仓库路径最多 512 个字符"; return renderWizard(); }
+    WIZ.step = 2; return renderWizard();
+  }
+  if (WIZ.step === 2) { WIZ.step = 3; return renderWizard(); }
+
+  const btn = $("#wz-next");
+  btn.disabled = true; btn.textContent = "创建中…";
+  try {
+    const d = await fetchJSON("/api/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: f.code, name: f.name, description: f.description, repo_root: f.repo_root }),
+    });
+    const created = d?.project || null;
+    let teamInfo = "";
+    if (created && WIZ.templateKey) {
+      try {
+        const applied = await fetchJSON(`/api/projects/${encodeURIComponent(created.id)}/team/apply`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ template_key: WIZ.templateKey }),
+        });
+        const n = applied?.created ?? applied?.applied ?? null;
+        teamInfo = n == null ? "团队模板已应用" : `团队模板已应用（新增 ${n} 个 Agent）`;
+      } catch (e) {
+        teamInfo = `项目已创建，但团队模板应用失败：${e.message || "未知错误"}`;
+      }
+    }
+    closeAll();
+    await ensureProjects(true);
+    let target = created ? resolveProject(created.id) : null;
+    if (!target && created) { APP.projects = APP.projects.concat([created]); target = created; }
+    if (!target) target = resolveProject(f.code) || APP.projects[0];
+    if (target) navigate(projectHash(target, "overview"));
+    else navigate("#/");
+    if (teamInfo) setTimeout(() => openInfoModal("初始化结果", `<p class="hint" style="margin:0">${esc(teamInfo)}</p>`), 300);
+  } catch (err) {
+    const codeErr = err.body?.error || "";
+    if (err.status === 409 || codeErr === "project_code_exists") WIZ.err = "项目代号已存在，请更换";
+    else if (err.status === 422 || codeErr === "invalid_project_code") WIZ.err = "项目代号不合法（2–24 位字母、数字或短横线）";
+    else if (err.status === 404 || err.status === 405) WIZ.err = "后端未提供创建项目接口（/api/projects）";
+    else WIZ.err = `创建失败：${err.message}`;
+    renderWizard();
+  }
+}
+
 
 /* ---------- 表格列宽拖拽（统一实现） ---------- */
 const RESIZABLE_TABLES = ["wt", "deliveries", "docs-table", "reports"];
@@ -4933,6 +5098,14 @@ function bindGlobal() {
   $("#filter").addEventListener("input", (e) => {
     query = e.target.value.trim().toLowerCase();
     rerenderCurrent();
+  });
+  // 回车走服务端全局搜索（权限过滤在服务端完成，前端不做跨项目拼装）
+  $("#filter").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const value = e.target.value.trim();
+    if (value.length < 1) return;
+    e.preventDefault();
+    navigate(`#/search?q=${encodeURIComponent(value)}`);
   });
 
   $("#btn-collapse").onclick = () => {

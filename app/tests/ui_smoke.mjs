@@ -400,7 +400,12 @@ async function main() {
     await page.locator("#cp-name").fill("QA 冒烟临时项目");
     await page.locator("#cp-code").fill(code);
     await page.locator("#cp-repo").fill("");
-    await page.locator("#cp-submit").click();
+    await page.locator("#wz-next").click();                 // 第 1 步 → 第 2 步
+    await page.locator(".wz-tpl").first().waitFor({ state: "visible", timeout: 10000 });
+    await page.locator('.wz-tpl input[name="wz-tpl"]').first().check();  // 选第一个团队模板
+    await page.locator("#wz-next").click();                  // 第 2 步 → 第 3 步
+    await page.locator(".wz-summary").waitFor({ state: "visible", timeout: 5000 });
+    await page.locator("#wz-next").click();                  // 确认创建
     await page.waitForFunction((c) => location.hash === `#/p/${c}/overview`, code, { timeout: 8000 }).catch(() => {});
     await waitOverviewReady(page);
     const newHash = new URL(page.url()).hash;
