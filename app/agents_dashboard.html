@@ -1240,6 +1240,18 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .tf-q { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
   padding: 4px 9px; font-size: 12.5px; min-width: 140px; }
 
+
+/* 团队指令输入：默认四行高，手动可拉高，重绘后保持 */
+.team-compose textarea { min-height: 96px; max-height: 60vh; }
+/* 顶部快捷刷新间隔 */
+.iv-quick { display: inline-flex; align-items: center; gap: 6px; }
+.iv-cap { font-size: 11px; color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+.iv-quick { flex: none; }
+.iv-quick .nsel-btn { min-height: 26px; padding: 2px 9px; font-size: 11.5px; border-radius: 8px; }
+.iv-quick .nsel-menu { min-width: 128px; }
+@media (max-width: 1180px) { .iv-cap { display: none; } }
+@media (max-width: 900px) { .iv-quick { display: none; } }
+
 </style>
 </head>
 <body>
@@ -1289,6 +1301,9 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
           <input id="filter" type="search" placeholder="搜索项目、Agent、任务…" autocomplete="off" aria-label="全局搜索">
           <kbd class="kbd">⌘K</kbd>
         </label>
+        <span class="iv-quick" title="自动刷新间隔"><span class="iv-cap">刷新</span>
+          <select id="quick-interval" aria-label="自动刷新间隔"></select>
+        </span>
         <span class="live"><span class="pulse" id="pulse"></span><span class="sync" id="updated" aria-live="polite">连接中…</span></span>
         <button class="icon-btn" id="btn-refresh" title="立即刷新" aria-label="立即刷新">↻</button>
         <button class="icon-btn" id="btn-pause" title="暂停/恢复自动刷新" aria-label="暂停自动刷新">⏸</button>
@@ -1415,6 +1430,7 @@ const APP = {
   taskDetailErr: null,
   taskDetailLoading: false,
   taskError: null,
+  teamDraft: null,
   taskView: null,
   taskAssignees: null,
   taskPendingTransition: null,
@@ -1633,12 +1649,30 @@ function setTheme(next) {
 $("#btn-theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
 /* ---------- 设置 ---------- */
-const DEFAULT_STATE_MS = 10000;
+const REFRESH_CHOICES = [5000, 10000, 30000, 60000, 300000, 600000];
+const DEFAULT_STATE_MS = 300000; // 默认 5 分钟：自动刷新不再打断输入与阅读
 function stateInterval() {
   const v = Number(safeGet("agws-refresh-ms") || DEFAULT_STATE_MS);
-  return [5000, 10000, 20000, 30000].includes(v) ? v : DEFAULT_STATE_MS;
+  return REFRESH_CHOICES.includes(v) ? v : DEFAULT_STATE_MS;
 }
-function intervalLabel(ms) { return `${Math.round(ms / 1000)} 秒`; }
+function intervalLabel(ms) {
+  if (ms >= 60000) {
+    const m = ms / 60000;
+    return Number.isInteger(m) ? `${m} 分钟` : `${(m).toFixed(1)} 分钟`;
+  }
+  return `${Math.round(ms / 1000)} 秒`;
+}
+function setRefreshMs(ms) {
+  const v = REFRESH_CHOICES.includes(Number(ms)) ? Number(ms) : DEFAULT_STATE_MS;
+  safeSet("agws-refresh-ms", v);
+  $$("#set-interval, #quick-interval").forEach(sel => {
+    sel.value = String(v);
+    sel.dispatchEvent(new Event("nsel-sync"));
+  });
+  scheduleStatePolling();
+  if (typeof schedulePlatformPolling === "function") schedulePlatformPolling();
+  updateUpdated();
+}
 
 /* ---------- 访问令牌（远端浏览器） ---------- */
 // 远端访问需要 Bearer 令牌。首次用 ?token=xxx 打开后存进 localStorage，
@@ -3214,7 +3248,7 @@ async function loadTeamTasks() {
       "要求：先拆解再分派；专项分析与代码审查用 Subagent；并行开发用独立 Git Worktree 隔离；",
       "完成后提交交付物（含验证方式），并在任务看板更新状态。",
     ].filter(Boolean);
-    input.value = lines.join("\n");
+    setTeamInput(lines.join("\n"));
     input.focus();
   };
 }
@@ -3259,7 +3293,7 @@ async function launchTeam() {
       body: JSON.stringify({ instruction: text }),
     });
     TEAM.notice = d.session_id ? `已启动会话 ${String(d.session_id).slice(0, 8)}` : "已下发启动指令";
-    if (input) input.value = "";
+    setTeamInput("");
   } catch (e) {
     TEAM.notice = `启动失败：${errText(e)}`;
   }
@@ -3279,7 +3313,7 @@ async function instructTeam(sessionId) {
       body: JSON.stringify({ instruction: text }),
     });
     TEAM.notice = "指令已送达";
-    if (input) input.value = "";
+    setTeamInput("");
   } catch (e) {
     TEAM.notice = `指令失败：${errText(e)}`;
   }
@@ -3403,8 +3437,57 @@ async function loadAgentActivity(force = false) {
     AGENT_ACT.data = null;
   } finally {
     AGENT_ACT.busy = false;
-    if (ROUTE.kind === "project" && ROUTE.tab === "agents") renderProjectContent();
+    // 只刷新执行状态区块：整页重建会把「团队指令」等正在编辑的输入清空（历史缺陷）。
+    if (ROUTE.kind === "project" && ROUTE.tab === "agents") paintAgentActivity();
   }
+}
+
+let teamComposeRO = null;
+function setTeamInput(text) {
+  const ta = $("#team-input");
+  if (!ta) return;
+  ta.value = text || "";
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function bindTeamCompose() {
+  const ta = $("#team-input");
+  if (!ta) return;
+  if (!APP.teamDraft) APP.teamDraft = { text: "", height: 0 };
+  const draft = APP.teamDraft;
+  if (draft.text && ta.value !== draft.text) ta.value = draft.text;
+  if (draft.height) ta.style.height = `${draft.height}px`;
+  const grow = () => {
+    const cur = Math.round(ta.getBoundingClientRect().height);
+    ta.style.height = "auto";
+    const need = ta.scrollHeight + 2;
+    const maxH = Math.round(window.innerHeight * 0.55);
+    ta.style.height = `${Math.min(Math.max(cur, need, 96), maxH)}px`; // 只长不缩
+  };
+  const remember = () => {
+    draft.text = ta.value;
+    const h = Math.round(ta.getBoundingClientRect().height);
+    if (h > 0) draft.height = h;
+  };
+  ta.addEventListener("input", () => { grow(); remember(); });
+  ta.addEventListener("change", remember);
+  ta.addEventListener("pointerup", remember); // 手动拖拽右下角后记住高度
+  ta.addEventListener("blur", remember);
+  if (teamComposeRO) { teamComposeRO.disconnect(); teamComposeRO = null; }
+  if (window.ResizeObserver) {
+    teamComposeRO = new ResizeObserver(remember);
+    teamComposeRO.observe(ta);
+  }
+  grow();
+  remember();
+}
+
+function paintAgentActivity() {
+  const slot = $("#agent-act-slot");
+  if (!slot) { renderProjectContent(); return; }
+  const act = AGENT_ACT.projectId === APP.currentProject?.id ? AGENT_ACT.data : null;
+  slot.innerHTML = agentActivityStrip(act);
+  if (APP.state) renderRoster(APP.state.roster || []);
 }
 
 function agentActivityStrip(act) {
@@ -3476,7 +3559,7 @@ function renderAgentsPage(el) {
   el.innerHTML = `
     <section>
       <div class="sec-head"><h2>角色花名册</h2><span class="desc">层级由项目数据决定 · 点击查看详情与执行历史</span><span class="count" id="roster-count"></span></div>
-      ${agentActivityStrip(act)}
+      <div id="agent-act-slot">${agentActivityStrip(act)}</div>
       <div class="roster" id="roster"></div>
     </section>
     <section>
@@ -3492,7 +3575,7 @@ function renderAgentsPage(el) {
           <span class="ws-sub" id="team-task-count"></span>
         </div>
         <div class="team-compose">
-          <textarea id="team-input" placeholder="给项目总负责人的指令，例如：推进 DDP-105，FE 用 worktree 隔离，先出审查结论" data-testid="team-input"></textarea>
+          <textarea id="team-input" rows="4" placeholder="给项目总负责人的指令，例如：推进 DDP-105，FE 用 worktree 隔离，先出审查结论" data-testid="team-input">${esc(APP.teamDraft?.text || "")}</textarea>
           <div class="team-buttons">
             <button class="btn primary" id="team-launch" data-testid="team-launch">启动团队</button>
             <button class="btn" id="team-preflight" data-testid="team-preflight">预检</button>
@@ -3512,6 +3595,7 @@ function renderAgentsPage(el) {
     </section>`;
   renderRoster(roster);
   renderAgents(agents);
+  bindTeamCompose();
   const launchBtn = $("#team-launch");
   if (launchBtn) launchBtn.onclick = launchTeam;
   loadTeamTasks();
@@ -5204,10 +5288,10 @@ function settingsCards(withProject) {
     </div>
     <div class="set-card">
       <h3>刷新间隔</h3>
-      <div class="field"><label for="set-interval">项目数据自动刷新</label>
-        <select id="set-interval">${[5000, 10000, 20000, 30000].map(v => `<option value="${v}" ${v === ms ? "selected" : ""}>${intervalLabel(v)}</option>`).join("")}</select>
+      <div class="field"><label for="set-interval">自动刷新间隔</label>
+        <select id="set-interval">${REFRESH_CHOICES.map(v => `<option value="${v}" ${v === ms ? "selected" : ""}>${intervalLabel(v)}</option>`).join("")}</select>
       </div>
-      <div class="hint">平台总览固定 15 秒；执行流 1.5 秒；页面隐藏时自动暂停。</div>
+      <div class="hint">默认 5 分钟；可改 10 分钟或更短。会话与执行流等局部区域仍按自身节奏刷新，页面隐藏时自动暂停。</div>
     </div>
     <div class="set-card">
       <h3>数据源</h3>
@@ -5446,11 +5530,7 @@ function bindSettings() {
     btn.onclick = () => setTheme(btn.dataset.themeBtn);
   });
   const sel = $("#set-interval");
-  if (sel) sel.onchange = () => {
-    safeSet("agws-refresh-ms", sel.value);
-    scheduleStatePolling();
-    updateUpdated();
-  };
+  if (sel) sel.onchange = () => setRefreshMs(sel.value);
   const form = $("#ps-form");
   if (form) {
     form.addEventListener("input", () => { APP.settingsDirty = true; });
@@ -6412,7 +6492,7 @@ function updateUpdated() {
   const isProject = ROUTE.kind === "project";
   const ts = isProject ? APP.updatedAt.state : APP.updatedAt.platform;
   const err = isProject ? APP.stateErr : (APP.projectsErr || APP.overviewErr);
-  const interval = isProject ? stateInterval() : 15000;
+  const interval = stateInterval();
   let text;
   if (APP.paused) text = ts ? `已暂停 · 更新于 ${fmtTime(new Date(ts).toISOString())}` : "已暂停";
   else if (err) text = ts ? `连接中断 · 上次 ${fmtTime(new Date(ts).toISOString())}` : "连接中断";
@@ -6445,6 +6525,12 @@ function scheduleStatePolling() {
     if (!canPoll()) return;
     if (ROUTE.kind === "project" && APP.currentProject) loadState(APP.currentProject);
   }, stateInterval());
+}
+
+let platformTimer = null;
+function schedulePlatformPolling() {
+  if (platformTimer) clearInterval(platformTimer);
+  platformTimer = setInterval(() => { if (canPoll()) pollPlatform(); }, stateInterval());
 }
 
 async function pollPlatform() {
@@ -6715,6 +6801,13 @@ function bindGlobal() {
   };
   $("#overlay-mobile").onclick = closeMobileSidebar;
 
+  const quickIv = $("#quick-interval");
+  if (quickIv) {
+    quickIv.innerHTML = REFRESH_CHOICES.map(v => `<option value="${v}">${intervalLabel(v)}</option>`).join("");
+    quickIv.value = String(stateInterval());
+    quickIv.onchange = () => setRefreshMs(quickIv.value);
+    quickIv.dispatchEvent(new Event("nsel-sync"));
+  }
   $("#btn-refresh").onclick = manualRefresh;
   $("#btn-pause").onclick = () => {
     APP.paused = !APP.paused;
@@ -6911,7 +7004,7 @@ function enhanceSelects(root = document) {
   await onRoute();
   loadOverview();
   scheduleStatePolling();
-  setInterval(() => { if (canPoll()) pollPlatform(); }, 15000);
+  schedulePlatformPolling();
   setInterval(() => {
     if (ROUTE.kind === "project" && ROUTE.tab === "agents" && canPoll()) loadSessions();
   }, 5000);
