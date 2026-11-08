@@ -135,3 +135,35 @@ def test_agent_summary_uses_latest_event(env):
     assert entry["state"] == "failed"          # 最近一条是失败
     assert entry["counts"] == {"running": 0, "failed": 1, "unverified": 0, "ok": 2}
     assert entry["last_activity_at"] == tl["items"][0]["occurred_at"]
+
+
+def test_agent_activity_reports_state_and_history(env):
+    conn = store.connect()
+    try:
+        agent = conn.execute("SELECT id, role_key FROM project_agents LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    assert agent is not None
+    _event("act-ok", "subagent_run", 1, 5)
+    conn = store.connect()
+    try:
+        conn.execute("UPDATE agent_events SET agent_id = ? WHERE id = 'act-ok'", (agent["id"],))
+    finally:
+        conn.close()
+
+    data = service.agent_activity("default")
+    entry = next(a for a in data["agents"] if a["agent_id"] == agent["id"])
+    assert entry["state"] == "ok"
+    assert entry["counts"]["ok"] == 1
+    assert entry["events"][0]["id"] == "act-ok"
+    # 没有任何证据的 Agent 必须是 none，而不是「正常」
+    others = [a for a in data["agents"] if a["agent_id"] != agent["id"]]
+    assert others and all(a["state"] == "none" for a in others)
+
+
+def test_agent_activity_explains_missing_evidence(env):
+    data = service.agent_activity("default")
+    assert data["collection"]["event_total"] == 0
+    assert data["collection"]["execution_total"] == 0
+    assert "未采集到任何执行事件" in (data["collection"]["note"] or "")
+    assert all(a["state"] == "none" for a in data["agents"])

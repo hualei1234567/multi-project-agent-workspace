@@ -58,8 +58,11 @@ ALLOWED_BASH_PREFIXES: tuple[str, ...] = (
     "ls", "cat", "head", "tail", "wc", "find", "grep", "pwd", "sed -n",
     "python -m pytest", "python3 -m pytest", "pytest",
     "python -m py_compile", "python3 -m py_compile",
+    "python3.11 -m pytest", "python3.11 -m py_compile",
+    ".venv/bin/python", ".venv/bin/pytest", ".venv/bin/ruff",
+    "backend/.venv/bin/python", "backend/.venv/bin/pytest", "backend/.venv/bin/ruff",
     "ruff check", "ruff format --check",
-    "npm run build", "npm run lint", "npm run test", "npx tsc", "npx vitest run",
+    "npm run build", "npm run lint", "npm run test", "npm ci", "npx tsc", "npx vitest run",
     "go build", "go test",
 )
 
@@ -81,7 +84,8 @@ DENIED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bsudo\b",
         r"\bdeploy\b",
         r"\brelease-4\d+",
-        r"\bmigrat",
+        r"\beligible\b",
+        r"\bmigrate\b",
         r"\bdrop\s+table\b",
         r"\btruncate\b",
         r"\bdelete\s+from\b",

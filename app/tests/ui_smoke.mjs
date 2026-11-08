@@ -675,6 +675,37 @@ async function main() {
 
     await page.screenshot({ path: join(SHOT_DIR, "06-timeline.png"), fullPage: true });
 
+    // ------------------------------------------------ 8.5) Agent 执行状态与历史
+    await page.goto(`${BASE}/#/p/${code}/agents`, { waitUntil: "domcontentloaded" });
+    await page.locator('[data-testid="agent-activity"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const actStrip = (await page.locator('[data-testid="agent-activity"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(/运行中/.test(actStrip) && /失败/.test(actStrip) && /未验证/.test(actStrip) && /无记录/.test(actStrip),
+      "Agent 页展示执行状态汇总", actStrip.slice(0, 90));
+    const execLines = await page.locator('[data-testid^="role-exec-"]').count();
+    check(execLines >= 1, "角色卡片显示执行状态行", `count=${execLines}`);
+    // 打开角色抽屉：必须有执行历史区块
+    await page.locator(".role-card").first().click();
+    await page.locator('[data-testid="agent-history"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    const hist = await page.locator('[data-testid="agent-history"]').innerText().catch(() => "");
+    check(hist.includes("执行历史"), "角色抽屉展示执行历史", hist.replace(/\s+/g, " ").slice(0, 70));
+    await page.locator("#drawer-close").click().catch(() => {});
+    await settle(page, 300);
+
+    // ------------------------------------------------ 8.6) 主题化下拉
+    await page.goto(`${BASE}/#/portfolio`, { waitUntil: "domcontentloaded" });
+    await settle(page, 800);
+    const nselCount = await page.locator(".nsel").count();
+    check(nselCount >= 2, "原生下拉已替换为主题化下拉", `count=${nselCount}`);
+    await page.locator("#pf-risk").locator("xpath=..").locator(".nsel-btn").click();
+    await page.locator(".nsel.open .nsel-menu").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+    const opts = await page.locator(".nsel.open .nsel-opt").allInnerTexts().catch(() => []);
+    check(opts.some(t => t.includes("高风险")), "下拉浮层可选", opts.join("/"));
+    await page.locator('.nsel.open .nsel-opt:has-text("高风险")').click();
+    await settle(page, 400);
+    check((await page.locator("#pf-risk").inputValue()) === "high", "自定义下拉写回原生 select");
+    check(new URL(page.url()).hash.includes("risk=high"), "自定义下拉触发既有筛选逻辑", new URL(page.url()).hash);
+    await page.screenshot({ path: join(SHOT_DIR, "07-agent-activity.png"), fullPage: true });
+
     // 清理：删除测试项目，避免污染临时库；夹具是本轮新建的也一并删掉
     cleanupProject(code);
     if (fixtureCreated) cleanupProject("demo-b");

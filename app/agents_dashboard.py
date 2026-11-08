@@ -2523,6 +2523,9 @@ class Handler(BaseHTTPRequestHandler):
                     page_size=(query.get("page_size") or ["20"])[0],
                 )
                 return
+            if rest == ["agents", "activity"]:
+                self._platform(platform_service.agent_activity, project_id)
+                return
             if rest == ["timeline"]:
                 self._platform(
                     platform_service.execution_timeline, project_id,

@@ -1079,6 +1079,107 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .sb-badge { margin-left: auto; font-size: 10.5px; min-width: 17px; height: 17px; border-radius: 999px; background: var(--risk, #e5534b); color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; }
 .btn.tiny { padding: 2px 8px; font-size: 11.5px; }
 
+/* ---------- Agent 执行状态 ---------- */
+.aa-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
+.aa-strip .aa-loading { font-size: 12.5px; color: var(--muted); }
+.aa-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); font-size: 12.5px; color: var(--muted); }
+.aa-chip b { font-size: 15px; color: var(--fg); font-variant-numeric: tabular-nums; }
+.aa-chip.running { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); }
+.aa-chip.running b { color: var(--accent); }
+.aa-chip.failed { border-color: color-mix(in srgb, var(--bad, #f85149) 55%, var(--line)); color: var(--bad, #f85149); }
+.aa-chip.failed b { color: var(--bad, #f85149); }
+.aa-chip.unverified { border-color: color-mix(in srgb, var(--warn, #d29922) 55%, var(--line)); color: var(--warn, #d29922); }
+.aa-chip.unverified b { color: var(--warn, #d29922); }
+.aa-chip.ok { border-color: color-mix(in srgb, var(--ok, #3fb950) 55%, var(--line)); color: var(--ok, #3fb950); }
+.aa-chip.ok b { color: var(--ok, #3fb950); }
+.aa-meta { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+.role-exec { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 10px;
+  padding-top: 9px; border-top: 1px dashed var(--line); font-size: 11.5px; color: var(--muted); }
+.role-exec .re-label { color: var(--fg); }
+.role-exec.running .re-label { color: var(--accent); }
+.role-exec.failed .re-label { color: var(--bad, #f85149); }
+.role-exec.unverified .re-label { color: var(--warn, #d29922); }
+.role-exec.ok .re-label { color: var(--ok, #3fb950); }
+.role-exec .re-counts { margin-left: auto; }
+.pdot.failed { background: var(--bad, #f85149); }
+.pdot.unverified { background: var(--warn, #d29922); }
+.pdot.ok { background: var(--ok, #3fb950); }
+.pdot.none { background: var(--line-strong); }
+.pdot.live { animation: aaPulse 1.8s ease-out infinite; }
+@keyframes aaPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); }
+  70% { box-shadow: 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.role-card.live { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.aa-state-line { margin-bottom: 8px; }
+.drawer-sec { margin-top: 16px; }
+
+
+
+/* ---------- 主题化下拉 ---------- */
+.nsel { position: relative; display: inline-flex; vertical-align: middle; }
+.nsel > select {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; pointer-events: none; /* 原生只做数据源与无障碍语义 */
+}
+.nsel-btn {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 32px; padding: 5px 12px; border-radius: 10px; cursor: pointer;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, white 4%), var(--panel));
+  color: var(--fg); border: 1px solid var(--line); font: inherit; font-size: 12.5px;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .12s ease;
+}
+.nsel-btn:hover { border-color: var(--line-strong); }
+.nsel-btn:active { transform: translateY(1px); }
+.nsel.open .nsel-btn, .nsel-btn:focus-visible {
+  border-color: var(--accent); outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.nsel.is-disabled { opacity: .55; }
+.nsel.is-disabled .nsel-btn { cursor: not-allowed; }
+.nsel-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nsel-arrow {
+  width: 8px; height: 8px; flex: none; margin-left: 2px;
+  border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted);
+  transform: translateY(-2px) rotate(45deg); transition: transform .2s ease;
+}
+.nsel.open .nsel-arrow { transform: translateY(1px) rotate(-135deg); }
+.nsel-menu {
+  position: absolute; left: 0; top: calc(100% + 7px); min-width: max(100%, 132px); width: max-content; max-width: 280px;
+  padding: 6px; border-radius: 14px; z-index: 80;
+  background: linear-gradient(180deg, var(--panel), color-mix(in srgb, var(--panel) 94%, black 6%));
+  -webkit-backdrop-filter: blur(16px) saturate(1.15); backdrop-filter: blur(16px) saturate(1.15);
+  border: 1px solid var(--line-strong, var(--line));
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .42), 0 2px 6px rgba(0, 0, 0, .22),
+              inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+  opacity: 0; transform: translateY(-6px) scale(.985); transform-origin: top center;
+  pointer-events: none; transition: opacity .16s ease, transform .18s cubic-bezier(.22, 1, .36, 1);
+}
+.nsel.up .nsel-menu { top: auto; bottom: calc(100% + 7px); transform-origin: bottom center; transform: translateY(6px) scale(.985); }
+.nsel.open .nsel-menu { opacity: 1; transform: none; pointer-events: auto; }
+.nsel-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  padding: 8px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--fg);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background .14s ease, color .14s ease;
+}
+.nsel-opt:hover, .nsel-opt:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); outline: none; }
+.nsel-opt.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.nsel-opt.dis { opacity: .45; cursor: not-allowed; }
+.nsel-check { width: 12px; height: 12px; flex: none; opacity: 0; transform: scale(.6); transition: opacity .14s, transform .18s; }
+.nsel-opt.on .nsel-check { opacity: 1; transform: none; }
+.nsel-opt.on .nsel-check::before {
+  content: ""; display: block; width: 10px; height: 6px; margin-top: -2px;
+  border-left: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor;
+  transform: rotate(-45deg);
+}
+@media (max-width: 640px) {
+  .nsel-menu { max-width: min(280px, 86vw); }
+  .nsel-btn { min-height: 36px; }
+}
+
 </style>
 </head>
 <body>
@@ -2899,7 +3000,111 @@ function renderExecutionsPage(el) {
 }
 
 /* ---------- Agent 页 ---------- */
+const AGENT_ACT = { data: null, projectId: null, at: 0, busy: false, error: null };
+
+function agentRoleKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function agentActFor(role) {
+  const d = AGENT_ACT.data;
+  if (!d || !Array.isArray(d.agents)) return null;
+  const key = agentRoleKey(role);
+  return d.agents.find(a => agentRoleKey(a.role_key) === key || agentRoleKey(a.display_name) === key) || null;
+}
+
+async function loadAgentActivity(force = false) {
+  const p = APP.currentProject;
+  if (!p) return;
+  const fresh = AGENT_ACT.projectId === p.id && Date.now() - AGENT_ACT.at < 12000;
+  if (!force && fresh) return;
+  if (AGENT_ACT.busy) return;
+  AGENT_ACT.busy = true;
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/agents/activity`);
+    if (APP.currentProject?.id !== p.id) return;
+    AGENT_ACT.data = d;
+    AGENT_ACT.projectId = p.id;
+    AGENT_ACT.at = Date.now();
+    AGENT_ACT.error = null;
+  } catch (e) {
+    if (APP.currentProject?.id !== p.id) return;
+    AGENT_ACT.error = errText(e) || "执行状态不可用";
+    AGENT_ACT.data = null;
+  } finally {
+    AGENT_ACT.busy = false;
+    if (ROUTE.kind === "project" && ROUTE.tab === "agents") renderProjectContent();
+  }
+}
+
+function agentActivityStrip(act) {
+  if (AGENT_ACT.error) {
+    return `<div class="banner warn" data-testid="agent-activity-error"><b>执行状态不可用</b><span class="grow">${esc(AGENT_ACT.error)}</span></div>`;
+  }
+  if (!act) return `<div class="aa-strip"><span class="aa-loading">正在读取 Agent 执行状态…</span></div>`;
+  const c = act.collection || {};
+  const agents = act.agents || [];
+  const n = st => agents.filter(a => a.state === st).length;
+  const chips = [
+    ["running", "运行中", n("running")],
+    ["failed", "失败", n("failed")],
+    ["unverified", "未验证", n("unverified")],
+    ["ok", "已成功", n("ok")],
+    ["none", "无记录", n("none")],
+  ];
+  return `<div class="aa-strip" data-testid="agent-activity">
+    ${chips.map(([k, label, num]) => `<span class="aa-chip ${k}"><b>${num}</b>${label}</span>`).join("")}
+    <span class="aa-meta">事件 ${c.event_total ?? 0} · 执行记录 ${c.execution_total ?? 0} · 最近活动 ${c.last_event_at ? esc(ago(c.last_event_at)) : "—"}</span>
+  </div>
+  ${c.repo_exists === false ? `<div class="banner warn"><b>仓库不可访问</b><span class="grow">${esc(c.repo_root || "—")}</span></div>` : ""}
+  ${c.note ? `<div class="banner warn" data-testid="agent-activity-note"><b>采集说明</b><span class="grow">${esc(c.note)}</span></div>` : ""}`;
+}
+
+function agentExecLine(act) {
+  if (!act) return "";
+  const counts = act.counts || {};
+  const bits = [];
+  if (counts.ok) bits.push(`成功 ${counts.ok}`);
+  if (counts.failed) bits.push(`失败 ${counts.failed}`);
+  if (counts.unverified) bits.push(`未验证 ${counts.unverified}`);
+  const dot = act.state === "running" ? "live active" : esc(act.state);
+  if (!act.last_event_at) {
+    return `<div class="role-exec ${esc(act.state)}" data-testid="role-exec-${esc(agentRoleKey(act.role_key))}">
+      <span class="pdot ${dot}"></span>
+      <span class="re-label">无执行记录</span>
+      <span class="re-sub">未采集到该角色的事件或执行记录</span>
+    </div>`;
+  }
+  return `<div class="role-exec ${esc(act.state)}" data-testid="role-exec-${esc(agentRoleKey(act.role_key))}">
+    <span class="pdot ${dot}"></span>
+    <span class="re-label">${esc(act.state_label)}</span>
+    <span class="re-sub">最近 ${esc(ago(act.last_event_at))}</span>
+    ${bits.length ? `<span class="re-counts">${esc(bits.join(" · "))}</span>` : ""}
+  </div>`;
+}
+
 function renderAgentsPage(el) {
+  const s = APP.state;
+  const roster = s.roster || [];
+  const agents = s.agents || [];
+  const act = AGENT_ACT.projectId === APP.currentProject?.id ? AGENT_ACT.data : null;
+  el.innerHTML = `
+    <section>
+      <div class="sec-head"><h2>角色花名册</h2><span class="desc">层级由项目数据决定 · 点击查看详情与执行历史</span><span class="count" id="roster-count"></span></div>
+      ${agentActivityStrip(act)}
+      <div class="roster" id="roster"></div>
+    </section>
+    <section>
+      <div class="sec-head"><h2>执行记录</h2><span class="desc">最近运行的 Subagent · 点击展开执行流</span><span class="count" id="agent-count"></span></div>
+      <div class="agents" id="agents"></div>
+      <button class="more" id="agents-more" style="display:none"></button>
+    </section>`;
+  renderRoster(roster);
+  renderAgents(agents);
+  loadAgentActivity();
+}
+
+function _unusedRenderAgentsPage(el) {
   const s = APP.state;
   const roster = s.roster || [];
   const agents = s.agents || [];
@@ -2966,8 +3171,10 @@ function renderRoster(rows) {
   if (!rows.length) { el.innerHTML = emptyBox("暂无 Agent 数据", "该项目尚未接入 Agent 团队，或后端未返回 roster"); return; }
   if (!list.length) { el.innerHTML = emptyBox("没有匹配的角色", "请调整筛选关键词"); return; }
 
-  const card = r => `
-    <article class="role-card ${esc(r.status)}" data-role="${esc(r.role)}" role="button" tabindex="0" aria-label="查看角色 ${esc(r.role)}">
+  const card = r => {
+  const act = agentActFor(r.role);
+  return `
+    <article class="role-card ${esc(r.status)}${act && act.state === "running" ? " live" : ""}" data-role="${esc(r.role)}" data-agstate="${esc(act ? act.state : "")}" role="button" tabindex="0" aria-label="查看角色 ${esc(r.role)}">
       <div class="role-head">
         <div class="role-icon">${roleIcon(r.role)}</div>
         <div class="role-top">
@@ -2988,7 +3195,9 @@ function renderRoster(rows) {
         <span>${esc(r.meta || "")}</span>
         <span style="margin-left:auto">${ago(r.last_event_at)}</span>
       </div>
+      ${agentExecLine(act)}
     </article>`;
+  };
 
   // 布局规则（固定）：General Owner 置顶居中单独一行，其余角色每行 3 个。
   // 不依赖后端给的 layer 数值——数据里层级缺失或全为同一层时也要稳定成型。
@@ -3035,6 +3244,7 @@ function renderRoster(rows) {
     cardEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); } };
   });
 }
+
 
 /* ---------- 任务页 ---------- */
 function normalizeTaskStatus(status) {
@@ -4824,6 +5034,26 @@ function openRole(roleName) {
       ${statusFile?.report ? `<span class="k">报告</span><span class="v mono">${esc(statusFile.report)}</span>` : ""}
       ${statusFile?.updated_at ? `<span class="k">自报时间</span><span class="v">${esc(statusFile.updated_at)}</span>` : ""}
     </div>
+    ${(() => {
+      const act = agentActFor(roleName);
+      if (!act) return "";
+      const evs = act.events || [];
+      const exs = act.executions || [];
+      return `<div class="drawer-sec" data-testid="agent-history">
+        <div class="sub-title" style="margin-bottom:8px">执行历史（${evs.length} 条事件 · ${exs.length} 次执行）</div>
+        <div class="aa-state-line">${agentExecLine(act)}</div>
+        ${evs.length ? `<ul class="dlv-hist">${evs.map(ev => `<li>
+          <span class="at mono">${esc(ago(ev.occurred_at))}</span>
+          <span class="lb">${esc(ev.type_label)}${ev.tool ? ` · ${esc(ev.tool)}` : ""}</span>
+          <span class="dt"><span class="tl-state ${esc(ev.state)}">${esc(ev.state_label)}</span> ${esc(ev.message || "—")}</span>
+        </li>`).join("")}</ul>` : `<div class="empty">没有采集到该 Agent 的事件</div>`}
+        ${exs.length ? `<ul class="dlv-hist" style="margin-top:8px">${exs.map(ex => `<li>
+          <span class="at mono">${esc(ago(ex.finished_at || ex.started_at))}</span>
+          <span class="lb">${esc(ex.status || "unknown")}</span>
+          <span class="dt">${esc(ex.summary || ex.error_summary || ex.session_id || "—")}${ex.total_tokens ? ` · ${fmtNum(ex.total_tokens)} tok` : ""}</span>
+        </li>`).join("")}</ul>` : ""}
+      </div>`;
+    })()}
     <div>
       <div class="sub-title" style="margin-bottom:8px">最近执行（${related.length}）</div>
       <div class="list">${related.length ? related.map(a => `
@@ -5823,6 +6053,139 @@ function bindGlobal() {
     updateUpdated();
   });
 }
+
+
+/* ---------- 主题化下拉（原生 select 作为数据源，保留给自动化与表单语义） ---------- */
+function closeAllPickers(except) {
+  $$(".nsel.open").forEach(el => { if (el !== except) el.classList.remove("open"); });
+}
+let pickerOutsideBound = false;
+function bindPickerOutside() {
+  if (pickerOutsideBound) return;
+  pickerOutsideBound = true;
+  document.addEventListener("mousedown", (e) => {
+    if (!e.target.closest(".nsel")) closeAllPickers();
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeAllPickers();
+  });
+}
+
+function enhanceSelect(sel) {
+  if (!sel || sel.dataset.nsel === "1" || sel.dataset.noEnhance === "1") return;
+  if (sel.closest(".nsel")) return;
+  sel.dataset.nsel = "1";
+  const wrap = document.createElement("span");
+  wrap.className = "nsel";
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "nsel-btn";
+  btn.innerHTML = `<span class="nsel-label"></span><span class="nsel-arrow" aria-hidden="true"></span>`;
+  const menu = document.createElement("div");
+  menu.className = "nsel-menu";
+  menu.setAttribute("role", "listbox");
+  wrap.append(btn, menu);
+
+  const label = btn.querySelector(".nsel-label");
+  const syncLabel = () => {
+    const opt = sel.options[sel.selectedIndex];
+    const text = opt ? opt.textContent.trim() : "";
+    if (label.textContent !== text) label.textContent = text;
+    wrap.classList.toggle("is-disabled", Boolean(sel.disabled));
+    btn.disabled = Boolean(sel.disabled);
+  };
+  const buildMenu = () => {
+    menu.innerHTML = Array.from(sel.options).map((o, i) => `
+      <button type="button" role="option" aria-selected="${i === sel.selectedIndex}"
+        data-idx="${i}" class="nsel-opt${i === sel.selectedIndex ? " on" : ""}${o.disabled ? " dis" : ""}"
+        ${o.disabled ? "disabled" : ""}>
+        <span>${esc(o.textContent.trim())}</span><i class="nsel-check" aria-hidden="true"></i>
+      </button>`).join("");
+  };
+  const open = () => {
+    if (sel.disabled) return;
+    closeAllPickers(wrap);
+    buildMenu();
+    wrap.classList.add("open");
+    const rect = wrap.getBoundingClientRect();
+    wrap.classList.toggle("up", rect.bottom + 260 > window.innerHeight);
+    const on = menu.querySelector(".nsel-opt.on");
+    if (on) on.scrollIntoView({ block: "nearest" });
+    bindPickerOutside();
+  };
+  const close = () => wrap.classList.remove("open");
+  const choose = (idx) => {
+    if (idx < 0 || idx >= sel.options.length) return;
+    if (sel.options[idx].disabled) return;
+    if (sel.selectedIndex !== idx) {
+      sel.selectedIndex = idx;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncLabel();
+    close();
+    btn.focus();
+  };
+
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (wrap.classList.contains("open")) close(); else open();
+  };
+  btn.onkeydown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      open();
+      const items = Array.from(menu.querySelectorAll(".nsel-opt:not(.dis)"));
+      (e.key === "ArrowDown" ? items[0] : items[items.length - 1])?.focus();
+    }
+  };
+  menu.onclick = (e) => {
+    const item = e.target.closest(".nsel-opt");
+    if (!item) return;
+    choose(Number(item.dataset.idx));
+  };
+  menu.onkeydown = (e) => {
+    const items = Array.from(menu.querySelectorAll(".nsel-opt:not(.dis)"));
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(items.length - 1, idx + 1)]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(0, idx - 1)]?.focus(); }
+    else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      const item = document.activeElement.closest?.(".nsel-opt");
+      if (item) choose(Number(item.dataset.idx));
+    } else if (e.key === "Escape") { close(); btn.focus(); }
+  };
+  sel.addEventListener("change", syncLabel);
+  sel.addEventListener("input", syncLabel);
+  sel.addEventListener("nsel-sync", syncLabel);
+  syncLabel();
+}
+
+function enhanceSelects(root = document) {
+  if (root.nodeType === 1 && root.tagName === "SELECT") { enhanceSelect(root); return; }
+  root.querySelectorAll?.("select:not([data-nsel])").forEach(enhanceSelect);
+}
+
+(function watchSelects() {
+  const start = () => {
+    enhanceSelects(document);
+    const obs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes || []) {
+          if (node.nodeType === 1) enhanceSelects(node);
+        }
+      }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    // 代码里直接改 select.value 不会触发 change；低频兜底同步显示文字
+    setInterval(() => { $$(".nsel > select").forEach(sel => sel.dispatchEvent(new Event("nsel-sync"))); }, 800);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+})();
 
 (async function boot() {
   initTheme();

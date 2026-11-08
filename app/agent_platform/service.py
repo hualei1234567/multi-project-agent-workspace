@@ -1174,6 +1174,147 @@ def list_deliveries(
         }
 
 
+# ---------------------------------------------------------------------------
+# Agent 执行状态与历史（看板用）
+# ---------------------------------------------------------------------------
+#: 每个 Agent 在抽屉里展示的历史条数
+AGENT_EVENT_LIMIT = 12
+AGENT_EXEC_LIMIT = 6
+
+
+def _norm_role_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _agent_state(
+    agent: dict[str, Any],
+    events: list[dict[str, Any]],
+    executions: list[dict[str, Any]],
+    fresh_cutoff: str,
+) -> str:
+    """单个 Agent 的当前执行状态。
+
+    顺序：明确的自报且心跳新鲜 → 运行中；再看执行证据；最后看执行记录。
+    没有任何证据时返回 ``none``（页面显示「无执行记录」），绝不默认「正常」。
+    """
+    heartbeat = str(agent.get("last_heartbeat_at") or "")
+    if agent.get("status") in {"working", "running"} and heartbeat >= fresh_cutoff:
+        return "running"
+    if events:
+        state = _event_state(events[0], fresh_cutoff)
+        if state in {"running", "failed"}:
+            return state
+    for ex in executions:
+        if ex.get("status") == "running" and not ex.get("finished_at"):
+            return "running"
+    if events:
+        return _event_state(events[0], fresh_cutoff)
+    return "none"
+
+
+def agent_activity(project_id: str) -> dict[str, Any]:
+    """每个 Agent 的当前状态、最近执行与历史；没有证据时明确标 ``none``。"""
+    with store.session() as conn:
+        project = _require_project(conn, project_id)
+        fresh_cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=TIMELINE_RUNNING_MINUTES)
+        ).isoformat(timespec="seconds")
+        agents = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM project_agents WHERE project_id = ? ORDER BY role_key",
+                (project_id,),
+            )
+        ]
+        task_keys = {
+            row["id"]: row["task_key"]
+            for row in conn.execute(
+                "SELECT id, task_key FROM tasks WHERE project_id = ?", (project_id,)
+            )
+        }
+        events_by_agent: dict[str, list[dict[str, Any]]] = {}
+        event_total = 0
+        last_event_at = None
+        for row in conn.execute(
+            f"SELECT id, agent_id, event_type, message, tool, ok, occurred_at FROM agent_events"
+            f" WHERE project_id = ? AND event_type IN ({','.join('?' * len(TIMELINE_EVENT_TYPES))})"
+            f" ORDER BY occurred_at DESC LIMIT 2000",
+            (project_id, *TIMELINE_EVENT_TYPES),
+        ):
+            event_total += 1
+            if last_event_at is None:
+                last_event_at = row["occurred_at"]
+            item = dict(row)
+            item["state"] = _event_state(item, fresh_cutoff)
+            item["state_label"] = TIMELINE_STATE_LABEL[item["state"]]
+            item["type_label"] = _EVENT_TYPE_LABEL.get(item["event_type"], item["event_type"])
+            events_by_agent.setdefault(row["agent_id"] or "", []).append(item)
+        exec_by_agent: dict[str, list[dict[str, Any]]] = {}
+        execution_total = 0
+        for row in conn.execute(
+            "SELECT * FROM executions WHERE project_id = ?"
+            " ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1000",
+            (project_id,),
+        ):
+            execution_total += 1
+            exec_by_agent.setdefault(row["agent_id"] or "", []).append(dict(row))
+
+        out: list[dict[str, Any]] = []
+        for agent in agents:
+            agent_id = agent["id"]
+            events = events_by_agent.get(agent_id, [])
+            execs = exec_by_agent.get(agent_id, [])
+            state = _agent_state(agent, events, execs, fresh_cutoff)
+            counts = {key: 0 for key in TIMELINE_STATES}
+            for item in events:
+                counts[item["state"]] += 1
+            last_exec = execs[0] if execs else None
+            out.append({
+                "agent_id": agent_id,
+                "role_key": agent["role_key"],
+                "display_name": agent["display_name"],
+                "execution_mode": agent.get("execution_mode"),
+                "agent_type": agent.get("agent_type"),
+                "status": agent.get("status"),
+                "current_task_id": agent.get("current_task_id"),
+                "current_task_key": task_keys.get(agent.get("current_task_id") or ""),
+                "worktree_path": agent.get("worktree_path"),
+                "current_branch": agent.get("current_branch"),
+                "last_heartbeat_at": agent.get("last_heartbeat_at"),
+                "state": state,
+                "state_label": TIMELINE_STATE_LABEL.get(state, "无执行记录"),
+                "last_event_at": events[0]["occurred_at"] if events else None,
+                "last_event_type": events[0]["type_label"] if events else None,
+                "last_message": events[0]["message"] if events else None,
+                "counts": counts,
+                "last_execution": last_exec,
+                "executions": execs[:AGENT_EXEC_LIMIT],
+                "events": events[:AGENT_EVENT_LIMIT],
+            })
+        repo_root = str(project.get("repo_root") or "")
+        note = None
+        if not agents:
+            note = "项目还没有登记 Agent 团队"
+        elif event_total == 0 and execution_total == 0:
+            note = ("未采集到任何执行事件或执行记录：可能是该仓库没有会话记录，"
+                    "或采集尚未运行；这不代表 Agent 正常。")
+        return {
+            "project_id": project_id,
+            "generated_at": store.now_iso(),
+            "running_window_minutes": TIMELINE_RUNNING_MINUTES,
+            "collection": {
+                "repo_root": repo_root,
+                "repo_exists": bool(repo_root) and Path(repo_root).expanduser().is_dir(),
+                "agent_total": len(agents),
+                "event_total": event_total,
+                "execution_total": execution_total,
+                "last_event_at": last_event_at,
+                "note": note,
+            },
+            "agents": out,
+        }
+
+
 def list_events(project_id: str, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
     page, size = _pagination(page, page_size)
     with store.session() as conn:
