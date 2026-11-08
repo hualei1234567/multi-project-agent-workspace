@@ -372,6 +372,53 @@ async function main() {
     const afterDel = await page.locator("#pf-views option").allInnerTexts().catch(() => []);
     check(!afterDel.includes(viewName), "删除视图后下拉移除", afterDel.join("/"));
 
+    // ------------------------------------------ 3.6) 平台侧边栏全部路由
+    const platformRoutes = [
+      ["#/work", "我的工作"],
+      ["#/inbox", "消息中心"],
+      ["#/projects", "全部项目"],
+      ["#/favorites", "我的收藏"],
+      ["#/recent", "最近访问"],
+      ["#/audit", "审计日志"],
+      ["#/settings", "设置"],
+    ];
+    for (const [hash, marker] of platformRoutes) {
+      await page.goto(`${BASE}/${hash}`, { waitUntil: "domcontentloaded" });
+      await settle(page, 800);
+      const viewText = await page.locator("#view").innerText().catch(() => "");
+      check(viewText.includes(marker), `平台路由 ${hash} 渲染「${marker}」`, viewText.replace(/\s+/g, " ").slice(0, 60));
+      check(viewText.trim().length > 40, `平台路由 ${hash} 有实质内容`, `${viewText.trim().length} 字符`);
+      const navActive = await page.locator(".sb-link.active").count();
+      check(navActive >= 1, `平台路由 ${hash} 侧栏高亮`, `active=${navActive}`);
+    }
+
+    // 消息中心：已读是个人偏好，点击后按钮消失
+    await page.goto(`${BASE}/#/inbox`, { waitUntil: "domcontentloaded" });
+    await settle(page, 900);
+    const markAll = page.locator("#ws-mark-all");
+    check((await markAll.count()) === 1, "消息中心有「全部标为已读」");
+    const unreadBtn = page.locator("[data-mark-read]").first();
+    if (await unreadBtn.count()) {
+      const key = await unreadBtn.getAttribute("data-mark-read");
+      await unreadBtn.click();
+      await settle(page, 600);
+      const left = await page.locator(`[data-mark-read="${key}"]`).count();
+      check(left === 0, "标为已读后按钮消失", `剩余 ${left}`);
+    } else {
+      check(true, "当前没有未读消息（跳过已读交互）", "empty");
+    }
+
+    // 全局搜索：服务端权限过滤 + 分组
+    await page.goto(`${BASE}/#/search?q=material`, { waitUntil: "domcontentloaded" });
+    await settle(page, 900);
+    const searchText = await page.locator("#view").innerText().catch(() => "");
+    check(searchText.includes("检索范围"), "搜索页展示检索范围", searchText.replace(/\s+/g, " ").slice(0, 60));
+    check(/项目/.test(searchText), "搜索有结果分组", searchText.replace(/\s+/g, " ").slice(0, 80));
+    await page.goto(`${BASE}/#/search?q=zzz-no-such-thing`, { waitUntil: "domcontentloaded" });
+    await settle(page, 700);
+    const emptySearch = await page.locator("#view").innerText().catch(() => "");
+    check(/没有|无匹配|空/.test(emptySearch), "搜索无结果时有明确空态", emptySearch.replace(/\s+/g, " ").slice(0, 60));
+
     // --------------------------------------------------------- 4) Tab 深链
     const tabs = [
       ["agents", "角色花名册"],
@@ -379,6 +426,7 @@ async function main() {
       ["dispatch", "调度"],
       ["executions", "执行记录"],
       ["deliveries", "交付记录"],
+      ["p4", "智能层"],
       ["docs", "文档与规范"],
       ["settings", "项目设置"],
     ];
@@ -400,6 +448,22 @@ async function main() {
       await settle(page, 200);
       check(new URL(page.url()).hash === `#/p/material/${tab}`, `刷新后保持 #/p/material/${tab}`, new URL(page.url()).hash);
     }
+    // P4 智能层：子 tab 可切换且有内容
+    await page.goto(`${BASE}/#/p/material/p4`, { waitUntil: "domcontentloaded" });
+    await page.locator(".p4-tabs").waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const p4Tabs = await page.locator(".p4-tabs .tab").count();
+    check(p4Tabs >= 5, "智能层至少 5 个子 tab", `count=${p4Tabs}`);
+    await page.locator(".p4-tabs .tab").nth(1).click();
+    await settle(page, 900);
+    const p4Body = await page.locator("#p4-body").innerText().catch(() => "");
+    check(p4Body.trim().length > 0 && !/加载失败/.test(p4Body), "切换子 tab 后内容加载", p4Body.replace(/\s+/g, " ").slice(0, 60));
+
+    // 调度页：有计划区或明确空态
+    await page.goto(`${BASE}/#/p/material/dispatch`, { waitUntil: "domcontentloaded" });
+    await settle(page, 900);
+    const dispatchText = await page.locator("#view").innerText().catch(() => "");
+    check(dispatchText.includes("调度") && /计划|暂无|空/.test(dispatchText), "调度页有内容或明确空态", dispatchText.replace(/\s+/g, " ").slice(0, 70));
+
     // 前进/后退
     await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
     await settle(page, 800);
@@ -617,7 +681,10 @@ async function main() {
     // 侧栏项目列表有缓存，刷新后重新拉取 /api/projects
     await page.goto(`${BASE}/#/`, { waitUntil: "domcontentloaded" });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await settle(page, 1000);
+    // 清理后要等 /api/projects 重新拉完，否则会把「还没渲染」误判成「项目丢了」
+    await page.waitForFunction(() => document.querySelectorAll("#sb-projects .sb-proj").length > 0,
+      null, { timeout: 20000 }).catch(() => {});
+    await settle(page, 500);
     const afterCount = await page.locator("#sb-projects .sb-proj").count();
     const expectCount = fixtureCreated ? baselineCount : baselineCount + 1;
     check(afterCount === expectCount, `清理后侧栏恢复 ${expectCount} 个项目`, `实际 ${afterCount}`);

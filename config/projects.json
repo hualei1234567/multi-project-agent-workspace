@@ -12,6 +12,18 @@
       "session_slugs": [
         "-Users-hualei-vscodeworkspace-MaterialDev"
       ]
+    },
+    {
+      "id": "ddp",
+      "code": "ddp",
+      "name": "DDP 具身智能数据闭环平台",
+      "repo_root": "<HOME>/vscodeworkspace/DataPlatform",
+      "team_dir": "<HOME>/agent-team/ddp-team",
+      "default_branch": "main",
+      "session_slugs": [
+        "-Users-hualei-vscodeworkspace-DataPlatform",
+        "-home-user-vscodeworkspace-DataPlatform"
+      ]
     }
   ]
 }

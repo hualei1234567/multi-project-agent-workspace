@@ -30,8 +30,8 @@ if (( WITH_DATA )); then
 fi
 
 # 服务器上的仓库路径与 Mac 不同，部署后统一改写（幂等）
-echo "[deploy] 修正远端 repo_root"
-ssh "$HOST" "cd $TARGET && sed -i 's|<HOME>/vscodeworkspace|/home/user/vscodeworkspace|' config/projects.json"
+echo "[deploy] 修正远端 repo_root / team_dir"
+ssh "$HOST" "cd $TARGET && sed -i -e 's|<HOME>/vscodeworkspace|/home/user/vscodeworkspace|g' -e 's|<HOME>/agent-team|/home/user/agent-team|g' config/projects.json"
 
 # 环境变量前缀统一为 AGWS_PLATFORM_*；若服务端仍是旧前缀，unit 会读不到开关
 echo "[deploy] 校验 systemd 环境变量前缀"
