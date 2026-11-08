@@ -65,6 +65,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import service as platform_service
     from agent_platform import store as platform_store
     from agent_platform import team as team_service
+    from agent_platform import windows as windows_service
     from agent_platform import workspace as workspace_service
     from agent_platform.p4 import autonomy as autonomy_service
     from agent_platform.p4 import catalog as catalog_service
@@ -1411,6 +1412,42 @@ def _team_stop(project_id: str, session_id: str, *, actor: str = "local") -> dic
     return team_service.stop_team(_project_dict(project_id), session_id, actor=actor)
 
 
+# ---------------------------------------------------------------------------
+# 窗口派发：各机器上打开的 Claude CLI 窗口
+# ---------------------------------------------------------------------------
+def _windows_list(project_id: str) -> dict[str, Any]:
+    with platform_store.session() as conn:
+        return windows_service.list_windows(conn, project_id)
+
+
+def _windows_dispatch(project_id: str, device_id: str, session_id: str,
+                      instruction: str, *, actor: str = "local") -> dict[str, Any]:
+    return windows_service.enqueue_command(project_id, device_id, session_id, instruction, actor=actor)
+
+
+def _windows_bind(project_id: str, device_id: str, session_id: str, *, actor: str = "local") -> dict[str, Any]:
+    return windows_service.bind_window(project_id, device_id, session_id, actor=actor)
+
+
+def _device_report(device_id: str, sessions: Any) -> dict[str, Any]:
+    return windows_service.report_sessions(device_id, sessions if isinstance(sessions, list) else [])
+
+
+def _device_pull(device_id: str, limit: int = 10) -> dict[str, Any]:
+    return windows_service.pull_commands(device_id, limit=limit)
+
+
+def _device_result(device_id: str, command_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    return windows_service.command_result(
+        device_id,
+        command_id,
+        ok=bool(body.get("ok")),
+        session_id=(str(body.get("session_id")) if body.get("session_id") else None),
+        result=str(body.get("result") or ""),
+        error=str(body.get("error") or ""),
+    )
+
+
 def _schedulable_for(project_id: str) -> dict[str, Any]:
     """某项目当前可调度与被跳过的任务（只读）。"""
     conn = platform_store.connect()
@@ -2021,7 +2058,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, fn(*args, **kwargs))
         except (platform_service.PlatformError, scheduler_service.SchedulerError,
                 resource_service.ResourceError, runtime_service.RuntimeError_,
-                workspace_service.ViewError, team_service.TeamError) as exc:
+                workspace_service.ViewError, team_service.TeamError,
+                windows_service.WindowError) as exc:
             self._error(exc)
         except Exception:  # noqa: BLE001 - 不向客户端泄露本机路径/堆栈
             self._json(500, {"ok": False, "error": "internal_error",
@@ -2127,6 +2165,15 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self._json(200, response)
                 return
+            if path.startswith("/api/devices/"):
+                segments = self._segments(path)  # api devices <id> sessions | commands [<cid> result]
+                if len(segments) == 4 and segments[3] == "sessions":
+                    body = self._body()
+                    self._platform(_device_report, segments[2], body.get("sessions") or [])
+                    return
+                if len(segments) == 6 and segments[3] == "commands" and segments[5] == "result":
+                    self._platform(_device_result, segments[2], segments[4], self._body())
+                    return
             if path == "/api/workspace/views":
                 payload = self._body()
                 principal_id = self._principal_id()
@@ -2257,6 +2304,16 @@ class Handler(BaseHTTPRequestHandler):
                                str(body.get("instruction") or ""), actor=self._principal_id())
             else:
                 self._platform(_team_stop, project_id, rest[1], actor=self._principal_id())
+            return
+        if len(rest) == 4 and rest[0] == "windows" and rest[3] == "dispatch":
+            body = self._body()
+            self._platform(_windows_dispatch, project_id, rest[1], rest[2],
+                           str(body.get("instruction") or ""), actor=self._principal_id())
+            return
+        if rest == ["windows", "bind"]:
+            body = self._body()
+            self._platform(_windows_bind, project_id, str(body.get("device_id") or ""),
+                           str(body.get("session_id") or ""), actor=self._principal_id())
             return
         if rest == ["deliveries"]:
             self._platform(platform_service.create_delivery, project_id, self._body())
@@ -2439,6 +2496,15 @@ class Handler(BaseHTTPRequestHandler):
                 principal_id=self._principal_id(),
                 limit=int((query.get("limit") or ["20"])[0]),
             )
+        elif path.startswith("/api/devices/"):
+            segments = self._segments(path)  # api devices <id> commands
+            if len(segments) == 4 and segments[3] == "commands":
+                self._platform(
+                    _device_pull, segments[2],
+                    int((query.get("limit") or ["10"])[0]),
+                )
+            else:
+                self._not_found_route()
         elif path == "/api/workspace/views":
             self._platform(
                 workspace_service.list_views,
@@ -2596,6 +2662,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["team", "preflight"]:
                 self._platform(_team_preflight, project_id)
+                return
+            if rest == ["windows"]:
+                self._platform(_windows_list, project_id)
                 return
             if len(rest) == 3 and rest[0] == "team" and rest[2] == "logs":
                 self._platform(

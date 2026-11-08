@@ -304,7 +304,19 @@ async function main() {
     await fetch(`${BASE}/api/projects/material/backfill`, { method: "POST", headers: AUTH });
     projects = (await api("/api/projects")).body;
     const materialTokenApi = projects.items.find((p) => p.id === "material").stats.token_24h;
-    check(withinTolerance(materialToken, materialTokenApi), "回填后 material 今日 Token 与 API 一致（±2%）", `UI ${materialToken} / API ${fmtNum(materialTokenApi)}`);
+    // 回填会改变两条口径的数值：必须让页面重取一次 state 再比，否则比的是回填前的旧 UI 值。
+    await page.evaluate(() => window.manualRefresh && window.manualRefresh());
+    await sleep(1500);
+    const materialTokenNow = await kpiValue(page, "今日 Token");
+    // 口径要对齐再比：列表 stats 是「近 24 小时」，KPI 是「今日」，两者本来就不同，
+    // 拿它们互比只会互相误伤。这里比的是同一口径：/api/state 的 usage_breakdown 今日合计。
+    const stateNow = await (await fetch(`${BASE}/api/state?project=material`, { headers: AUTH })).json();
+    const todayApi = stateNow?.usage_breakdown?.today_tokens?.total ?? null;
+    check(
+      withinTolerance(materialTokenNow, todayApi),
+      "回填后 material 今日 Token 与平台库用量一致（±2%）",
+      `UI ${fmtNum(materialTokenNow)} / 平台库今日 ${fmtNum(todayApi)}（24h ${fmtNum(materialTokenApi)}，回填前 UI ${fmtNum(materialToken)}）`,
+    );
     check((await activePid(page)) === "material", "侧栏高亮 material", String(await activePid(page)));
 
     // ------------------------------------------------------------ 3) 竞态
@@ -756,6 +768,11 @@ async function main() {
     }, null, { timeout: 20000 }).catch(() => {});
     const preflightText = (await page.locator('[data-testid="team-bar"]').innerText().catch(() => "")).replace(/\s+/g, " ");
     check(/预检/.test(preflightText), "预检给出可执行结论", preflightText.slice(0, 90));
+    // 派发目标：可选窗口（没有桥接时只有「平台后台会话」），并给出绑定入口
+    const winSel = page.locator('[data-testid="team-window"]');
+    await winSel.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    const winOpts = await winSel.locator("option").allInnerTexts().catch(() => []);
+    check(winOpts.length >= 1 && /平台后台会话/.test(winOpts[0]), "Agent Team 有派发目标下拉（默认平台后台会话）", winOpts.slice(0, 2).join(" / "));
     const taskSel = page.locator('[data-testid="team-task"]');
     const taskOpts = await taskSel.locator("option").allInnerTexts().catch(() => []);
     check(taskOpts.length >= 1, "团队面板可从任务板选任务", taskOpts.slice(0, 2).join("/"));

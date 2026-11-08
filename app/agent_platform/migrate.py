@@ -134,6 +134,9 @@ V13_TABLES = (
 #: v15（Agent Team）：真实 Claude Code 后台会话的启动记录。
 V15_TABLES = ("team_sessions",)
 
+#: v17（窗口派发）：各机器打开的 Claude CLI 会话登记 + 平台下发的指令队列。
+V17_TABLES = ("device_sessions", "device_commands")
+
 #: v16（执行状态回显）：状态自报事件记录自报状态（idle/running/blocked…），
 #: 让时间线与卡片能回显「Agent 自称在做什么」，而不是一律「未验证」。
 #: 自报不是执行证据，``ok`` 仍然只由真实执行结果决定。
@@ -447,6 +450,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         columns=V16_COLUMN_UPGRADES,
         backfill=_migrate_v15_to_v16,
         description="执行状态回显：状态自报事件记录自报状态",
+    ),
+    MigrationStep(
+        17,
+        tables=V17_TABLES,
+        description="窗口派发：设备窗口会话登记与指令队列",
     ),
 )
 

@@ -1259,6 +1259,19 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .tl-agent-rep { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 11px; color: var(--muted); margin-top: 2px; }
 
+
+.team-target { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 8px; font-size: 12px; color: var(--muted); }
+.team-target label { display: inline-flex; align-items: center; gap: 8px; }
+.team-target #team-window-note { color: var(--muted); }
+
+
+.team-dispatch-log { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 6px; }
+.team-dispatch-log:empty { display: none; }
+.tdl { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.tdl.done { color: var(--ok, #3fb950); border-color: currentColor; }
+.tdl.failed { color: var(--bad, #f85149); border-color: currentColor; }
+.tdl.dispatched, .tdl.pending { color: var(--accent); border-color: currentColor; }
+
 </style>
 </head>
 <body>
@@ -3300,6 +3313,12 @@ async function launchTeam() {
   if (!text) { if (input) input.focus(); return; }
   TEAM.notice = "正在启动真实 Claude Code 团队…";
   paintTeam();
+  const target = $("#team-window");
+  if (target && target.value) {
+    if (await dispatchToWindow(text)) { setTeamInput(""); }
+    paintTeam();
+    return;
+  }
   try {
     const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/launch`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -3456,6 +3475,120 @@ async function loadAgentActivity(force = false) {
 }
 
 let teamComposeRO = null;
+
+const WINDOWS = { projectId: null, at: 0, data: null, busy: false, error: null };
+
+async function loadTeamWindows(force = false) {
+  const p = APP.currentProject;
+  if (!p) return;
+  if (!force && WINDOWS.projectId === p.id && Date.now() - WINDOWS.at < 10000) return;
+  if (WINDOWS.busy) return;
+  WINDOWS.busy = true;
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/windows`);
+    if (APP.currentProject?.id !== p.id) return;
+    WINDOWS.data = d; WINDOWS.projectId = p.id; WINDOWS.at = Date.now(); WINDOWS.error = null;
+  } catch (e) {
+    if (APP.currentProject?.id !== p.id) return;
+    WINDOWS.error = errText(e) || "窗口列表不可用";
+    WINDOWS.data = null;
+  } finally {
+    WINDOWS.busy = false;
+    paintTeamWindows();
+  }
+}
+
+function windowValue(w) {
+  return `${w.device_id}|${w.session_id}`;
+}
+
+function paintTeamWindows() {
+  const sel = $("#team-window");
+  if (!sel) return;
+  const d = WINDOWS.data;
+  const note = $("#team-window-note");
+  const bindBtn = $("#team-window-bind");
+  const bound = d?.bound;
+  if (WINDOWS.error) {
+    sel.innerHTML = `<option value="">窗口列表不可用</option>`;
+    if (note) note.textContent = WINDOWS.error;
+    if (bindBtn) bindBtn.hidden = true;
+    return;
+  }
+  if (!d) {
+    sel.innerHTML = `<option value="">读取窗口…</option>`;
+    return;
+  }
+  const windows = d.windows || [];
+  const cur = sel.value;
+  const opts = windows.map(w => {
+    const live = w.online ? (w.status === "busy" ? "运行中" : "空闲") : "离线";
+    return `<option value="${esc(windowValue(w))}">${esc(`${w.label} · ${w.device_id} · ${live}`)}</option>`;
+  }).join("");
+  sel.innerHTML = `<option value="">平台后台会话（默认）</option>${opts}`;
+  const boundValue = bound ? `${bound.device_id}|${bound.session_id}` : "";
+  const want = cur || boundValue;
+  if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
+  if (note) {
+    note.textContent = bound
+      ? `总负责人窗口：${bound.name || bound.session_id.slice(0, 8)} · ${bound.device_id} · ${bound.online ? "在线" : "离线"}`
+      : (windows.length ? `${windows.length} 个窗口可选` : "本机没有发现打开的窗口（需要在对应机器启动 scripts/session-bridge.py）");
+  }
+  syncWindowBindBtn();
+  const log = $("#team-dispatch-log");
+  const cmds = (d.commands || []).slice(0, 3);
+  if (log) {
+    log.innerHTML = cmds.map(c => {
+      const state = { pending: "待执行", dispatched: "执行中", done: "成功", failed: "失败" }[c.status] || c.status;
+      return `<span class="tdl ${esc(c.status)}" title="${esc(c.instruction || "")}">${esc(state)} · ${esc(ago(c.created_at))}${c.session_id ? ` · 会话 ${esc(String(c.session_id).slice(0, 8))}` : ""}</span>`;
+    }).join("");
+  }
+}
+
+function syncWindowBindBtn() {
+  const sel = $("#team-window");
+  const btn = $("#team-window-bind");
+  if (!sel || !btn) return;
+  const bound = WINDOWS.data?.bound;
+  const boundValue = bound ? `${bound.device_id}|${bound.session_id}` : "";
+  btn.hidden = !sel.value || sel.value === boundValue;
+}
+
+async function bindTeamWindow() {
+  const sel = $("#team-window");
+  if (!sel || !sel.value) return;
+  const [deviceId, ...rest] = sel.value.split("|");
+  const sessionId = rest.join("|");
+  try {
+    await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/windows/bind`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, session_id: sessionId }),
+    });
+    TEAM.notice = "已设为该项目的总负责人窗口";
+  } catch (e) {
+    TEAM.notice = `绑定失败：${errText(e)}`;
+  }
+  await loadTeamWindows(true);
+  paintTeam();
+}
+
+async function dispatchToWindow(instruction) {
+  const sel = $("#team-window");
+  if (!sel || !sel.value) return false;
+  const [deviceId, ...rest] = sel.value.split("|");
+  const sessionId = rest.join("|");
+  try {
+    await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/windows/${encodeURIComponent(deviceId)}/${encodeURIComponent(sessionId)}/dispatch`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction }),
+    });
+    TEAM.notice = "已下发给指定窗口；桥接会在那台机器执行 --bg --resume，结果回显在窗口列表下方";
+    return true;
+  } catch (e) {
+    TEAM.notice = `下发失败：${errText(e)}`;
+    return false;
+  }
+}
 function setTeamInput(text) {
   const ta = $("#team-input");
   if (!ta) return;
@@ -3587,6 +3720,16 @@ function renderAgentsPage(el) {
           </label>
           <span class="ws-sub" id="team-task-count"></span>
         </div>
+        <div class="team-target" data-testid="team-target">
+          <label>派发目标
+            <select id="team-window" data-testid="team-window">
+              <option value="">平台后台会话（默认）</option>
+            </select>
+          </label>
+          <button type="button" class="btn sm" id="team-window-bind" data-testid="team-window-bind" hidden>设为总负责人</button>
+          <span class="ws-sub" id="team-window-note"></span>
+        </div>
+        <div class="team-dispatch-log" id="team-dispatch-log"></div>
         <div class="team-compose">
           <textarea id="team-input" rows="4" placeholder="给项目总负责人的指令，例如：推进 DDP-105，FE 用 worktree 隔离，先出审查结论" data-testid="team-input">${esc(APP.teamDraft?.text || "")}</textarea>
           <div class="team-buttons">
@@ -3609,6 +3752,11 @@ function renderAgentsPage(el) {
   renderRoster(roster);
   renderAgents(agents);
   bindTeamCompose();
+  const windowSel = $("#team-window");
+  if (windowSel) windowSel.onchange = syncWindowBindBtn;
+  const bindBtn = $("#team-window-bind");
+  if (bindBtn) bindBtn.onclick = bindTeamWindow;
+  loadTeamWindows();
   const launchBtn = $("#team-launch");
   if (launchBtn) launchBtn.onclick = launchTeam;
   loadTeamTasks();

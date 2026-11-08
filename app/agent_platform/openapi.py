@@ -118,6 +118,12 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/team/launch"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/instruct"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/stop"),
+    ("GET", "/api/projects/{project_id}/windows"),
+    ("POST", "/api/projects/{project_id}/windows/bind"),
+    ("POST", "/api/projects/{project_id}/windows/{device_id}/{session_id}/dispatch"),
+    ("POST", "/api/devices/{device_id}/sessions"),
+    ("GET", "/api/devices/{device_id}/commands"),
+    ("POST", "/api/devices/{device_id}/commands/{command_id}/result"),
     ("GET", "/api/projects/{project_id}/team/{session_id}/logs"),
     ("GET", "/api/projects/{project_id}/sessions/{session_id}"),
     ("PUT", "/api/projects/{project_id}/favorite"),
@@ -767,6 +773,37 @@ def _paths() -> dict[str, Any]:
             "post": project_op("post", "停止项目 Agent Team 会话",
                                params=[_param("session_id", "path", required=True)],
                                errors=(404, 409))[2]
+        },
+        "/api/projects/{project_id}/windows": {
+            "get": project_op("get", "各机器上打开的 Claude CLI 窗口：在线状态与绑定关系",
+                              ok_schema={"type": "object"}, errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/windows/bind": {
+            "post": project_op("post", "把某个窗口绑定为项目总负责人主会话",
+                               body={"type": "object"}, errors=(404, 422))[2]
+        },
+        "/api/projects/{project_id}/windows/{device_id}/{session_id}/dispatch": {
+            "post": project_op("post", "向指定窗口下发指令（由该机器的桥接执行 --bg --resume）",
+                               params=[_param("device_id", "path", required=True),
+                                       _param("session_id", "path", required=True)],
+                               body={"type": "object"}, errors=(404, 409, 422))[2]
+        },
+        "/api/devices/{device_id}/sessions": {
+            "post": _operation("桥接上报本机 Claude 会话", tags=["device"],
+                               params=[_param("device_id", "path", required=True)],
+                               body={"type": "object"}, ok_schema={"type": "object"}, errors=(422,))
+        },
+        "/api/devices/{device_id}/commands": {
+            "get": _operation("桥接领取待执行指令", tags=["device"],
+                              params=[_param("device_id", "path", required=True),
+                                      _param("limit", typ="integer")],
+                              ok_schema={"type": "object"}, errors=(422,))
+        },
+        "/api/devices/{device_id}/commands/{command_id}/result": {
+            "post": _operation("桥接回报指令执行结果", tags=["device"],
+                               params=[_param("device_id", "path", required=True),
+                                       _param("command_id", "path", required=True)],
+                               body={"type": "object"}, ok_schema={"type": "object"}, errors=(404, 422))
         },
         "/api/projects/{project_id}/sessions": {
             "get": project_op("get", "会话列表：主会话与 subagent 的实时状态、最后一步",
