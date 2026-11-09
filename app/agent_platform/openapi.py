@@ -123,6 +123,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/windows/bind"),
     ("POST", "/api/projects/{project_id}/windows/{device_id}/{session_id}/dispatch"),
     ("POST", "/api/devices/{device_id}/sessions"),
+    ("POST", "/api/devices/{device_id}/traces"),
     ("GET", "/api/devices/{device_id}/commands"),
     ("POST", "/api/devices/{device_id}/commands/{command_id}/result"),
     ("GET", "/api/projects/{project_id}/team/{session_id}/logs"),
@@ -795,6 +796,11 @@ def _paths() -> dict[str, Any]:
         },
         "/api/devices/{device_id}/sessions": {
             "post": _operation("桥接上报本机 Claude 会话", tags=["device"],
+                               params=[_param("device_id", "path", required=True)],
+                               body={"type": "object"}, ok_schema={"type": "object"}, errors=(422,))
+        },
+        "/api/devices/{device_id}/traces": {
+            "post": _operation("桥接上报远端窗口会话 trace", tags=["device"],
                                params=[_param("device_id", "path", required=True)],
                                body={"type": "object"}, ok_schema={"type": "object"}, errors=(422,))
         },

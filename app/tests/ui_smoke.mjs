@@ -271,10 +271,10 @@ async function main() {
     await page.waitForFunction(() => location.hash === "#/p/demo-b/overview", null, { timeout: 5000 });
     await waitOverviewReady(page);
     check(new URL(page.url()).hash === "#/p/demo-b/overview", "切换 demo-b 后 URL 正确", new URL(page.url()).hash);
-    const demoToken = await kpiValue(page, "今日 Token");
+    const demoToken = await kpiValue(page, "24 小时 Token");
     const demoCost = await projectCostText(page);
     const demoDoing = await kpiValue(page, "进行中任务");
-    check(demoToken === "0", "demo-b 今日 Token 为 0", String(demoToken));
+    check(demoToken === "0", "demo-b 24 小时 Token 为 0", String(demoToken));
     check(demoCost === "—", "demo-b 花费为 —", String(demoCost));
     check(demoDoing === "0", "demo-b 进行中任务为 0", String(demoDoing));
     check((await activePid(page)) === "demo-b", "侧栏高亮 demo-b", String(await activePid(page)));
@@ -297,7 +297,7 @@ async function main() {
     check(await page.locator("#ctx-bar").isVisible(), "项目页显示项目上下文条");
     const ctxText = await page.locator("#ctx-bar").innerText();
     check(/material/.test(ctxText) && ctxText.includes("进行中"), "上下文条含项目代号与状态", ctxText.replace(/\s+/g, " ").slice(0, 60));
-    const materialToken = await kpiValue(page, "今日 Token");
+    const materialToken = await kpiValue(page, "24 小时 Token");
     // 两条口径：UI 读 /api/state 的实时 transcript 扫描，/api/projects 的 stats 读回填进库的
     // token_usage_events。不先回填，活跃会话持续增长就会让两者越拉越远（不是 bug，是没对齐）。
     // 比较前触发一次回填并重取 API，让两条口径落在同一时刻。
@@ -307,15 +307,14 @@ async function main() {
     // 回填会改变两条口径的数值：必须让页面重取一次 state 再比，否则比的是回填前的旧 UI 值。
     await page.evaluate(() => window.manualRefresh && window.manualRefresh());
     await sleep(1500);
-    const materialTokenNow = await kpiValue(page, "今日 Token");
+    const materialTokenNow = await kpiValue(page, "24 小时 Token");
     // 口径要对齐再比：列表 stats 是「近 24 小时」，KPI 是「今日」，两者本来就不同，
     // 拿它们互比只会互相误伤。这里比的是同一口径：/api/state 的 usage_breakdown 今日合计。
-    const stateNow = await (await fetch(`${BASE}/api/state?project=material`, { headers: AUTH })).json();
-    const todayApi = stateNow?.usage_breakdown?.today_tokens?.total ?? null;
+    // KPI 是「近 24 小时」，与项目列表 stats.token_24h 同源同窗口，直接比这两个
     check(
-      withinTolerance(materialTokenNow, todayApi),
-      "回填后 material 今日 Token 与平台库用量一致（±2%）",
-      `UI ${fmtNum(materialTokenNow)} / 平台库今日 ${fmtNum(todayApi)}（24h ${fmtNum(materialTokenApi)}，回填前 UI ${fmtNum(materialToken)}）`,
+      withinTolerance(materialTokenNow, materialTokenApi),
+      "回填后 material 24 小时 Token 与 API 一致（±2%）",
+      `UI ${fmtNum(materialTokenNow)} / API ${fmtNum(materialTokenApi)}（回填前 UI ${fmtNum(materialToken)}）`,
     );
     check((await activePid(page)) === "material", "侧栏高亮 material", String(await activePid(page)));
 
@@ -543,7 +542,7 @@ async function main() {
     check(newHash === `#/p/${code}/overview`, "新建项目后进入其概览", newHash);
     const newInSidebar = await page.locator(`#sb-projects .sb-proj[data-pid="${code}"]`).count();
     check(newInSidebar === 1, "新建项目出现在侧栏", `count=${newInSidebar}`);
-    const newToken = await kpiValue(page, "今日 Token");
+    const newToken = await kpiValue(page, "24 小时 Token");
     const newCost = await projectCostText(page);
     const newDoing = await kpiValue(page, "进行中任务");
     check(newToken === "0" && newCost === "—" && newDoing === "0", "新项目状态为空（Token 0 / 花费 — / 任务 0）", `${newToken} / ${newCost} / ${newDoing}`);

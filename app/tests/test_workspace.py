@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent_platform import store, workspace
 
-NOW = "2026-11-08T00:00:00+00:00"
+# 用「今天」而不是写死的日期：跨天后「今日/24h」口径会整体失效，用例会假失败
+NOW = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 @pytest.fixture()

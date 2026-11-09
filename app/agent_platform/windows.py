@@ -98,6 +98,82 @@ def report_sessions(device_id: str, sessions: list[dict[str, Any]]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
+# 远端会话 trace（桥接上报）
+# ---------------------------------------------------------------------------
+def report_traces(device_id: str, traces: list[dict[str, Any]]) -> dict[str, Any]:
+    """桥接上报远端窗口的会话 trace，平台才能「进去看」别的机器上的会话。"""
+    device_id = str(device_id or "").strip()
+    if not device_id:
+        raise WindowError("invalid_payload", 422, "缺少 device_id")
+    if not isinstance(traces, list):
+        raise WindowError("invalid_payload", 422, "traces 必须是数组")
+    now = _now()
+    accepted = 0
+    with store.session() as conn:
+        for item in traces:
+            if not isinstance(item, dict):
+                continue
+            session_id = str(item.get("session_id") or "").strip()
+            payload = item.get("payload")
+            if not session_id or not isinstance(payload, dict):
+                continue
+            conn.execute(
+                """
+                INSERT INTO device_traces
+                    (id, device_id, session_id, project_id, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id, session_id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    store.stable_id("dt", device_id, session_id),
+                    device_id, session_id,
+                    str(item.get("project_id") or "") or None,
+                    store.dumps_json(payload), now,
+                ),
+            )
+            accepted += 1
+    return {"device_id": device_id, "accepted": accepted, "reported_at": now}
+
+
+def device_trace(conn: sqlite3.Connection, project_id: str, session_id: str) -> dict[str, Any] | None:
+    """某个远端窗口会话的最后一份 trace（没有就返回 None）。"""
+    row = conn.execute(
+        "SELECT * FROM device_traces WHERE project_id = ? AND session_id = ?"
+        " ORDER BY updated_at DESC LIMIT 1",
+        (project_id, session_id),
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT * FROM device_traces WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = store.loads_json(row["payload_json"], {}) or {}
+    payload["_device_id"] = row["device_id"]
+    payload["_updated_at"] = row["updated_at"]
+    return payload
+
+
+def window_sessions(conn: sqlite3.Connection, project_id: str) -> list[dict[str, Any]]:
+    """项目下已登记的远端窗口会话（用于并入「实时会话」列表）。"""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ONLINE_SECONDS)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT * FROM device_sessions WHERE project_id = ? ORDER BY reported_at DESC",
+        (project_id,),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["online"] = str(item.get("reported_at") or "") >= cutoff
+        out.append(item)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 查询
 # ---------------------------------------------------------------------------
 #: 绑定存在项目 settings_json 里：哪个窗口是该项目的「总负责人主会话」。

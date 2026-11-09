@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 SHORT_ID_RE = re.compile(r"backgrounded\s*·\s*([0-9a-zA-Z-]{6,64})")
 
@@ -135,6 +136,101 @@ def report(base: str, device: str, token: str, sessions: list[dict], projects: l
     return int(res.get("accepted") or 0)
 
 
+def _short(value, limit: int = 300) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = text.replace("\n", " ").strip()
+    return text[:limit]
+
+
+def transcript_path(session: dict) -> Path | None:
+    cwd = str(session.get("cwd") or "")
+    sid = str(session.get("sessionId") or "")
+    if not cwd or not sid:
+        return None
+    slug = cwd.rstrip("/").replace("/", "-")
+    candidate = Path.home() / ".claude" / "projects" / slug / f"{sid}.jsonl"
+    return candidate if candidate.is_file() else None
+
+
+def build_trace(session: dict, project_id: str | None, limit: int = 160) -> dict | None:
+    """把本机会话的 transcript 解析成平台能直接渲染的 trace（只取最近 limit 条）。"""
+    path = transcript_path(session)
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    events: list[dict] = []
+    tokens = 0
+    model = None
+    started_at = None
+    last_at = None
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            at = row.get("timestamp") or row.get("ts")
+            if at:
+                started_at = started_at or at
+                last_at = at
+            message = row.get("message") or {}
+            if isinstance(message, dict):
+                model = message.get("model") or model
+                usage = message.get("usage") or {}
+                if isinstance(usage, dict):
+                    tokens += sum(int(usage.get(k) or 0) for k in (
+                        "input_tokens", "output_tokens",
+                        "cache_read_input_tokens", "cache_creation_input_tokens"))
+                content = message.get("content")
+                blocks = content if isinstance(content, list) else []
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "thinking":
+                        events.append({"kind": "thinking", "text": _short(block.get("thinking")), "at": at})
+                    elif btype == "text":
+                        events.append({"kind": "text", "text": _short(block.get("text"), 900), "at": at})
+                    elif btype == "tool_use":
+                        events.append({"kind": "tool", "tool": block.get("name"),
+                                       "detail": _short(block.get("input") or {}, 200), "at": at})
+                    elif btype == "tool_result":
+                        events.append({"kind": "tool_result", "text": _short(block.get("content"), 900), "at": at})
+            if len(events) > limit * 3:
+                events = events[-limit * 2:]
+    events = events[-limit:]
+    status = "running" if session.get("status") in ("busy", "running") else (
+        "idle" if session.get("status") in ("idle", None) else "stalled")
+    return {
+        "session_id": session.get("sessionId"),
+        "project_id": project_id,
+        "payload": {
+            "ok": True,
+            "session_id": session.get("sessionId"),
+            "kind": "window",
+            "agent_id": None,
+            "description": session.get("name") or f"窗口 {str(session.get('sessionId'))[:8]}",
+            "agent_type": "window",
+            "status": status,
+            "status_text": {"running": "运行中", "idle": "空闲", "stalled": "疑似停滞"}.get(status, status),
+            "started_at": started_at,
+            "last_event_at": last_at,
+            "idle_seconds": int(max(0, time.time() - stat.st_mtime)),
+            "tokens": tokens,
+            "events_total": len(events),
+            "truncated": len(events) >= limit,
+            "events": events,
+            "model": model,
+        },
+    }
+
+
 def run_command(base: str, device: str, token: str, cmd: dict) -> None:
     session_id = str(cmd.get("session_id") or "")
     instruction = str(cmd.get("instruction") or "")
@@ -188,8 +284,16 @@ def main() -> int:
                 projects_at = now
             sessions = list_sessions()
             accepted = report(base, args.device, args.token, sessions, projects)
+            # 把本机会话的 trace 推上去：平台在服务器上，读不到这台机器的 transcript
+            traces = []
+            for item in sessions[:10]:
+                payload = build_trace(item, project_for(str(item.get("cwd") or ""), projects))
+                if payload:
+                    traces.append(payload)
+            if traces:
+                _http("POST", f"{base}/api/devices/{args.device}/traces", {"traces": traces}, args.token)
             commands = _http("GET", f"{base}/api/devices/{args.device}/commands", token=args.token).get("commands") or []
-            print(f"[桥接] {time.strftime('%H:%M:%S')} 上报 {accepted} 个会话，领取 {len(commands)} 条指令")
+            print(f"[桥接] {time.strftime('%H:%M:%S')} 上报 {accepted} 个会话 / {len(traces)} 条 trace，领取 {len(commands)} 条指令")
             for cmd in commands:
                 run_command(base, args.device, args.token, cmd)
             if args.once:

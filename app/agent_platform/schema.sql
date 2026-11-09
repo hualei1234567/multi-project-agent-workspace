@@ -1016,6 +1016,16 @@ CREATE TABLE IF NOT EXISTS saved_views (
 -- v15（Agent Team）：真实 Claude Code 后台会话的启动与指令记录
 -- 只记录「平台启动过什么」，会话本身的真相仍以 claude agents --json 为准
 -- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS device_traces (
+  id          TEXT PRIMARY KEY,
+  device_id   TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  project_id  TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  updated_at  TEXT NOT NULL,
+  UNIQUE(device_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS device_sessions (
   id          TEXT PRIMARY KEY,
   device_id   TEXT NOT NULL,

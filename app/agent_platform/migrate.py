@@ -134,6 +134,9 @@ V13_TABLES = (
 #: v15（Agent Team）：真实 Claude Code 后台会话的启动记录。
 V15_TABLES = ("team_sessions",)
 
+#: v18（窗口会话可见）：桥接把远端窗口的会话 trace 推上来，平台才能「进去看」。
+V18_TABLES = ("device_traces",)
+
 #: v17（窗口派发）：各机器打开的 Claude CLI 会话登记 + 平台下发的指令队列。
 V17_TABLES = ("device_sessions", "device_commands")
 
@@ -455,6 +458,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         17,
         tables=V17_TABLES,
         description="窗口派发：设备窗口会话登记与指令队列",
+    ),
+    MigrationStep(
+        18,
+        tables=V18_TABLES,
+        description="窗口会话可见：桥接上报远端窗口的会话 trace",
     ),
 )
 

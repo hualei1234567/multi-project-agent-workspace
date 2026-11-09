@@ -2877,7 +2877,7 @@ function renderOverviewPage(el) {
   const done = s.stats?.tasks_done ?? (funnel ? funnel.done : null);
   const allTasks = Array.isArray(s.tasks) ? s.tasks.length : null;
   const rate = (done != null && allTasks) ? Math.round(done / allTasks * 100) : null;
-  const tokens = s.project_usage?.token_24h ?? null;
+  const tokens = s.project_usage?.token_24h ?? null;   // 24 小时窗口，与项目列表 stats 同源
   const tokenSource = s.project_usage?.source || null;
   // 模型构成优先用平台库（usage_breakdown），本机扫描只作兜底
   const models = Array.isArray(s.usage_breakdown?.model_breakdown) && s.usage_breakdown.model_breakdown.length
@@ -2898,7 +2898,7 @@ function renderOverviewPage(el) {
           <div class="hint">阻塞 ${esc(blocked == null ? "—" : String(blocked))}</div>${delta}</div>
         <div class="kpi"><div class="label">已完成任务</div><div class="value">${esc(done == null ? "—" : String(done))}</div>
           <div class="hint">完成率 ${rate == null ? "—" : rate + "%"}</div>${delta}</div>
-        <div class="kpi"><div class="label">今日 Token</div><div class="value">${esc(tokens == null ? "—" : fmtNum(tokens))}</div>
+        <div class="kpi" title="近 24 小时（与项目列表同源）"><div class="label">24 小时 Token</div><div class="value">${esc(tokens == null ? "—" : fmtNum(tokens))}</div>
           <div class="hint">来源：${esc(tokenSource || "—")}</div>${delta}</div>
         <div class="kpi"><div class="label">使用模型</div><div class="value">${esc(modelCount == null ? "—" : String(modelCount))}</div>
           <div class="hint">${topModel ? esc(topModel.name || "unknown") : "暂无模型数据"}</div>${delta}</div>
@@ -3018,7 +3018,7 @@ function renderUsageRich(s, container) {
     </div>
     <div class="divider"></div>
     <div>
-      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">${scopeLabel}</span></div>
+      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">${scopeLabel}</span>${ub && !ub.is_today ? `<span class="chip" title="今日还没有用量，这里展示最近有数据的一天">${esc(ub.focus_day)}</span>` : ""}</div>
       ${compOk ? `<div class="usage-bar" style="display:flex;margin-top:6px">
         <i style="width:${(cache/sum*100).toFixed(1)}%;border-radius:0"></i>
         <i style="width:${(inp/sum*100).toFixed(1)}%;background:#7b5cff;border-radius:0"></i>

@@ -12,6 +12,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
@@ -1454,6 +1455,48 @@ def list_sessions(project_id: str) -> dict[str, Any]:
             "last_detail": last_event.get("detail") or last_event.get("text") or "",
         })
     # 先按最近活动倒序，再稳定地把「运行中」提到最前：用户先关心现在谁在跑
+    # 并入远端窗口会话（VSCode 里开着的那个），平台才能「进去看」正在跑的东西
+    with store.session() as conn:
+        for win in windows.window_sessions(conn, project_id):
+            sid = str(win.get("session_id") or "")
+            if not sid or any(x["session_id"] == sid for x in items):
+                continue
+            trace = windows.device_trace(conn, project_id, sid) or {}
+            live_status = "running" if (win.get("status") == "busy" and win.get("online")) else (
+                "idle" if win.get("online") else "stalled"
+            )
+            last_at = trace.get("last_event_at") or win.get("reported_at")
+            idle = None
+            if last_at:
+                try:
+                    idle = int(max(0, (datetime.now(timezone.utc)
+                                       - datetime.fromisoformat(str(last_at).replace("Z", "+00:00")))
+                                   .total_seconds()))
+                except ValueError:
+                    idle = None
+            items.append({
+                "session_id": sid,
+                "kind": "window",
+                "worktree": None,
+                "role_key_hint": None,
+                "agent_id": None,
+                "agent_name": win.get("name") or f"窗口 {sid[:8]}",
+                "role_key": None,
+                "description": f"{win.get('device_id')} · {win.get('kind') or 'window'}",
+                "device_id": win.get("device_id"),
+                "path": None,
+                "status": live_status,
+                "status_text": {"running": "运行中", "idle": "空闲", "stalled": "离线"}.get(live_status, live_status),
+                "started_at": trace.get("started_at"),
+                "last_event_at": last_at,
+                "idle_seconds": idle,
+                "events_total": trace.get("events_total") or 0,
+                "tokens": trace.get("tokens") or 0,
+                "model": trace.get("model"),
+                "last_step": (trace.get("last_step") or ""),
+                "last_detail": (trace.get("last_detail") or ""),
+            })
+
     items.sort(key=lambda x: str(x.get("last_event_at") or ""), reverse=True)
     items.sort(key=lambda x: 0 if x["status"] == "running" else 1)
     live = sum(1 for x in items if x["status"] == "running")
@@ -1478,7 +1521,11 @@ def session_trace(project_id: str, session_id: str, *, limit: int = 160) -> dict
         and (item["kind"] == "main" or True)
     ]
     if not matches:
-        raise PlatformError("not_found", 404, "会话不存在")
+        with store.session() as conn:
+            remote = windows.device_trace(conn, project_id, session_id)
+        if remote is None:
+            raise PlatformError("not_found", 404, "会话不存在")
+        return remote
     # 主会话与 subagent 可能同 session_id：优先主会话，其次最近写入的
     def _mtime(item):
         try:
@@ -1527,6 +1574,18 @@ def session_trace(project_id: str, session_id: str, *, limit: int = 160) -> dict
     }
 
 
+def _local_day(occurred_at: str, tz_local) -> str:
+    """UTC 时间戳 → 本机时区的日期字符串（用于「今日」「近 N 天」口径）。"""
+    text = str(occurred_at or "")
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text[:10]
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(tz_local).date().isoformat()
+
+
 def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
     """项目用量明细：今日构成 / 近 N 天趋势 / 模型构成（来源：平台库 token_usage_events）。
 
@@ -1534,16 +1593,19 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
     前端再回退到本机扫描，并在 UI 上标注口径，不把两种来源混在一起。
     """
     days = max(1, min(int(days or 6), 30))
+    # 「今日」按本机时区算：按 UTC 算的话，用户早上看到的今日会被算成「昨天」，与直觉相反
+    tz_local = datetime.now().astimezone().tzinfo or timezone.utc
+    today = datetime.now(tz_local).date()
+    start_local = datetime.combine(today - timedelta(days=days - 1), dt_time.min, tzinfo=tz_local)
+    start_utc = start_local.astimezone(timezone.utc).isoformat(timespec="seconds")
     with store.session() as conn:
         _require_project(conn, project_id)
-        today = datetime.now(timezone.utc).date()
-        start = (today - timedelta(days=days - 1)).isoformat()
         rows = conn.execute(
             "SELECT occurred_at, model, input_tokens, output_tokens, cache_read_tokens,"
             " cache_write_tokens, total_tokens, cost_usd"
             " FROM token_usage_events WHERE project_id = ? AND occurred_at >= ?"
             " ORDER BY occurred_at ASC",
-            (project_id, f"{start}T00:00:00"),
+            (project_id, start_utc),
         ).fetchall()
     totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
     per_day = {d.isoformat(): 0 for d in
@@ -1552,14 +1614,21 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
     cost = 0.0
     today_key = today.isoformat()
     for row in rows:
-        occurred = str(row["occurred_at"] or "")
-        day = occurred[:10]
-        total = int(row["total_tokens"] or 0)
+        day = _local_day(str(row["occurred_at"] or ""), tz_local)
         if day in per_day:
-            per_day[day] += total
+            per_day[day] += int(row["total_tokens"] or 0)
+    # 今日还没跑过就用「最近有数据的一天」做构成，并显式标出来源日期，
+    # 而不是让用户对着「暂无构成数据」发呆（数据本身是真实的，只是不在今天）。
+    focus_key = today_key if per_day.get(today_key, 0) > 0 else next(
+        (d for d in sorted(per_day, reverse=True) if per_day[d] > 0), today_key
+    )
+    for row in rows:
+        occurred = str(row["occurred_at"] or "")
+        day = _local_day(occurred, tz_local)
+        total = int(row["total_tokens"] or 0)
         if row["cost_usd"] is not None:
             cost += float(row["cost_usd"])
-        if day != today_key:
+        if day != focus_key:
             continue
         totals["input"] += int(row["input_tokens"] or 0)
         totals["output"] += int(row["output_tokens"] or 0)
@@ -1574,6 +1643,8 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
         "available": bool(rows),
         "window_days": days,
         "today": today_key,
+        "focus_day": focus_key,
+        "is_today": focus_key == today_key,
         "today_tokens": totals,
         "days": [{"date": d, "tokens": per_day[d]} for d in sorted(per_day)],
         "model_breakdown": [

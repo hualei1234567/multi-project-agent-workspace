@@ -1437,6 +1437,10 @@ def _device_report(device_id: str, sessions: Any) -> dict[str, Any]:
     return windows_service.report_sessions(device_id, sessions if isinstance(sessions, list) else [])
 
 
+def _device_traces(device_id: str, traces: Any) -> dict[str, Any]:
+    return windows_service.report_traces(device_id, traces if isinstance(traces, list) else [])
+
+
 def _device_pull(device_id: str, limit: int = 10) -> dict[str, Any]:
     return windows_service.pull_commands(device_id, limit=limit)
 
@@ -2174,6 +2178,10 @@ class Handler(BaseHTTPRequestHandler):
                 if len(segments) == 4 and segments[3] == "sessions":
                     body = self._body()
                     self._platform(_device_report, segments[2], body.get("sessions") or [])
+                    return
+                if len(segments) == 4 and segments[3] == "traces":
+                    body = self._body()
+                    self._platform(_device_traces, segments[2], body.get("traces") or [])
                     return
                 if len(segments) == 6 and segments[3] == "commands" and segments[5] == "result":
                     self._platform(_device_result, segments[2], segments[4], self._body())
