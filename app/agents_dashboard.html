@@ -3469,7 +3469,7 @@ function paintSessions() {
       title="点开看这个会话正在跑什么">
       ${sessionStatusDot(it.status)}
       <span class="sess-agent">${esc(it.agent_name || "未归属")}</span>
-      <span class="sess-kind">${it.kind === "main" ? "主会话" : "Subagent"}</span>
+      <span class="sess-kind">${it.kind === "main" ? "主会话" : (it.kind === "window" ? "窗口" : "Subagent")}</span>
       <span class="sess-id mono">${esc(String(it.session_id).slice(0, 8))}</span>
       <span class="sess-step">${it.last_step ? `最后一步 ${esc(it.last_step)}` : "暂无步骤"}${it.last_detail ? ` · ${esc(String(it.last_detail).slice(0, 60))}` : ""}</span>
       <span class="sess-meta">事件 ${it.events_total ?? 0} · ${esc(fmtIdle(it.idle_seconds))}${it.worktree ? ` · ${esc(it.worktree)}` : ""}</span>
