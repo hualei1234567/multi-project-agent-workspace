@@ -162,7 +162,7 @@ def build_trace(session: dict, project_id: str | None, limit: int = 160) -> dict
     except OSError:
         return None
     events: list[dict] = []
-    tokens = 0
+    usage_window: list[int] = []   # 只统计最近若干轮，整份文件的累计会大到没有意义
     model = None
     started_at = None
     last_at = None
@@ -184,9 +184,10 @@ def build_trace(session: dict, project_id: str | None, limit: int = 160) -> dict
                 model = message.get("model") or model
                 usage = message.get("usage") or {}
                 if isinstance(usage, dict):
-                    tokens += sum(int(usage.get(k) or 0) for k in (
+                    usage_window.append(sum(int(usage.get(k) or 0) for k in (
                         "input_tokens", "output_tokens",
-                        "cache_read_input_tokens", "cache_creation_input_tokens"))
+                        "cache_read_input_tokens", "cache_creation_input_tokens")))
+                    usage_window = usage_window[-200:]
                 content = message.get("content")
                 blocks = content if isinstance(content, list) else []
                 for block in blocks:
@@ -222,7 +223,9 @@ def build_trace(session: dict, project_id: str | None, limit: int = 160) -> dict
             "started_at": started_at,
             "last_event_at": last_at,
             "idle_seconds": int(max(0, time.time() - stat.st_mtime)),
-            "tokens": tokens,
+            "tokens": sum(usage_window),
+            "last_step": (events[-1].get("tool") or events[-1].get("kind") or "") if events else "",
+            "last_detail": (events[-1].get("detail") or events[-1].get("text") or "")[:120] if events else "",
             "events_total": len(events),
             "truncated": len(events) >= limit,
             "events": events,

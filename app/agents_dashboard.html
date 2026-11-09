@@ -3635,6 +3635,11 @@ function paintTeamWindows() {
   const boundValue = bound ? `${bound.device_id}|${bound.session_id}` : "";
   const want = cur || boundValue;
   if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
+  const watchBtn = $("#team-window-watch");
+  if (watchBtn) {
+    watchBtn.hidden = !bound;
+    watchBtn.onclick = () => bound && openSessionTrace(bound.session_id);
+  }
   if (note) {
     note.textContent = bound
       ? `总负责人窗口：${bound.name || bound.session_id.slice(0, 8)} · ${bound.device_id} · ${bound.online ? "在线" : "离线"}`
@@ -3840,6 +3845,7 @@ function renderAgentsPage(el) {
           </label>
           <button type="button" class="btn sm" id="team-window-bind" data-testid="team-window-bind" hidden>设为总负责人</button>
           <span class="ws-sub" id="team-window-note"></span>
+          <button type="button" class="btn sm" id="team-window-watch" data-testid="team-window-watch" hidden>进去看窗口</button>
         </div>
         <div class="team-dispatch-log" id="team-dispatch-log"></div>
         <div class="team-compose">
