@@ -25,3 +25,14 @@ PY
 else
   echo "  ⚠ 未响应（未启动或无权限）"
 fi
+echo "=== 健康 ==="
+HZ="$(curl -sf -m 5 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
+if [ -n "$HZ" ]; then
+  echo "  ✅ $HZ"
+else
+  echo "  ⚠ /healthz 无响应"
+fi
+echo "=== 执行器 / 桥接 ==="
+pgrep -fl "session-bridge.py" >/dev/null 2>&1 \
+  && echo "  ✅ 会话桥接运行中（本机窗口可被平台「进去看」）" \
+  || echo "  - 会话桥接未运行：scripts/session-bridge.py（影响外部窗口的实时查看与派发）"
