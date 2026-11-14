@@ -1408,6 +1408,12 @@ def _team_instruct(project_id: str, session_id: str, instruction: str, *,
     return team_service.instruct_team(_project_dict(project_id), session_id, instruction, actor=actor)
 
 
+def _team_attach(project_id: str, session_id: str, instruction: str = "",
+                 *, actor: str = "local") -> dict[str, Any]:
+    return team_service.attach_session(_project_dict(project_id), session_id,
+                                       instruction, actor=actor)
+
+
 def _team_logs(project_id: str, session_id: str, *, lines: int = 200) -> dict[str, Any]:
     return team_service.session_logs(_project_dict(project_id), session_id, lines=lines)
 
@@ -2308,6 +2314,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             self._platform(_team_launch, project_id, str(body.get("instruction") or ""),
                            actor=self._principal_id())
+            return
+        if len(rest) == 3 and rest[0] == "team" and rest[2] == "attach":
+            body = self._body()
+            self._platform(_team_attach, project_id, rest[1],
+                           str(body.get("instruction") or ""), actor=self._principal_id())
             return
         if (len(rest) == 3 and rest[0] == "team" and rest[2] in ("instruct", "stop")):
             body = self._body() if rest[2] == "instruct" else {}

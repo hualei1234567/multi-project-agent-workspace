@@ -72,6 +72,15 @@ ROLE_ALIASES = {
 }
 
 ROLE_KEY_BY_KEYWORD = (
+    ("prd", "product-manager"),
+    ("需求", "product-manager"),
+    ("契约", "system-architect"),
+    ("adr", "system-architect"),
+    ("信息架构", "ux-designer"),
+    ("页面规范", "ux-designer"),
+    ("复验", "qa-devops"),
+    ("复核", "qa-devops"),
+    ("审查", "qa-devops"),
     ("general", "general-owner"),
     ("owner", "general-owner"),
     ("product", "product-manager"),
@@ -637,6 +646,41 @@ def _role_map(conn: sqlite3.Connection, project_id: str) -> dict[str, str]:
     return {row["role_key"]: row["id"] for row in rows}
 
 
+#: 内建审查类 subagent：它们做的是「审查/校验」，归到 QA，而不是无归属。
+BUILTIN_ROLE_BY_AGENT_TYPE = {
+    "code-reviewer": "qa-devops",
+    "security-auditor": "qa-devops",
+    "test-engineer": "qa-devops",
+    "security-engineer": "qa-devops",
+}
+
+
+def _resolve_subagent_role(meta: dict[str, Any], role_agents: dict[str, str]) -> str:
+    """Subagent 归属哪个角色（按可信度从高到低），认不出返回空串由调用方回落。
+
+    1. ``name``：人起的名字（ux-review / architect-review），最准；
+    2. ``agentType``：显式角色（frontend-engineer 等）；
+    3. 内建审查类（code-reviewer / security-auditor）→ QA；
+    4. ``description`` 里的关键词（PRD → 产品，契约/架构 → 架构，测试 → QA …）。
+
+    全部认不出时返回空串，调用方挂到父会话的主人名下——因为它的确是那个会话
+    派生出来的 Subagent，这比挂到字符串 "unknown" 上诚实得多。
+    """
+    for candidate in (meta.get("name"), meta.get("agentType")):
+        role = _norm_role(str(candidate or "").strip())
+        if role != "unknown" and role in role_agents:
+            return role
+    builtin = BUILTIN_ROLE_BY_AGENT_TYPE.get(str(meta.get("agentType") or "").strip().lower())
+    if builtin and builtin in role_agents:
+        return builtin
+    description = str(meta.get("description") or "")
+    if description:
+        role = _norm_role(description)
+        if role != "unknown" and role in role_agents:
+            return role
+    return ""
+
+
 def _insert_event(
     conn: sqlite3.Connection,
     project_id: str,
@@ -668,6 +712,73 @@ def _insert_event(
         ),
     )
     counts["events"] += max(cur.rowcount, 0)
+
+
+def repair_event_attribution(conn: sqlite3.Connection, project: dict[str, Any],
+                             *, dry_run: bool = True) -> dict[str, Any]:
+    """把历史事件里 agent_id 为空/unknown 的行，按 transcript 源文件重新归属。
+
+    只做 UPDATE，不删行、不改时间：以 (session_id, occurred_at, event_type, tool)
+    回源匹配。匹配不上的保持原样并单独计数，绝不猜测。
+    """
+    role_agents = _role_map(conn, project["id"])
+    owner_agent_id = role_agents.get("general-owner")
+    root = projects_root()
+    # 源索引：subagent (session, occurred, agentType) → role_key
+    wanted: dict[tuple[str, str, str], str] = {}
+    for slug in project_slugs(project):
+        slug_dir = root / slug
+        if not slug_dir.is_dir():
+            continue
+        for session_dir in sorted(p for p in slug_dir.iterdir() if p.is_dir()):
+            sub = session_dir / "subagents"
+            if not sub.is_dir():
+                continue
+            for meta_path in sorted(sub.glob("*.meta.json")):
+                meta = _read_json(meta_path)
+                agent_file = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
+                if not agent_file.is_file():
+                    continue
+                role_key = _resolve_subagent_role(meta, role_agents)
+                target = role_agents.get(role_key) or owner_agent_id
+                if not target:
+                    continue
+                wanted[(session_dir.name, str(meta.get("agentType") or ""), str(meta.get("description") or ""))] = target
+
+    rows = conn.execute(
+        "SELECT id, agent_id, session_id, event_type, tool, message, occurred_at"
+        " FROM agent_events WHERE project_id = ? AND (agent_id IS NULL OR agent_id = ''"
+        " OR lower(agent_id) IN ('unknown', 'none', 'null'))",
+        (project["id"],),
+    ).fetchall()
+    planned: list[tuple[str, str, str]] = []
+    unmatched = 0
+    for row in rows:
+        target = None
+        if row["event_type"] == "subagent_run":
+            key = (str(row["session_id"] or ""), str(row["tool"] or ""), str(row["message"] or ""))
+            target = wanted.get(key)
+        else:
+            # session_activity / status_report 属于主会话，归总负责人
+            target = owner_agent_id
+        if target:
+            planned.append((target, row["id"], row["event_type"]))
+        else:
+            unmatched += 1
+    if not dry_run:
+        for target, event_id, _kind in planned:
+            conn.execute("UPDATE agent_events SET agent_id = ? WHERE id = ?", (target, event_id))
+    by_type: dict[str, int] = {}
+    for _t, _i, kind in planned:
+        by_type[kind] = by_type.get(kind, 0) + 1
+    return {
+        "project_id": project["id"],
+        "dry_run": dry_run,
+        "scanned": len(rows),
+        "planned": len(planned),
+        "unmatched": unmatched,
+        "by_type": by_type,
+    }
 
 
 def backfill_events_and_tokens(conn: sqlite3.Connection, project: dict[str, Any]) -> dict[str, int]:
@@ -714,8 +825,12 @@ def backfill_events_and_tokens(conn: sqlite3.Connection, project: dict[str, Any]
                 agent_file = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
                 if not agent_file.is_file():
                     continue
-                role_key = _norm_role(str(meta.get("agentType") or ""))
-                agent_id = role_agents.get(role_key) or role_key
+                # 归属顺序：meta.name（如 ux-review）→ agentType → 父主会话的主人。
+                # agentType 常见 general-purpose / Explore / code-reviewer，认不出角色时
+                # 必须回落到父会话，否则事件挂到字符串 "unknown" 上，谁都不显示。
+                role_key = _resolve_subagent_role(meta, role_agents)
+                agent_id = role_agents.get(role_key) or owner_agent_id or role_key
+                agent_id = None if str(agent_id) in ("", "unknown") else agent_id
                 session_id = session_dir.name
                 key = str(agent_file)
                 try:

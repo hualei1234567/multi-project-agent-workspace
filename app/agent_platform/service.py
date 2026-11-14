@@ -1211,6 +1211,10 @@ def _exec_state(execution: dict[str, Any]) -> str:
     return state or "unverified"
 
 
+#: 这些事件是「Agent 干了活」的硬证据；状态自报/会话活动只算回显。
+EVIDENCE_EVENT_TYPES = ("subagent_run", "tool_use", "tool_result")
+
+
 def _agent_state(
     agent: dict[str, Any],
     events: list[dict[str, Any]],
@@ -1219,23 +1223,47 @@ def _agent_state(
 ) -> str:
     """单个 Agent 的当前执行状态。
 
-    顺序：明确的自报且心跳新鲜 → 运行中；再看执行事件；没有事件就看执行记录。
-    没有任何证据时返回 ``none``（页面显示「无执行记录」），绝不默认「正常」。
+    判定顺序（越靠前越权威）：
+
+    1. 明确自报「在跑」且心跳新鲜 → 运行中；
+    2. 窗口内仍有会话活动 / 执行记录仍在 running → 运行中（此刻正在干活）；
+    3. 最新一条**执行证据**（subagent_run / tool_*）→ 成功 / 失败 / 未验证；
+    4. 最新一条执行记录（executions）→ 同上；
+    5. 只有自报、没有执行证据 → 未验证（自报不算成功）；
+    6. 什么都没有 → ``none``（「无执行记录」），绝不默认正常。
+
+    两条关键口径：
+
+    * **自报只是回显，不能压过真实执行证据**——之前取「最新一条事件」，
+      之后只要再写一条状态自报，明明成功的角色就被打回「未验证」。
+    * **正在干活优先于上次结果**——会话仍在活动时不能显示上次的「成功」。
     """
     heartbeat = str(agent.get("last_heartbeat_at") or "")
     if agent.get("status") in {"working", "running"} and heartbeat >= fresh_cutoff:
         return "running"
-    if events:
-        state = _event_state(events[0], fresh_cutoff)
-        if state in {"running", "failed"}:
-            return state
-    if events:
-        return _event_state(events[0], fresh_cutoff)
-    for ex in executions:
-        if _exec_state(ex) == "running":
+
+    # 此刻仍在执行：执行记录 running，或窗口内还有会话活动
+    if any(_exec_state(ex) == "running" for ex in executions):
+        return "running"
+    # 窗口内还有会话活动才算「此刻在干活」；自报（status_report）不算，
+    # 否则一条「自报空闲」就会把状态顶成运行中。
+    if events and events[0].get("event_type") == "session_activity" and (
+        _event_state(events[0], fresh_cutoff) == "running"
+    ):
+        return "running"
+
+    evidence = [e for e in events if e.get("event_type") in EVIDENCE_EVENT_TYPES]
+    if evidence:
+        state = _event_state(evidence[0], fresh_cutoff)
+        if state == "running":
             return "running"
+        return state
+
     if executions:
         return _exec_state(executions[0])
+
+    if events:
+        return _event_state(events[0], fresh_cutoff)
     return "none"
 
 

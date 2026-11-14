@@ -117,6 +117,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/projects/{project_id}/team/preflight"),
     ("GET", "/api/projects/{project_id}/team/owner"),
     ("POST", "/api/projects/{project_id}/team/launch"),
+    ("POST", "/api/projects/{project_id}/team/{session_id}/attach"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/instruct"),
     ("POST", "/api/projects/{project_id}/team/{session_id}/stop"),
     ("GET", "/api/projects/{project_id}/windows"),
@@ -763,6 +764,11 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/team/launch": {
             "post": project_op("post", "启动项目 Agent Team（真实 claude --bg 会话）",
+                               body={"type": "object"}, errors=(404, 409, 422, 504))[2]
+        },
+        "/api/projects/{project_id}/team/{session_id}/attach": {
+            "post": project_op("post", "接管运行中的会话：用同一会话记录在后台继续，之后由平台托管",
+                               params=[_param("session_id", "path", required=True)],
                                body={"type": "object"}, errors=(404, 409, 422, 504))[2]
         },
         "/api/projects/{project_id}/team/{session_id}/instruct": {

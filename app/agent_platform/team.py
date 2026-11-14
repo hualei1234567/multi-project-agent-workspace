@@ -430,6 +430,153 @@ def stop_team(project: dict[str, Any], session_id: str, *, actor: str = "local")
     return {"ok": True, "session_id": session_id, "output": ((proc.stdout or "") + (proc.stderr or ""))[:1000]}
 
 
+def _transcript_log(repo: Path, session_id: str, lines: int) -> str:
+    """把会话 transcript 的最后若干条渲染成可读文本（交互式会话的「日志」替代）。"""
+    slug = str(repo.resolve()).replace("/", "-")
+    path = Path.home() / ".claude" / "projects" / slug / f"{session_id}.jsonl"
+    if not path.is_file():
+        return f"找不到会话记录：{path}（该会话可能属于其他工作目录）"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return f"读取会话记录失败：{exc}"
+    out: list[str] = []
+    for line in raw:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        message = row.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or row.get("type") or "")
+        content = message.get("content")
+        parts: list[str] = []
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                kind = block.get("type")
+                if kind == "text":
+                    parts.append(str(block.get("text") or ""))
+                elif kind == "thinking":
+                    parts.append("[思考] " + str(block.get("thinking") or ""))
+                elif kind == "tool_use":
+                    parts.append(f"[工具 {block.get('name')}] " + json.dumps(
+                        block.get("input") or {}, ensure_ascii=False, default=str)[:200])
+                elif kind == "tool_result":
+                    parts.append("[结果] " + str(block.get("content") or "")[:300])
+        body = " ".join(p.strip() for p in parts if str(p).strip())
+        if not body:
+            continue
+        stamp = str(row.get("timestamp") or "")[:19].replace("T", " ")
+        out.append(f"{stamp} {role}: {body}"[:1200])
+    tail = out[-max(1, min(int(lines or 200), 1000)):]
+    return "\n".join(tail) if tail else "该会话还没有可显示的消息"
+
+
+def attach_session(project: dict[str, Any], session_id: str, instruction: str = "",
+                   *, actor: str = "local") -> dict[str, Any]:
+    """从平台接管一个正在运行的会话：把它的后续工作接到平台托管的后台会话上。
+
+    为什么必须这样：交互式 TUI 会话没有可注入的输入通道，平台无法往别人的终端里
+    打字。可行且诚实的做法是 `claude --bg --resume <session>`——同一份会话记录
+    继续往下跑，之后这个会话就由平台托管，可在平台里看日志、继续对话、结束。
+
+    返回里明确告诉用户实际落在哪个会话上：
+    * ``taken_over`` 为真：原会话当时空闲，已用同一 id 在后台继续；
+    * 否则 ``copied`` 为真：原会话正在跑，CLI 起了同源副本，返回新 id。
+    """
+    if not executor_enabled():
+        raise TeamError("executor_disabled", 409, f"执行器未开启：设置 {EXECUTOR_ENV}=on")
+    binary = _claude()
+    if not binary:
+        raise TeamError("team_unavailable", 409, "未找到 claude CLI")
+    repo = Path(str(project["repo_root"])).expanduser()
+    resolved = _resolve_session(repo, session_id)
+    if resolved is None:
+        raise TeamError("not_found", 404, "找不到该会话；请刷新会话列表后重试")
+
+    sessions, err = _agents(repo, include_finished=True)
+    matched = next(
+        (it for it in sessions
+         if str(it.get("sessionId") or "") == resolved or str(it.get("id") or "") == session_id),
+        None,
+    )
+    if matched is None:
+        raise TeamError("not_found", 404, err or "会话不在运行列表中")
+
+    busy = str(matched.get("status") or matched.get("state") or "") == "busy"
+    text = (instruction or "").strip() or (
+        "接手这个会话：先说明你当前正在做什么、有哪些未完成的改动，"
+        "然后等待平台指令。不要重复已经完成的工作。"
+    )
+    try:
+        proc = _run([binary, "--bg", "--resume", resolved, text], repo, LAUNCH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise TeamError("team_timeout", 504, "接管会话超时")
+    except OSError as exc:
+        raise TeamError("team_attach_failed", 500, str(exc))
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    new_id = None
+    match = SESSION_ID_RE.search(output)
+    if match:
+        new_id = match.group(0)
+    else:
+        short = SHORT_ID_RE.search(output) or ATTACH_ID_RE.search(output)
+        if short:
+            new_id = _resolve_session(repo, short.group(1)) or short.group(1)
+    if proc.returncode != 0 and not new_id:
+        raise TeamError("team_attach_failed", 409, output[:400] or "接管失败")
+    final_id = new_id or resolved
+    copied = final_id != resolved
+
+    conn = store.connect()
+    try:
+        store.init_db(conn)
+        now = store.now_iso()
+        settings = project.get("settings_json")
+        settings = settings if isinstance(settings, dict) else store.loads_json(settings, {})
+        settings = dict(settings or {})
+        settings[OWNER_SESSION_SETTING] = {
+            "session_id": final_id, "agent": owner_agent(project),
+            "launched_at": now, "adopted_from": resolved,
+        }
+        conn.execute(
+            "UPDATE agent_projects SET settings_json = ?, updated_at = ? WHERE id = ?",
+            (store.dumps_json(settings), now, project["id"]),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs (id, project_id, actor, action, resource_type, resource_id,"
+            " result, detail_json, created_at) VALUES (?, ?, ?, 'team.attach', 'team_session', ?,"
+            " 'ok', ?, ?)",
+            (uuid.uuid4().hex, project["id"], actor, final_id,
+             store.dumps_json({"adopted_from": resolved, "copied": copied, "was_busy": busy}), now),
+        )
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "session_id": final_id,
+        "adopted_from": resolved,
+        "copied": copied,
+        "was_busy": busy,
+        "taken_over": not copied,
+        "output": output[:2000],
+        "note": (
+            "原会话正在运行，CLI 起了同源副本（上下文一致，但不是同一个进程）；"
+            "已把副本登记为平台托管会话。"
+            if copied else
+            "已用同一个 session id 在后台继续，后续在平台里看日志/继续对话即可。"
+        ),
+    }
+
+
 def session_logs(project: dict[str, Any], session_id: str, *, lines: int = 200) -> dict[str, Any]:
     """读取真实会话最近输出（``claude logs``）。只读，不需要执行器开关。"""
     binary = _claude()
@@ -446,13 +593,18 @@ def session_logs(project: dict[str, Any], session_id: str, *, lines: int = 200) 
         None,
     )
     if matched is not None and str(matched.get("kind") or "") != "background":
+        # 交互式会话没有 claude logs，但 transcript 是同一份事实源：
+        # 直接把最近事件渲染成文本，用户至少能看到它到底在跑什么。
+        text = _transcript_log(repo, resolved, lines)
         return {
             "session_id": resolved,
             "ok": True,
-            "supported": False,
-            "line_count": 0,
-            "log": "该会话是交互式会话：claude logs 只支持后台会话（claude --bg 启动的）。"
-                   "交互式会话的输出在它自己的终端窗口里。",
+            "supported": True,
+            "source": "transcript",
+            "kind": str(matched.get("kind") or "interactive"),
+            "line_count": len(text.splitlines()),
+            "log": text,
+            "note": "交互式会话没有 claude logs，这里读的是它自己的对话记录（只读）。",
         }
     cli_id = _cli_session_id(repo, resolved)
     try:

@@ -512,6 +512,24 @@ tbody tr:last-child td { border-bottom: none; }
   border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg);
   opacity: 0; pointer-events: none; transition: all .2s ease; }
 .modal.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); }
+/* 宽弹窗：日志、交付详情这类内容需要横向空间 */
+.modal.wide { width: min(1180px, 96vw); max-height: 84vh; }
+.modal.wide .modal-body { max-height: calc(84vh - 60px); overflow: auto; }
+/* 日志正文：保留原格式、禁止折行挤压，超宽横向滚动而不是把内容压成窄条 */
+.log-pre {
+  margin: 0; padding: 12px 14px; border-radius: 10px; background: var(--panel-2);
+  border: 1px solid var(--line); color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.55;
+  white-space: pre; overflow: auto; max-height: 62vh;
+  overscroll-behavior: contain;
+}
+.log-pre .log-line { display: block; white-space: pre-wrap; word-break: break-word; }
+.log-pre .log-line + .log-line { margin-top: 1px; }
+.log-pre .log-time { color: var(--muted); }
+.log-pre .log-role-user { color: #7b5cff; }
+.log-pre .log-role-assistant { color: var(--accent); }
+.log-pre .log-tool { color: var(--stall); }
 .modal-head { padding: 16px 20px 10px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
 .modal-head h3 { margin: 0; font-size: 15px; }
 .modal-body { padding: 16px 20px 22px; display: grid; gap: 14px; }
@@ -3259,7 +3277,8 @@ function paintTeam() {
         <span class="sess-id mono">${esc(String(it.sessionId || "").slice(0, 8))}</span>
         <span class="sess-meta">${it.kind === "background" ? "后台" : "交互"} · pid ${esc(String(it.pid || "—"))}</span>
         <span class="team-actions">
-          <button class="btn sm" data-team-logs="${esc(it.sessionId || "")}">看日志</button>
+          <button class="btn sm" data-team-logs="${esc(it.sessionId || "")}" data-testid="team-logs">看日志</button>
+          <button class="btn sm" data-team-attach="${esc(it.sessionId || "")}" data-testid="team-attach">接管</button>
           <button class="btn sm" data-team-instruct="${esc(it.sessionId || "")}">下达指令</button>
           <button class="btn sm" data-team-stop="${esc(it.sessionId || "")}">停止</button>
         </span>
@@ -3272,6 +3291,9 @@ function paintTeam() {
       </li>`).join("")}</ul>` : ""}`;
   $$("#team-list [data-team-logs]").forEach(btn => {
     btn.onclick = () => teamLogs(btn.dataset.teamLogs);
+  });
+  $$("#team-list [data-team-attach]").forEach(btn => {
+    btn.onclick = () => attachTeam(btn.dataset.teamAttach);
   });
   $$("#team-list [data-team-instruct]").forEach(btn => {
     btn.onclick = () => instructTeam(btn.dataset.teamInstruct);
@@ -3324,9 +3346,25 @@ async function loadTeamTasks() {
   };
 }
 
+function renderLogBody(text) {
+  // 每行形如 "2026-11-14 12:54:20 assistant: ..."：时间弱化、角色着色，
+  // 纯文本仍保持原样（<pre>），只是加了语义颜色，方便扫读。
+  return String(text || "").split("\n").map(line => {
+    const m = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(user|assistant|system)\s*:\s?([\s\S]*)$/);
+    if (!m) return `<span class="log-line">${esc(line) || "&nbsp;"}</span>`;
+    const [, ts, role, rest] = m;
+    const tool = rest.match(/\[(工具|结果|思考)\][^\n]*/);
+    return `<span class="log-line"><span class="log-time">${esc(ts)}</span> ` +
+      `<span class="log-role-${esc(role)}">${esc(role)}:</span> ` +
+      (tool ? `<span class="log-tool">${esc(tool[0].slice(0, 160))}</span>` : "") +
+      `${esc(tool ? rest.slice(tool[0].length) : rest)}</span>`;
+  }).join("\n");
+}
+
 async function teamLogs(sessionId) {
   if (!sessionId) return;
   rememberFocus();
+  $("#modal").classList.add("wide");
   $("#modal-title").textContent = "会话实时日志";
   $("#modal-body").innerHTML = skeletonBox(160);
   mask.classList.add("show"); modal.classList.add("show");
@@ -3336,9 +3374,11 @@ async function teamLogs(sessionId) {
       $("#modal-body").innerHTML = `
         <div class="kv">
           <span class="k">会话</span><span class="v mono">${esc(d.session_id)}</span>
+          <span class="k">类型</span><span class="v">${esc(d.kind || d.source || "后台")}</span>
           <span class="k">行数</span><span class="v">${d.line_count}</span>
         </div>
-        <pre class="pre" id="team-log" style="max-height:60vh">${esc(d.log || "（暂无输出）")}</pre>
+        ${d.note ? `<p class="tl-note">${esc(d.note)}</p>` : ""}
+        <pre class="log-pre" id="team-log">${d.log ? renderLogBody(d.log) : "（暂无输出）"}</pre>
         <div class="form-actions">
           <button type="button" class="btn" id="team-log-refresh">刷新</button>
           <button type="button" class="btn" id="team-log-close">关闭</button>
@@ -3350,6 +3390,22 @@ async function teamLogs(sessionId) {
     }
   };
   load();
+}
+
+async function attachTeam(sessionId) {
+  if (!sessionId) return;
+  TEAM.notice = "正在接管该会话…";
+  paintTeam();
+  try {
+    const d = await fetchJSON(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/team/${encodeURIComponent(sessionId)}/attach`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    TEAM.notice = `${d.note}（会话 ${String(d.session_id).slice(0, 8)}）`;
+  } catch (e) {
+    TEAM.notice = `接管失败：${errText(e)}`;
+  }
+  await loadTeam(true);
+  loadTeamOwner(true);
 }
 
 async function launchTeam() {
@@ -6016,7 +6072,7 @@ function restoreFocus() {
 function closeAll() {
   mask.classList.remove("show");
   drawer.classList.remove("show"); drawer.setAttribute("aria-hidden", "true");
-  modal.classList.remove("show"); modal.setAttribute("aria-hidden", "true");
+  modal.classList.remove("show", "wide"); modal.setAttribute("aria-hidden", "true");
   const taskDrawer = $("#task-drawer");
   if (taskDrawer) { taskDrawer.classList.remove("show"); taskDrawer.setAttribute("aria-hidden", "true"); }
   APP.taskPendingTransition = null;
@@ -7051,6 +7107,7 @@ function initSidebarState() {
 
 function openInfoModal(title, bodyHtml) {
   rememberFocus();
+  $("#modal").classList.remove("wide");
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = bodyHtml;
   mask.classList.add("show"); modal.classList.add("show");

@@ -238,6 +238,51 @@ def test_execution_records_appear_in_timeline(env):
     assert card["counts"]["ok"] == 1 and card["counts"]["failed"] == 1
 
 
+def test_self_report_does_not_override_execution_evidence(env):
+    """自报只是回显：之后写一条状态自报，不能把已成功的角色打回「未验证」。"""
+    conn = store.connect()
+    agent = conn.execute("SELECT id FROM project_agents ORDER BY role_key LIMIT 1").fetchone()
+    conn.execute(
+        "INSERT INTO agent_events (id, project_id, agent_id, session_id, event_type,"
+        " message, tool, ok, occurred_at) VALUES"
+        " ('ev-ok-run', 'default', ?, NULL, 'subagent_run', '干完了', NULL, 1, ?)",
+        (agent["id"], _iso(120)),
+    )
+    conn.execute(
+        "INSERT INTO agent_events (id, project_id, agent_id, session_id, event_type,"
+        " message, tool, ok, occurred_at, reported_state) VALUES"
+        " ('ev-later-report', 'default', ?, NULL, 'status_report', '自报空闲', NULL, NULL, ?, 'idle')",
+        (agent["id"], _iso(5)),
+    )
+    conn.close()
+
+    data = service.agent_activity("default")
+    entry = next(a for a in data["agents"] if a["agent_id"] == agent["id"])
+    assert entry["state"] == "ok", "自报不能压过执行证据"
+    assert entry["counts"]["ok"] == 1
+
+
+def test_running_execution_beats_previous_success(env):
+    """此刻还在跑就该显示运行中，不能拿上次的「成功」盖住。"""
+    conn = store.connect()
+    agent = conn.execute("SELECT id, role_key FROM project_agents ORDER BY role_key LIMIT 1").fetchone()
+    conn.execute(
+        "INSERT INTO executions (id, project_id, agent_id, session_id, status, started_at,"
+        " finished_at, summary, source) VALUES ('ex-done', 'default', ?, 's1', 'succeeded', ?, ?, 'ok', 'transcript')",
+        (agent["role_key"], _iso(300), _iso(280)),
+    )
+    conn.execute(
+        "INSERT INTO executions (id, project_id, agent_id, session_id, status, started_at,"
+        " finished_at, summary, source) VALUES ('ex-live', 'default', ?, 's2', 'running', ?, NULL, 'now', 'dispatcher')",
+        (agent["role_key"], _iso(2)),
+    )
+    conn.close()
+
+    data = service.agent_activity("default")
+    entry = next(a for a in data["agents"] if a["agent_id"] == agent["id"])
+    assert entry["state"] == "running"
+
+
 def test_agent_activity_reports_state_and_history(env):
     conn = store.connect()
     try:

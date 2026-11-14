@@ -224,5 +224,40 @@ def test_session_logs_explains_interactive_sessions(env, monkeypatch):
         {"sessionId": SESSION, "cwd": str(env.repo), "kind": "interactive", "status": "idle"},
     ]))
     out = team.session_logs(_project(env), SESSION)
-    assert out["ok"] is True and out["supported"] is False
-    assert "交互式" in out["log"]
+    # 交互式会话没有 claude logs，改为读它自己的 transcript；仍要有内容而不是一句「不支持」
+    assert out["ok"] is True
+    assert out["supported"] is True
+    assert out["source"] == "transcript"
+    assert "只读" in (out.get("note") or "")
+
+
+def test_attach_adopts_idle_session_same_id(env, monkeypatch):
+    """接管空闲会话：沿用同一个 session id，并把结果登记为平台托管会话。"""
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    _fake_run(monkeypatch, stdout="backgrounded · 94eaba41\n", agents_stdout=json.dumps([
+        {"id": "94eaba41", "sessionId": SESSION, "cwd": str(env.repo),
+         "kind": "interactive", "status": "idle"},
+    ]))
+    out = team.attach_session(_project(env), SESSION)
+    assert out["ok"] is True
+    assert out["taken_over"] is True and out["copied"] is False
+    assert out["session_id"] == SESSION
+    # 之后平台 owner 指向这个会话
+    info = team.owner_session_info(_project(env))
+    assert info["exists"] is True
+
+
+def test_attach_reports_copy_when_session_busy(env, monkeypatch):
+    """会话正在跑：CLI 会起同源副本，必须如实告知用户不是同一个进程。"""
+    monkeypatch.setenv(team.EXECUTOR_ENV, "on")
+    monkeypatch.setattr(team, "_claude", lambda: "/usr/bin/claude")
+    _fake_run(monkeypatch, stdout="backgrounded · 3cc9517d\n", agents_stdout=json.dumps([
+        {"id": "94eaba41", "sessionId": SESSION, "cwd": str(env.repo),
+         "kind": "interactive", "status": "busy"},
+    ]))
+    out = team.attach_session(_project(env), SESSION)
+    assert out["was_busy"] is True
+    assert out["copied"] is True and out["taken_over"] is False
+    assert out["adopted_from"] == SESSION
+    assert "副本" in out["note"]
