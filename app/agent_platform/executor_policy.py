@@ -236,10 +236,19 @@ def bg_policy_args() -> list[str]:
     所有启动 ``claude --bg`` 的路径（team launch / instruct / attach、
     session-bridge）都必须带上这组参数，不允许存在绕过入口。
 
-    TODO(S-4 选项 B)：``--allowedTools`` 在 ``--bg`` 下的语义需要实测。
-    验证方法：起一个 ``--bg`` 会话，让它尝试写白名单外的路径与调用被禁工具，
-    确认 deny 生效后再决定是否叠加 allowlist。在实测完成前，这里只做 deny，
-    并在结果里如实标注，不宣称「已全量白名单管控」。
+    **实测结论（2026-11-14，CLI 2.1.325）**：
+
+    * ``--disallowedTools`` 在 ``--bg`` 下**生效**。实测：给 ``--bg`` 会话加
+      ``--disallowedTools "Bash(rm:*)"``，它执行 ``rm -f marker.txt`` 时被拒，
+      错误为 ``Permission to use Bash with command ... has been denied``，文件完好。
+    * ``--allowedTools`` 在 ``--bg`` 下**不生效**。实测：给 ``--bg`` 会话加
+      ``--allowedTools "Read" "Glob"`` 却未包含 ``Write``，它仍然成功创建了文件。
+
+    因此「选项 B：直接加完整白名单」不可行——``--bg`` 不是一次性执行，
+    allowlist 语义不适用。这里坚持只做 deny（选项 A），不做虚假的白名单承诺。
+
+    若将来要收紧 ``--bg`` 的能力边界，正确的方向是**缩小 deny 之外的可用面**：
+    改用 ``--permission-mode`` 限制，或在会话启动后由平台侧校验工具调用。
     """
     return ["--disallowedTools", *BG_DISALLOWED_TOOLS]
 
