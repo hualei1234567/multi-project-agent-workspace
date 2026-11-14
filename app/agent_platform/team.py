@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import store
+from . import executor_policy, store
 
 EXECUTOR_ENV = "AGWS_PLATFORM_EXECUTOR"
 SESSION_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -284,9 +284,11 @@ def launch_team(project: dict[str, Any], instruction: str, *, actor: str = "loca
     # 项目没有 .claude/agents/<agent>.md 时，--agent 只会报警并退回默认模板；
     # 与其发一条永远失败的会话，不如显式去掉 --agent，并在结果里说明。
     agent_defined = (repo / ".claude" / "agents" / f"{agent}.md").is_file()
-    args = [binary, "--bg", _team_prompt(project, text)]
+    # R1 / S-4：所有 --bg 启动都必须带统一策略（deny 高危工具），不得存在绕过入口
+    policy_args = executor_policy.bg_policy_args()
+    args = [binary, "--bg", *policy_args, _team_prompt(project, text)]
     if agent_defined:
-        args = [binary, "--agent", agent, "--bg", _team_prompt(project, text)]
+        args = [binary, "--agent", agent, "--bg", *policy_args, _team_prompt(project, text)]
     try:
         # --agent 决定这个真实会话以哪个角色运行；--bg 让它作为后台会话存在
         proc = _run(args, repo, LAUNCH_TIMEOUT_S)
@@ -374,7 +376,9 @@ def instruct_team(project: dict[str, Any], session_id: str, instruction: str,
     session_id = resolved
     binary = _claude()
     try:
-        proc = _run([binary, "--bg", "--resume", session_id, text], repo, LAUNCH_TIMEOUT_S)
+        proc = _run([binary, "--bg", "--resume", session_id,
+                     *executor_policy.bg_policy_args(), text],
+                    repo, LAUNCH_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise TeamError("team_timeout", 504, "下达指令超时")
     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
@@ -517,7 +521,9 @@ def attach_session(project: dict[str, Any], session_id: str, instruction: str = 
         "然后等待平台指令。不要重复已经完成的工作。"
     )
     try:
-        proc = _run([binary, "--bg", "--resume", resolved, text], repo, LAUNCH_TIMEOUT_S)
+        proc = _run([binary, "--bg", "--resume", resolved,
+                     *executor_policy.bg_policy_args(), text],
+                    repo, LAUNCH_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise TeamError("team_timeout", 504, "接管会话超时")
     except OSError as exc:

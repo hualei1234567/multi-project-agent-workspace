@@ -22,3 +22,7 @@ node_modules/
 .DS_Store
 .vscode/
 *.swp
+
+# 访问令牌（远端鉴权用）：绝不能入库
+data/token
+data/token.bak-*

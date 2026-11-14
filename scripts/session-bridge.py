@@ -36,6 +36,40 @@ from pathlib import Path
 
 SHORT_ID_RE = re.compile(r"backgrounded\s*·\s*([0-9a-zA-Z-]{6,64})")
 
+#: 后台会话高危工具拒绝规则（R1 / S-4）。
+#:
+#: 必须与 app/agent_platform/executor_policy.py 的 ``BG_DISALLOWED_TOOLS`` 保持一致：
+#: 桥接跑在窗口所在机器上，不能 import 平台模块，只能内置一份。
+#: 改一处必须同步改另一处——两边不一致就等于开了旁路。
+BG_DISALLOWED_TOOLS = (
+    "Bash(git push:*)",
+    "Bash(git reset --hard:*)",
+    "Bash(git clean:*)",
+    "Bash(git checkout --:*)",
+    "Bash(rm:*)",
+    "Bash(rmdir:*)",
+    "Bash(mv:*)",
+    "Bash(dd:*)",
+    "Bash(docker:*)",
+    "Bash(kubectl:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(rsync:*)",
+    "Bash(curl:*)",
+    "Bash(wget:*)",
+    "Bash(sudo:*)",
+    "Bash(su:*)",
+    "Bash(chmod:*)",
+    "Bash(chown:*)",
+    "Bash(migrate:*)",
+    "Bash(psql:*)",
+    "Bash(mysql:*)",
+    "Bash(systemctl:*)",
+    "Bash(launchctl:*)",
+    "Bash(crontab:*)",
+    "WebFetch",
+)
+
 
 def _http(method: str, url: str, payload: dict | None = None, token: str = "", timeout: int = 20) -> dict:
     """走 curl，不用 urllib。
@@ -246,7 +280,9 @@ def run_command(base: str, device: str, token: str, cmd: dict) -> None:
         _http("POST", f"{base}/api/devices/{device}/commands/{cmd['id']}/result",
               {"ok": False, "error": "会话已不存在（窗口可能已关闭）"}, token)
         return
-    args = [claude_bin(), "--bg", "--resume", session_id, instruction]
+    # R1 / S-4：带统一 deny 策略再启动，避免窗口派发成为绕过工具管控的旁路
+    args = [claude_bin(), "--bg", "--resume", session_id,
+            "--disallowedTools", *BG_DISALLOWED_TOOLS, instruction]
     try:
         out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=900, check=False)
         text = f"{out.stdout}\n{out.stderr}".strip()

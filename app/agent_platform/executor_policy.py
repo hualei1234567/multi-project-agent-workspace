@@ -125,6 +125,41 @@ BASH_DENY_RULES: tuple[str, ...] = (
     "Bash(mysql:*)",
 )
 
+#: 后台会话（``claude --bg``）使用的高危工具拒绝规则（R1 / S-4）。
+#:
+#: 为什么单独一套：``--bg`` 是**交互式常驻会话**，没有 ``--print`` 的轮数上限语义，
+#: ``--allowedTools`` 在白名单模式下是否生效尚未实测（见 TODO）。选项 A 的做法是
+#: 先叠加 deny 规则，把「push / 部署 / 删数据 / 改系统」这一类能力堵死，
+#: 再逐步验证白名单是否可用——宁可先用 deny 兜底，也不假装已经全量管控。
+BG_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash(git push:*)",
+    "Bash(git reset --hard:*)",
+    "Bash(git clean:*)",
+    "Bash(git checkout --:*)",
+    "Bash(rm:*)",
+    "Bash(rmdir:*)",
+    "Bash(mv:*)",
+    "Bash(dd:*)",
+    "Bash(docker:*)",
+    "Bash(kubectl:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(rsync:*)",
+    "Bash(curl:*)",
+    "Bash(wget:*)",
+    "Bash(sudo:*)",
+    "Bash(su:*)",
+    "Bash(chmod:*)",
+    "Bash(chown:*)",
+    "Bash(migrate:*)",
+    "Bash(psql:*)",
+    "Bash(mysql:*)",
+    "Bash(systemctl:*)",
+    "Bash(launchctl:*)",
+    "Bash(crontab:*)",
+    "WebFetch",
+)
+
 #: 允许的执行模式（与 scheduler.EXECUTABLE_MODES 一致）。
 EXECUTABLE_MODES = frozenset({"worktree", "subagent"})
 
@@ -193,6 +228,20 @@ class ExecutionSpec:
             argv.extend(["--disallowedTools", *disallowed])
         argv.extend(["--append-system-prompt", CHINESE_ONLY_RULE])
         return argv
+
+
+def bg_policy_args() -> list[str]:
+    """后台会话（``claude --bg``）必须追加的策略参数（R1 / S-4）。
+
+    所有启动 ``claude --bg`` 的路径（team launch / instruct / attach、
+    session-bridge）都必须带上这组参数，不允许存在绕过入口。
+
+    TODO(S-4 选项 B)：``--allowedTools`` 在 ``--bg`` 下的语义需要实测。
+    验证方法：起一个 ``--bg`` 会话，让它尝试写白名单外的路径与调用被禁工具，
+    确认 deny 生效后再决定是否叠加 allowlist。在实测完成前，这里只做 deny，
+    并在结果里如实标注，不宣称「已全量白名单管控」。
+    """
+    return ["--disallowedTools", *BG_DISALLOWED_TOOLS]
 
 
 def executor_enabled() -> bool:

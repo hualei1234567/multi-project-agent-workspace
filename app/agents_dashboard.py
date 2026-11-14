@@ -1337,6 +1337,10 @@ _POLICY_DOMAINS = {
 }
 
 
+class PlatformError_AccessDenied(Exception):
+    """项目级授权未通过；响应已由闸门写出，调用方只需停止。"""
+
+
 def _policy_domain(resource_type: str) -> str | None:
     return _POLICY_DOMAINS.get(resource_type)
 
@@ -1506,30 +1510,74 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _governance_gate(self, path: str) -> bool:
-        """解析主体 + 全局 Kill Switch。失败时已写响应并返回 False。"""
+        """解析主体 + 全局 Kill Switch。失败时已写响应并返回 False。
+
+        **fail-closed（R1 / S-5）**：治理依赖不可用时拒绝，不得降级为匿名全权限。
+        早期实现在 ``except Exception`` 里把 ``principal`` 置空后直接放行，
+        导致 Policy 库异常 / Kill Switch 查询失败时请求越过全部治理。
+        现在区分三种失败：
+
+        * 401 ``unauthenticated``：解析不到主体（未认证）；
+        * 403 ``unknown_principal``：主体存在但不可用（停用/过期）；
+        * 503 ``governance_unavailable``：治理依赖（DB/Policy/KillSwitch）故障。
+
+        只读健康检查（``PUBLIC_PATHS``）不走本闸门，治理故障时仍能探活。
+        """
         if path in auth_service.PUBLIC_PATHS:
             return True
+
+        address = self.client_address[0] if self.client_address else None
+        # 鉴权关闭时（默认），所有来源都按本机所有者处理：
+        # 没有令牌就没有"远端主体"这个概念，避免新建项目后自己被 403。
+        loopback = auth_service.is_loopback(address) or not auth_service.auth_enabled()
+
         try:
             conn = platform_store.connect()
-            try:
-                address = self.client_address[0] if self.client_address else None
-                # 鉴权关闭时（默认），所有来源都按本机所有者处理：
-                # 没有令牌就没有"远端主体"这个概念，避免新建项目后自己被 403。
-                loopback = auth_service.is_loopback(address) or not auth_service.auth_enabled()
-                self.principal = p4_governance.resolve_principal(
-                    conn, is_loopback=loopback
-                )
-                blocked, why = p4_killswitch.is_blocked(conn)
-                if blocked:
-                    self._json(503, {"ok": False, "error": "kill_switch",
-                                     "message": why,
-                                     "detail": {"code": "kill_switch", "message": why}})
-                    return False
-            finally:
-                conn.close()
-        except Exception:  # noqa: BLE001 - 治理层故障不得让整个服务 500
+        except Exception:  # noqa: BLE001 - 连不上库属于治理依赖不可用
             self.principal = None
+            self._governance_fail(503, "governance_unavailable", "治理依赖不可用（数据库）")
+            return False
+
+        try:
+            self.principal = p4_governance.resolve_principal(conn, is_loopback=loopback)
+            blocked, why = p4_killswitch.is_blocked(conn)
+        except Exception:  # noqa: BLE001 - Policy/主体/KillSwitch 任何异常都拒绝
+            self.principal = None
+            self._governance_fail(503, "governance_unavailable",
+                                  "治理依赖不可用（主体或 Kill Switch 查询失败）")
+            return False
+        finally:
+            conn.close()
+
+        if blocked:
+            self._json(503, {"ok": False, "error": "kill_switch",
+                             "message": why,
+                             "detail": {"code": "kill_switch", "message": why}})
+            return False
+
+        if self.principal is None:
+            self._governance_fail(401, "unauthenticated", "无法确定请求主体")
+            return False
+
+        # 主体存在但不可用（停用/过期）同样拒绝，不落到"匿名"。
+        try:
+            active, reason = p4_governance.principal_active(self.principal)
+        except Exception:  # noqa: BLE001
+            active, reason = False, "principal_check_failed"
+        if not active:
+            self._governance_fail(403, "unknown_principal", f"主体不可用：{reason}")
+            return False
+
         return True
+
+    def _governance_fail(self, status: int, code: str, message: str) -> None:
+        """治理闸门的统一失败出口：写入错误响应，不泄露其他项目是否存在。"""
+        self._json(status, {
+            "ok": False,
+            "error": code,
+            "message": message,
+            "detail": {"code": code, "message": message},
+        })
 
     def _policy_guard(self, project_id: str | None, resource_type: str,
                       action: str, *, risk: str = "R2") -> bool:
@@ -1567,6 +1615,71 @@ class Handler(BaseHTTPRequestHandler):
         这里是"连这个项目都不该看见"的底线，按 HTTP 语义区分读写。
         """
         return self._policy_guard(project_id, "*", action, risk="R1")
+
+    def _actor_id(self, *, required: bool = True) -> str:
+        """取可信的操作者主体 ID（R1 / S-2）。
+
+        审批、授权这类动作的身份只能来自认证上下文 ``self.principal``，
+        绝不能信任请求体里的 ``approved_by`` / ``requested_by``——否则同一人
+        用两个不同的字符串就能伪造出「两个审批人」，职责分离形同虚设。
+
+        ``required=False`` 时返回空串（仍有 principal 就用它），用于非审批类记录。
+        """
+        principal = getattr(self, "principal", None)
+        pid = str((principal or {}).get("id") or "").strip()
+        if pid:
+            return pid
+        if required:
+            raise PlatformError_AccessDenied()
+        return ""
+
+    #: 需要专用权限才能「开启」的高风险设置（R1 / S-6）。
+    #: 关闭属于安全动作，任何有项目写权限的人都可以立即执行。
+    HIGH_RISK_SETTINGS = frozenset({"execution_enabled"})
+
+    def _guard_high_risk_settings(self, project_id: str, payload: dict[str, Any]) -> bool:
+        """高风险设置变更闸门（R1 / S-6）。
+
+        原来 ``execution_enabled`` 在 ``PATCHABLE_SETTINGS`` 里，普通 ``update``
+        权限就能把项目执行器从关打开——等于用普通写权限换来了「允许平台起进程」。
+
+        简化方案：
+        * 关闭（true → false）：放行，作为紧急安全动作，但写审计；
+        * 开启（false → true）：要求 ``exec_runtime:toggle`` 专用权限（owner 级）；
+        * 两种情况都记录 before/after/actor/原因，便于事后追责。
+
+        返回 False 表示已写响应、调用方应停止。
+        """
+        raw = payload.get("settings", payload.get("settings_json"))
+        if not isinstance(raw, dict):
+            return True
+        touched = self.HIGH_RISK_SETTINGS & set(raw)
+        if not touched:
+            return True
+
+        project = platform_service.state_meta(project_id)
+        current = dict(project.get("settings_json") or {})
+
+        for key in sorted(touched):
+            before = bool(current.get(key))
+            after = bool(raw.get(key))
+            if before == after:
+                continue  # 值没变，不算高风险变更
+            action = "enable" if after else "disable"
+            actor = self._actor_id()
+            if not actor:
+                return False
+            # 开启需要专用权限；关闭是安全动作，只要有项目写权限即可
+            if after and not self._policy_guard(project_id, "exec_runtime", "toggle", risk="R4"):
+                return False
+            platform_service.audit(
+                platform_store.connect(), project_id,
+                f"settings.{key}.{action}", "project_setting", project_id,
+                detail={"key": key, "before": before, "after": after,
+                        "reason": str(payload.get("reason") or "")[:200]},
+                actor=actor,
+            )
+        return True
 
     def _eval_platform(self, fn, *args, **kwargs) -> None:
         """评估域统一出口：自带连接的 _platform 变体。"""
@@ -1672,15 +1785,21 @@ class Handler(BaseHTTPRequestHandler):
             if not self._policy_guard(project_id, "change_proposal", "request_approval",
                                       risk="R3"):
                 return True
+            actor = self._actor_id(required=False)
+            if not actor:
+                return True
             self._p4_call(improvement_service.request_approval, imp, rest[2],
-                          requested_by=str(body.get("requested_by") or "local"))
+                          requested_by=actor)
             return True
         if (method == "POST" and len(rest) == 4
                 and rest[:2] == ["improvements", "approvals"] and rest[3] == "approve"):
             if not self._policy_guard(project_id, "change_proposal", "approve", risk="R4"):
                 return True
+            actor = self._actor_id()
+            if not actor:
+                return True
             self._p4_call(improvement_service.approve, imp, rest[2],
-                          approved_by=str(body.get("approved_by") or ""),
+                          approved_by=actor,
                           note=body.get("note"))
             return True
 
@@ -1751,9 +1870,12 @@ class Handler(BaseHTTPRequestHandler):
                 and rest[:2] == ["autonomy", "eligibilities"] and rest[3] == "approve"):
             if not self._policy_guard(project_id, "autonomy_eligibility", "approve", risk="R4"):
                 return True
+            actor = self._actor_id()
+            if not actor:
+                return True
             self._p4_call(autonomy_service.approve_level, aut, rest[2],
                           level=str(body.get("level") or "A0"),
-                          approved_by=str(body.get("approved_by") or ""),
+                          approved_by=actor,
                           reason=str(body.get("reason") or "未说明"))
             return True
         if (method == "POST" and len(rest) == 4
@@ -1795,9 +1917,12 @@ class Handler(BaseHTTPRequestHandler):
                 and rest[2] == "request-approval"):
             if not self._policy_guard(project_id, "agent_release", "request_approval", risk="R3"):
                 return True
+            actor = self._actor_id(required=False)
+            if not actor:
+                return True
             self._release_platform(
                 release_service.request_approval, rest[1],
-                requested_by=str(body.get("requested_by") or "local"),
+                requested_by=actor,
                 note=body.get("note"),
             )
             return True
@@ -1833,9 +1958,12 @@ class Handler(BaseHTTPRequestHandler):
                 and rest[2] == "approve"):
             if not self._policy_guard(project_id, "agent_release", "approve", risk="R4"):
                 return True
+            actor = self._actor_id()
+            if not actor:
+                return True
             self._release_platform(
                 release_service.approve, rest[1],
-                approved_by=str(body.get("approved_by") or ""),
+                approved_by=actor,
                 note=body.get("note"),
             )
             return True
@@ -2093,11 +2221,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"ok": False, "error": "internal_error",
                              "detail": {"code": "internal_error", "message": "内部错误"}})
 
-    def _project_from_query(self, query: dict[str, list[str]], default: str | None = None) -> dict[str, Any]:
+    def _project_from_query(self, query: dict[str, list[str]], default: str | None = None,
+                            action: str = "read") -> dict[str, Any]:
+        """从 query 取项目并校验访问权限（R1 / S-1）。
+
+        早期实现只检查项目是否存在、不检查调用者是否有权访问——
+        ``/view`` 与 ``/api/file`` 都走这里，等于任何持令牌者可读任意项目仓库文件。
+        现在：解析不到项目 → 404；无权访问 → 抛 PlatformError_AccessDenied（响应已由闸门写出）。
+        """
         project_id = (query.get("project") or [default])[0]
         if not project_id:
             raise platform_service.PlatformError("project_not_found", 404)
-        return platform_service.state_meta(project_id)
+        project = platform_service.state_meta(project_id)
+        if not self._gate_project(str(project.get("id") or project_id), action):
+            raise PlatformError_AccessDenied()
+        return project
 
     def _segments(self, path: str) -> list[str]:
         return [unquote(part) for part in path.strip("/").split("/") if part]
@@ -2370,6 +2508,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(segments) == 3 and segments[:2] == ["api", "projects"]:
                 payload = self._body()
+                # R1 / S-6：execution_enabled 等高风险设置走独立闸门
+                if not self._guard_high_risk_settings(segments[2], payload):
+                    return
                 self._platform_project(platform_service.patch_project, segments[2], payload)
                 return
             if len(segments) == 5 and segments[:2] == ["api", "projects"] and segments[3] == "tasks":
@@ -2450,6 +2591,9 @@ class Handler(BaseHTTPRequestHandler):
                        "application/json; charset=utf-8")
         elif path == "/api/state":
             project_id = (query.get("project") or [platform_service.DEFAULT_PROJECT_ID])[0]
+            # R1 / S-1：首屏主接口也必须过项目级授权，否则等于绕过全部隔离
+            if not self._gate_project(str(project_id), "read"):
+                return
             refresh = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
             try:
                 state, stale = _state_cache().get(project_id, force=refresh)
@@ -2719,6 +2863,8 @@ class Handler(BaseHTTPRequestHandler):
             # 独立查看页：新标签页直接展示内容；路径仍走 safe_project_path 白名单。
             try:
                 project = self._project_from_query(query)
+            except PlatformError_AccessDenied:
+                return
             except platform_service.PlatformError as exc:
                 body = file_viewer_html("文件预览", "", None, f"项目不可用：{exc.code}")
                 self._send(exc.status, body.encode("utf-8"), "text/html; charset=utf-8")
@@ -2749,6 +2895,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/file":
             try:
                 project = self._project_from_query(query)
+            except PlatformError_AccessDenied:
+                return
             except platform_service.PlatformError as exc:
                 self._error(exc)
                 return
