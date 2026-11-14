@@ -128,9 +128,14 @@ CREATE TABLE IF NOT EXISTS token_usage_events (
   total_tokens       INTEGER NOT NULL DEFAULT 0,
   source             TEXT NOT NULL,
   occurred_at        TEXT NOT NULL,
+  -- cost_usd 是历史账面列（来源不明），保留兼容；
+  -- R2 / D-2 起一律以 actual/estimated + cost_quality 为准。
   cost_usd           REAL,
   price_version      TEXT,
   cost_source        TEXT,
+  actual_cost_usd    REAL,
+  estimated_cost_usd REAL,
+  cost_quality       TEXT,
   UNIQUE(session_id, message_uuid, agent_id, model)
 );
 
@@ -165,6 +170,16 @@ CREATE TABLE IF NOT EXISTS executions (
   total_tokens  INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL DEFAULT 'transcript',
   correlation_id TEXT,
+  -- R2 / D-1：这条执行与 Task 的关联是否可信。
+  -- linked / dispatcher_missing_task / legacy_unlinked / unknown
+  link_quality      TEXT,
+  first_seen_source TEXT,
+  -- R2 / D-2：执行粒度成本。actual 来自 provider 账单（CLI 的 total_cost_usd），
+  -- estimated 由价格版本算出；两者皆空即 UNKNOWN，不补 0。
+  actual_cost_usd    REAL,
+  estimated_cost_usd REAL,
+  cost_quality       TEXT,
+  price_version      TEXT,
   UNIQUE (project_id, session_id, agent_id)
 );
 
@@ -1069,3 +1084,34 @@ CREATE TABLE IF NOT EXISTS team_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_team_sessions_project
   ON team_sessions(project_id, created_at DESC);
+
+-- schema v19（R2）：执行追溯质量 + 成本口径分离（真实 / 估算 / 未知）
+--
+-- D-1：executions.task_id 为空有两种完全不同的含义——
+--      「这条执行本来就不属于任何 Task」（如 transcript 采集到的人工会话）
+--      和「本来该关联但没关联上」（缺陷）。只靠 NULL 区分不出来，
+--      所以显式记录 link_quality，让报表能算真实追溯率而不是把所有 NULL 都算漏。
+-- D-2：原 cost_usd 一列混了真实账单和估算，无法判断可信度。拆成两列，
+--      任何一列为 NULL 就是 UNKNOWN，绝不补 0。
+
+-- 执行粒度的成本：token_usage_events 是「逐条消息」，这里是「一次执行」。
+-- actual 来自 Claude CLI 结果里的 total_cost_usd（provider 侧计算，可核对）；
+-- estimated 用价格版本算。两者都空就是 UNKNOWN，报表显示未知而不是 0。
+CREATE TABLE IF NOT EXISTS model_price_versions (
+  id              TEXT PRIMARY KEY,
+  provider        TEXT NOT NULL DEFAULT 'anthropic',
+  model_pattern   TEXT NOT NULL,      -- 匹配 token_usage_events.model，'%' 通配
+  effective_from  TEXT NOT NULL,      -- ISO8601，含
+  effective_to    TEXT,               -- ISO8601，不含；NULL = 至今有效
+  input_usd_per_mtok       REAL NOT NULL DEFAULT 0,
+  output_usd_per_mtok      REAL NOT NULL DEFAULT 0,
+  cache_read_usd_per_mtok  REAL NOT NULL DEFAULT 0,
+  cache_write_usd_per_mtok REAL NOT NULL DEFAULT 0,
+  source          TEXT NOT NULL,      -- 价格从哪来（如 ccusage 拟合 / 官方价目）
+  source_detail   TEXT,
+  created_at      TEXT NOT NULL,
+  UNIQUE(model_pattern, effective_from)
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_versions_lookup
+  ON model_price_versions(model_pattern, effective_from);

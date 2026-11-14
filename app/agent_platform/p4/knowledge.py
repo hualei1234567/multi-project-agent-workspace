@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 VALID_CLASSIFICATIONS = ("Public", "Internal", "Confidential")
 VALID_SOURCE_KINDS = ("note", "file", "url", "transcript")
@@ -193,6 +193,7 @@ def list_items(conn: sqlite3.Connection, project_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # 发布 / 撤销
 # --------------------------------------------------------------------------
+@audited("knowledge.version.publish", "knowledge_version", id_arg="version_id")
 def publish_version(conn: sqlite3.Connection, version_id: str, *, reviewed_by: str) -> dict[str, Any]:
     """审核通过并发布：建块 + 建索引。"""
     row = conn.execute(
@@ -236,6 +237,7 @@ def publish_version(conn: sqlite3.Connection, version_id: str, *, reviewed_by: s
     return {"version_id": version_id, "status": "published", "chunks": len(chunks)}
 
 
+@audited("knowledge.version.revoke", "knowledge_version", id_arg="version_id")
 def revoke_version(conn: sqlite3.Connection, version_id: str, *, reason: str,
                    revoked_by: str) -> dict[str, Any]:
     """撤销：状态置 revoked 并**在同一事务内**删除分块与索引。"""

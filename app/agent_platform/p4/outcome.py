@@ -127,22 +127,40 @@ def summarize(conn: sqlite3.Connection, project_id: str, metric_key: str) -> dic
 # 成本：只读第三期账本
 # --------------------------------------------------------------------------
 def cost_summary(conn: sqlite3.Connection, project_id: str) -> dict[str, Any]:
-    """读取 token_usage_events。没有 cost 列数据的记录标 unknown，不补 0。"""
-    row = conn.execute(
-        "SELECT COUNT(*) AS n, SUM(total_tokens) AS tokens,"
-        " SUM(CASE WHEN cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS with_cost,"
-        " SUM(COALESCE(cost_usd, 0)) AS cost"
-        " FROM token_usage_events WHERE project_id = ?", (project_id,),
-    ).fetchone()
-    total = row["n"] or 0
-    with_cost = row["with_cost"] or 0
+    """读取 usage ledger，按 R2 / D-2 的三档口径汇总。
+
+    * ``actual_cost_usd``：provider 账单（CLI 的 total_cost_usd）；
+    * ``estimated_cost_usd``：按带生效区间的价格版本算出来的估算；
+    * 两者都空 = UNKNOWN，**不补 0**，并给出覆盖率让读者判断可信度。
+
+    历史 ``cost_usd`` 列不再作为口径：它来源不明，混进任何一边都是错的。
+    """
+    from .. import cost as cost_module
+
+    tokens = conn.execute(
+        "SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage_events WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()[0]
+    cov = cost_module.cost_coverage(conn, project_id)
     return {
         "project_id": project_id,
-        "events": total,
-        "tokens": row["tokens"] or 0,
-        "events_with_cost": with_cost,
-        "known_cost_usd": row["cost"] if with_cost else None,
-        "quality": "verified" if total and with_cost == total else (
-            "partial" if with_cost else "unknown"),
-        "note": "成本只从第三期 Usage Ledger 读取，不重复记账",
+        "events": cov["events"],
+        "tokens": int(tokens or 0),
+        "events_with_cost": cov["actual_events"] + cov["estimated_events"],
+        "actual_cost_usd": cov["actual_cost_usd"],
+        "estimated_cost_usd": cov["estimated_cost_usd"],
+        "known_cost_usd": (
+            (cov["actual_cost_usd"] or 0) + (cov["estimated_cost_usd"] or 0)
+            if (cov["actual_cost_usd"] is not None
+                or cov["estimated_cost_usd"] is not None) else None
+        ),
+        "coverage": cov["coverage"],
+        "unknown_events": cov["unknown_events"],
+        "zero_token_events": cov["zero_token_events"],
+        "quality": (
+            "verified" if cov["events"] and cov["coverage"] >= 1.0
+            else "partial" if cov["actual_events"] or cov["estimated_events"]
+            else "unknown"
+        ),
+        "note": "actual 为 provider 账单，estimated 为价格版本估算；未知不补 0",
     }

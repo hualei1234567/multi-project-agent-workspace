@@ -16,7 +16,7 @@ from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
-from . import activity, sources, store, templates, windows
+from . import activity, cost, sources, store, templates, windows
 
 #: 只有在**没有任何纳管配置**时才使用的占位项目（测试 / 裸环境）。
 #: 配了 config/projects.json 时不会创建它。
@@ -790,14 +790,34 @@ def project_stats(
 
 
 def project_usage(project_id: str) -> dict[str, Any]:
-    """项目用量摘要：Token 来自 transcript 明细，成本来自 ccusage session。"""
+    """项目用量摘要。
+
+    成本有两个口径，必须同时给出并标明各自是什么：
+
+    * ``cost_24h``：ccusage 会话成本按窗口 token 比例分摊的近似值
+      （整段会话账单在时间维度上的分摊，不是逐条账单）；
+    * ``cost_ledger``：平台库 usage ledger 逐条事件的真实/估算汇总 + 覆盖率，
+      这是可核对的账本口径。
+
+    两者对不上是正常的（一个按会话分摊、一个逐条累计），但**未知绝不能显示成 0**，
+    所以 ``cost_ledger.unknown_events`` 一定随结果返回。
+    """
+    from . import cost as cost_module
+
     with store.session() as conn:
         get_project_with(conn, project_id, include_agents=False)
         stats = project_stats(conn, project_id)
+        coverage = cost_module.cost_coverage(conn, project_id)
         return {
             "token_24h": stats["token_24h"],
             "cost_24h": stats["cost_24h"],
+            "cost_ledger": coverage,
             "source": "transcript/ccusage-session",
+            "cost_note": (
+                "cost_24h 是 ccusage 会话成本按 token 比例的近似分摊；"
+                "cost_ledger 是 usage ledger 逐条事件的真实/估算汇总；"
+                "两者口径不同，不可直接相减"
+            ),
         }
 
 
@@ -1642,11 +1662,12 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
         total_all = _scalar(
             conn, "SELECT COUNT(*) FROM token_usage_events WHERE project_id = ?", (project_id,)
         )
+        cost_ledger = cost.cost_coverage(conn, project_id)
     totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
     per_day = {d.isoformat(): 0 for d in
                [today - timedelta(days=days - 1 - i) for i in range(days)]}
     models: dict[str, int] = {}
-    cost = 0.0
+    ledger_cost = 0.0  # 注意：模块名 cost 已占用，这里不能再叫 cost
     today_key = today.isoformat()
     for row in rows:
         day = _local_day(str(row["occurred_at"] or ""), tz_local)
@@ -1662,7 +1683,7 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
         day = _local_day(occurred, tz_local)
         total = int(row["total_tokens"] or 0)
         if row["cost_usd"] is not None:
-            cost += float(row["cost_usd"])
+            ledger_cost += float(row["cost_usd"])
         if day != focus_key:
             continue
         totals["input"] += int(row["input_tokens"] or 0)
@@ -1725,7 +1746,9 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
             {"name": name, "tokens": n}
             for name, n in sorted(models.items(), key=lambda kv: kv[1], reverse=True)
         ],
-        "cost_usd": round(cost, 6) if cost else None,
+        "cost_usd": round(ledger_cost, 6) if ledger_cost else None,
+        # R2 / D-2：账本口径单独给出，未知量随附，避免「无成本 = 0 成本」的误读。
+        "cost_ledger": cost_ledger,
     }
 
 
@@ -3160,6 +3183,73 @@ def _execution_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["total_tokens"] = int(item.get("total_tokens") or 0)
     return item
+
+
+#: 执行追溯质量取值（R2 / D-1）。
+LINK_LINKED = "linked"                        # 有确定性证据关联到 Task
+LINK_DISPATCHER_MISSING = "dispatcher_missing_task"  # 调度器写的却没 task，属缺陷
+LINK_LEGACY_UNLINKED = "legacy_unlinked"      # 历史 transcript 采集，本来就不属于 Task
+LINK_UNKNOWN = "unknown"                      # 无法判断
+
+#: 分母只算「按业务规则应关联 Task」的记录。
+#: transcript 采集的人工会话本来就没有 Task，把它算进分母会让追溯率永远上不去，
+#: 也会诱导后人去伪造关联——所以分母排除 legacy_unlinked。
+TRACEABLE_LINK_QUALITIES = (LINK_LINKED, LINK_DISPATCHER_MISSING, LINK_UNKNOWN)
+
+
+def execution_traceability(project_id: str) -> dict[str, Any]:
+    """执行 ↔ Task 追溯完整率（R2 / D-1）。
+
+    口径说明（写进返回体，避免看报表的人自己猜）：
+
+    * ``total``：全部执行记录；
+    * ``traceable``：按业务规则应当有 Task 归属的记录（排除 transcript 人工会话）；
+    * ``linked``：其中确实关联上的；
+    * ``rate``：``linked / traceable``；``traceable == 0`` 时返回 ``None``（不是 0%，
+      因为「没有可追溯的对象」和「一条都没追溯上」是两件事）；
+    * ``unlinked_reasons``：未关联的记录按原因分组，``dispatcher_missing_task``
+      是真正的缺陷，需要修；``legacy_unlinked`` 只是历史口径。
+    """
+    with store.session() as conn:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT COALESCE(link_quality, 'unknown') AS q, COUNT(*) AS n"
+            " FROM executions WHERE project_id = ? GROUP BY q",
+            (project_id,),
+        ).fetchall()
+        total_by_source = conn.execute(
+            "SELECT COALESCE(source, 'unknown') AS s, COUNT(*) AS n,"
+            " SUM(CASE WHEN task_id IS NOT NULL THEN 1 ELSE 0 END) AS with_task"
+            " FROM executions WHERE project_id = ? GROUP BY s",
+            (project_id,),
+        ).fetchall()
+    by_quality = {str(row["q"]): int(row["n"] or 0) for row in rows}
+    total = sum(by_quality.values())
+    traceable = sum(by_quality.get(q, 0) for q in TRACEABLE_LINK_QUALITIES)
+    linked = by_quality.get(LINK_LINKED, 0)
+    return {
+        "project_id": project_id,
+        "total": total,
+        "traceable": traceable,
+        "linked": linked,
+        "rate": round(linked / traceable, 4) if traceable else None,
+        "unlinked_legacy": by_quality.get(LINK_LEGACY_UNLINKED, 0),
+        "unlinked_defect": by_quality.get(LINK_DISPATCHER_MISSING, 0),
+        "unlinked_unknown": by_quality.get(LINK_UNKNOWN, 0),
+        "by_quality": by_quality,
+        "by_source": [
+            {
+                "source": str(row["s"]),
+                "count": int(row["n"] or 0),
+                "with_task": int(row["with_task"] or 0),
+            }
+            for row in total_by_source
+        ],
+        "denominator_note": (
+            "分母只含应当关联 Task 的执行；transcript 采集的人工会话"
+            "（legacy_unlinked）不计入，避免追溯率失真"
+        ),
+    }
 
 
 def list_executions(

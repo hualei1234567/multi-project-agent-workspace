@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import store
+from . import cost, store
 
 KNOWN_BOARD_STATUSES = frozenset(
     {"BACKLOG", "READY", "IN_PROGRESS", "REVIEW", "TESTING", "DONE", "BLOCKED", "CANCELLED"}
@@ -612,13 +612,40 @@ def _ingest_transcript(
             cache_read = int(usage.get("cache_read_input_tokens") or 0)
             cache_write = int(usage.get("cache_creation_input_tokens") or 0)
             total = input_tokens + output_tokens + cache_read + cache_write
+            occurred = ts or store.now_iso()
+            # R2 / D-2：采集时就把成本口径定下来，不留「以后再算」。
+            # transcript 里没有 provider 账单金额，所以只能估算；估算必须命中
+            # 当时生效的价格版本，否则保持 UNKNOWN —— 不用当前单价倒填历史。
+            estimated: float | None = None
+            price_id: str | None = None
+            if total <= 0:
+                # 零 token 的消息（如 <synthetic>）本来就不会计费：
+                # 这是「确定为零」，不是「不知道」，因此单独标一个质量值。
+                quality = "not_billable"
+                estimated = 0.0
+            else:
+                price = cost.resolve_price(conn, model, occurred)
+                if price is not None:
+                    # 不截断精度：单价是「每百万 token」，单条消息金额可能在 1e-7
+                    # 量级，round(6) 会把小额消息抹成 0，累积后与账单对不上。
+                    estimated = cost.estimate_usd(price, {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_tokens": cache_read,
+                        "cache_write_tokens": cache_write,
+                    })
+                    price_id = cost.price_version_id(price)
+                    quality = cost.COST_ESTIMATED
+                else:
+                    quality = cost.COST_UNKNOWN
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO token_usage_events
                     (id, project_id, agent_id, session_id, message_uuid, model,
                      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                     total_tokens, source, occurred_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transcript', ?)
+                     total_tokens, source, occurred_at,
+                     estimated_cost_usd, price_version, cost_quality)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transcript', ?, ?, ?, ?)
                 """,
                 (
                     store.stable_id("tok", session_id, message_uuid, agent_id, model),
@@ -632,7 +659,10 @@ def _ingest_transcript(
                     cache_read,
                     cache_write,
                     total,
-                    ts or store.now_iso(),
+                    occurred,
+                    estimated,
+                    price_id,
+                    quality,
                 ),
             )
             counts["tokens"] += max(cur.rowcount, 0)

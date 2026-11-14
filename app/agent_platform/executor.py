@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -197,6 +198,10 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
     seq = 0
     total = 0
     tail: list[str] = []
+    # R2 / D-2：Claude CLI 在 stream-json 的 result 记录里给出 total_cost_usd，
+    # 这是 provider 侧算好的金额，属于真实账单而非本地估算，不能丢。
+    cli_cost: dict[str, Any] | None = None
+    cost_lock = threading.Lock()
     exit_code: int | None = None
     error_code: str | None = None
     error_summary: str | None = None
@@ -220,7 +225,7 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
     deadline = time.monotonic() + spec.timeout_s
 
     def _reader(stream, name: str) -> None:
-        nonlocal seq, total
+        nonlocal seq, total, cli_cost
         # 每个读线程用自己的连接：主线程的 sqlite 连接不能跨线程使用
         # （check_same_thread 默认 True），否则日志会被静默丢弃。
         log_conn = store.connect()
@@ -235,6 +240,11 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
                 _append_log(log_conn, item_id, name, seq, chunk)
                 tail.append(chunk.rstrip())
                 del tail[:-20]
+                if name == "stdout" and '"total_cost_usd"' in chunk:
+                    parsed = _parse_result_cost(chunk)
+                    if parsed is not None:
+                        with cost_lock:
+                            cli_cost = parsed
         finally:
             try:
                 stream.close()
@@ -278,7 +288,8 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
         error_summary = f"退出码 {exit_code}"
 
     _finish(conn, item_id, status, exit_code, error_code, error_summary, task,
-            extra={"tail": tail[-10:], "remaining_budget_s": remaining})
+            extra={"tail": tail[-10:], "remaining_budget_s": remaining,
+                   "cli_cost": cli_cost})
     return {
         "item_id": item_id,
         "status": status,
@@ -365,7 +376,8 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,            e
         if row is not None:
             # 执行结束后回到 idle，资源池才能把它算作「可用」。
             _set_agent_status(conn, row["agent_id"], "idle", None)
-            _record_execution(conn, item_id, row, status, exit_code)
+            _record_execution(conn, item_id, row, status, exit_code,
+                              cost=(extra or {}).get("cli_cost"))
             _safe_audit(
                 conn, row["project_id"], "dispatch.item.finish", "dispatch_item", item_id,
                 {
@@ -420,12 +432,67 @@ def _sync_task_status(conn, project_id: str, task_id: str, ok: bool) -> None:
         pass
 
 
-def _record_execution(conn, item_id: str, row, status: str, exit_code: int | None) -> None:
+def _parse_result_cost(line: str) -> dict[str, Any] | None:
+    """从 stream-json 的一行里取 provider 侧成本；取不到返回 None。
+
+    只接受带有 ``total_cost_usd`` 的 result 记录。缺失、非数字、负数一律丢弃，
+    宁可标 UNKNOWN 也不猜一个数字出来。
+    """
+    text = line.strip()
+    if not text or not text.startswith("{"):
+        return None
+    try:
+        rec = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict):
+        return None
+    raw = rec.get("total_cost_usd")
+    if raw is None:
+        return None
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if amount < 0:
+        return None
+    models: dict[str, Any] = {}
+    for name, info in (rec.get("modelUsage") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        models[str(name)] = {
+            "costUSD": info.get("costUSD"),
+            "costBasis": info.get("costBasis"),
+            "canonicalModel": info.get("canonicalModel"),
+        }
+    return {
+        "total_cost_usd": amount,
+        "model_usage": models,
+        "subtype": rec.get("subtype"),
+    }
+
+
+def _record_execution(conn, item_id: str, row, status: str, exit_code: int | None,
+                      *, cost: dict[str, Any] | None = None) -> None:
     """把调度执行写入 executions（source='dispatcher'）。
 
     第三期原有 executions 只有 source='transcript'；不补这条记录，执行事实就
     分散在两套表里，评估与成本归因都接不上（P4-R23）。
+
+    ``cost`` 是 CLI 给出的 ``total_cost_usd``：provider 计算的金额，写进
+    ``actual_cost_usd``。拿不到就整列留空，``cost_quality='unknown'``，
+    绝不用价格表算一个数冒充账单。
     """
+    actual: float | None = None
+    quality = "unknown"
+    if isinstance(cost, dict):
+        raw = cost.get("total_cost_usd")
+        try:
+            if raw is not None and float(raw) >= 0:
+                actual = float(raw)
+                quality = "actual"
+        except (TypeError, ValueError):
+            actual = None
     try:
         item = conn.execute(
             "SELECT id, project_id, task_id, session_id, started_at, finished_at,"
@@ -450,14 +517,16 @@ def _record_execution(conn, item_id: str, row, status: str, exit_code: int | Non
         conn.execute(
             "INSERT OR IGNORE INTO executions (id, project_id, agent_id, task_id,"
             " session_id, status, started_at, finished_at, duration_ms, summary,"
-            " total_tokens, source, correlation_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'dispatcher', ?)",
+            " total_tokens, source, correlation_id,"
+            " actual_cost_usd, cost_quality, link_quality, first_seen_source)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'dispatcher', ?, ?, ?, ?, 'dispatcher')",
             (
                 store.stable_id("dispatch", item_id), item["project_id"], item["role_key"],
                 item["task_id"], session_id,
                 "succeeded" if status == "succeeded" else status,
                 started, finished, duration_ms, f"dispatch_item={item_id}",
-                item["correlation_id"],
+                item["correlation_id"], actual, quality,
+                "linked" if item["task_id"] else "dispatcher_missing_task",
             ),
         )
     except Exception:  # noqa: BLE001,S110 - 执行记录失败不应回滚调度结果

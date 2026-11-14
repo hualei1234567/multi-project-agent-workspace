@@ -270,9 +270,14 @@ def test_cost_24h_is_project_scoped_and_null_safe(env, monkeypatch):
     # 按 token 占比分摊：s1 200/1000、s2 50/200、s3 100/400
     assert service.project_stats_for("default")["cost_24h"] == 0.8
     assert service.project_stats_for("alpha")["cost_24h"] == 0.8125
-    assert service.project_usage("default") == {
+    usage = service.project_usage("default")
+    # R2 / D-2：返回体新增账本口径（cost_ledger 覆盖率 + 口径说明），
+    # 会话分摊口径的三个字段语义不变。
+    assert {k: usage[k] for k in ("token_24h", "cost_24h", "source")} == {
         "token_24h": 250, "cost_24h": 0.8, "source": "transcript/ccusage-session",
     }
+    assert usage["cost_ledger"]["unknown_disclosed"] is True
+    assert "cost_note" in usage
     overview = service.overview()
     assert overview["cost_24h"] == 1.6125
     costs = {item["id"]: item["stats"]["cost_24h"] for item in overview["projects"]}
@@ -501,7 +506,8 @@ def test_state_endpoint_isolation_and_legacy_fields(http_server, env, monkeypatc
     for key in ("generated_at", "owner", "roster", "statuses", "kanban",
                 "tasks", "agents", "worktrees", "reports", "usage", "stats"):
         assert key in default_state
-    assert default_state["project_usage"] == {
+    assert {k: default_state["project_usage"][k]
+            for k in ("token_24h", "cost_24h", "source")} == {
         "token_24h": 100, "cost_24h": 0.75, "source": "transcript/ccusage-session",
     }
     # 旧 usage 字段保持不变（由旧扫描逻辑产生）

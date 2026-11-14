@@ -14,7 +14,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 CAPABILITY_TYPES = ("agent", "skill", "workflow", "domain_pack")
 GRANT_ACTIONS = ("reference", "clone", "execute")
@@ -32,6 +32,7 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
+@audited("capability.listing.publish", "capability_listing", id_arg="project_id")
 def publish_listing(conn: sqlite3.Connection, project_id: str,
                     payload: dict[str, Any]) -> dict[str, Any]:
     ctype = str(payload.get("capability_type") or "").strip()
@@ -96,6 +97,7 @@ def available_for_project(conn: sqlite3.Connection, project_id: str) -> dict[str
     return {"items": items, "total": len(items)}
 
 
+@audited("capability.grant.create", "capability_grant", id_arg="listing_id")
 def grant(conn: sqlite3.Connection, listing_id: str, payload: dict[str, Any],
           *, granted_by: str) -> dict[str, Any]:
     target = str(payload.get("target_project_id") or "").strip()
@@ -144,6 +146,7 @@ def get_grant(conn: sqlite3.Connection, grant_id: str) -> dict[str, Any]:
     return item
 
 
+@audited("capability.grant.revoke", "capability_grant", id_arg="grant_id")
 def revoke_grant(conn: sqlite3.Connection, grant_id: str, *, reason: str,
                  revoked_by: str) -> dict[str, Any]:
     row = conn.execute(

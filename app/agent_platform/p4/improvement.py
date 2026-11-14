@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 
 class ImprovementError(Exception):
@@ -251,6 +251,7 @@ def request_approval(conn: sqlite3.Connection, proposal_id: str, *,
             "status": "pending_approval"}
 
 
+@audited("improvement.proposal.approve", "change_proposal", id_arg="approval_id")
 def approve(conn: sqlite3.Connection, approval_id: str, *,
             approved_by: str, note: str | None = None) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()

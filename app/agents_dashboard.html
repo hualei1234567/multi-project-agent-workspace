@@ -774,6 +774,7 @@ tbody tr:last-child td { border-bottom: none; }
 .tl-type { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-msg { color: var(--muted); overflow-wrap: anywhere; }
 .tl-note { margin: 10px 2px 0; font-size: 11.5px; color: var(--muted); }
+.trace-note { margin: 12px 2px 0; font-size: 11.5px; color: var(--muted); }
 @media (max-width: 900px) {
   .tl-row { grid-template-columns: 8px 68px 64px 1fr; }
   .tl-agent, .tl-type, .tl-rep { display: none; }
@@ -2812,7 +2813,10 @@ async function loadP4Panel(base) {
         <div class="panel"><div class="panel-head"><h3>成本口径</h3></div><div class="panel-body">
           <div class="kv"><span class="k">Usage 事件</span><span class="v">${cost.events ?? "—"}</span></div>
           <div class="kv"><span class="k">Token 总量</span><span class="v">${cost.tokens ?? "—"}</span></div>
-          <div class="kv"><span class="k">已知成本(USD)</span><span class="v">${cost.known_cost_usd == null ? "未知（不显示 0）" : "$" + cost.known_cost_usd}</span></div>
+          <div class="kv"><span class="k">真实账单(USD)</span><span class="v">${cost.actual_cost_usd == null ? "未知（不显示 0）" : "$" + Number(cost.actual_cost_usd).toFixed(4)}</span></div>
+          <div class="kv"><span class="k">估算成本(USD)</span><span class="v">${cost.estimated_cost_usd == null ? "未知（不显示 0）" : "$" + Number(cost.estimated_cost_usd).toFixed(4)}</span></div>
+          <div class="kv"><span class="k">成本覆盖率</span><span class="v">${cost.coverage == null ? "—" : (Number(cost.coverage) * 100).toFixed(1) + "%"}（未知 ${cost.unknown_events ?? 0} 条）</span></div>
+          <div class="kv"><span class="k">零计费事件</span><span class="v">${cost.zero_token_events ?? 0} 条（确定不产生费用）</span></div>
           <div class="kv"><span class="k">数据质量</span><span class="v">${p4Badge(cost.quality)}</span></div>
         </div></div>
         <div class="panel"><div class="panel-head"><h3>指标字典 ${metrics.total || 0}</h3></div><div class="panel-body">
@@ -3212,9 +3216,47 @@ function renderExecutionsPage(el) {
         <div class="panel-head"><h2>执行记录</h2><span class="desc">最近运行的 Subagent · 点击打开执行流</span><span class="count" id="exec-count"></span></div>
         <div class="panel-body"><div class="exec-list" id="exec-rows"></div></div>
       </div>
+    </section>
+    <section>
+      <div class="panel">
+        <div class="panel-head"><h2>追溯完整率</h2><span class="desc">执行 ↔ Task 关联是否可核对</span></div>
+        <div class="panel-body" id="trace-box"><div class="empty">加载中…</div></div>
+      </div>
     </section>`;
   renderExecRows(agents, $("#exec-rows"), null);
   loadTimeline();
+  loadTraceability();
+}
+
+/* ---------- 执行↔Task 追溯完整率（R2 / D-1） ---------- */
+async function loadTraceability() {
+  const box = $("#trace-box");
+  const p = APP.currentProject;
+  if (!box || !p) return;
+  let d;
+  try {
+    d = await fetchJSON(`/api/projects/${encodeURIComponent(p.id)}/executions/traceability`);
+  } catch (e) {
+    box.innerHTML = `<div class="empty">追溯率不可用：${esc(errText(e))}</div>`;
+    return;
+  }
+  if (APP.currentProject?.id !== p.id) return;
+  const rate = d.rate == null ? null : Number(d.rate);
+  const rateText = rate == null
+    ? "无应追溯对象"
+    : `${(rate * 100).toFixed(1)}%`;
+  box.innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><div class="label">追溯率</div><div class="value">${esc(rateText)}</div>
+        <div class="hint">${d.linked} / ${d.traceable} 条可追溯执行</div></div>
+      <div class="kpi"><div class="label">历史未关联</div><div class="value">${d.unlinked_legacy ?? 0}</div>
+        <div class="hint">transcript 采集的人工会话，本来就没有 Task</div></div>
+      <div class="kpi ${d.unlinked_defect ? "err" : ""}"><div class="label">关联缺失（缺陷）</div><div class="value">${d.unlinked_defect ?? 0}</div>
+        <div class="hint">调度器写入却没有 task_id，需要修</div></div>
+      <div class="kpi"><div class="label">执行总数</div><div class="value">${d.total ?? 0}</div>
+        <div class="hint">${(d.by_source || []).map(x => `${esc(x.source)} ${x.count}`).join(" · ") || "—"}</div></div>
+    </div>
+    <p class="trace-note">${esc(d.denominator_note || "")}</p>`;
 }
 
 /* ---------- Agent 页 ---------- */
@@ -4605,7 +4647,7 @@ function renderDispatchPage(el) {
           <button class="btn primary" id="dp-plan">生成计划</button>
         </div>
         <div class="panel-body">
-          <div class="kpis four">
+          <div class="kpis">
             <div class="kpi"><div class="kpi-label">可执行</div><div class="kpi-value">${ready.length}</div></div>
             <div class="kpi"><div class="kpi-label">被跳过</div><div class="kpi-value">${skipped.length}</div></div>
             <div class="kpi"><div class="kpi-label">计划数</div><div class="kpi-value">${plans.length}</div></div>

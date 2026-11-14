@@ -105,6 +105,7 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/deliveries/{delivery_id}/resubmit"),
     ("GET", "/api/projects/{project_id}/executions"),
     ("GET", "/api/projects/{project_id}/executions/{execution_id}"),
+    ("GET", "/api/projects/{project_id}/executions/traceability"),
     ("GET", "/api/projects/{project_id}/documents"),
     ("POST", "/api/projects/{project_id}/documents"),
     ("PATCH", "/api/projects/{project_id}/documents/{document_id}"),
@@ -736,6 +737,9 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/executions": {"get": project_op("get", "执行记录（分页）", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2]},
         "/api/projects/{project_id}/executions/{execution_id}": {
             "get": project_op("get", "执行详情", params=[_param("execution_id", "path", required=True)], ok_schema=_ref("Execution"), errors=(404,))[2]
+        },
+        "/api/projects/{project_id}/executions/traceability": {
+            "get": project_op("get", "执行↔Task 追溯完整率（分母只含应关联 Task 的执行）")[2]
         },
         "/api/projects/{project_id}/documents": {
             "get": project_op("get", "文档索引", params=PAGE_PARAMS, ok_schema=_ref("Page"))[2],

@@ -36,6 +36,7 @@ V15_ONLY = set(migrate.V15_TABLES)
 V16_ONLY = set(getattr(migrate, "V16_TABLES", ()))
 V17_ONLY = set(migrate.V17_TABLES)
 V18_ONLY = set(migrate.V18_TABLES)
+V19_ONLY = set(migrate.V19_TABLES)
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
@@ -119,7 +120,7 @@ def test_downgrade_removes_only_later_tables(fresh_db):
     assert set(result["dropped"]) == (
         V3_ONLY | V4_ONLY | V5_ONLY | V6_ONLY | V7_ONLY | V8_ONLY
         | V9_ONLY | V10_ONLY | V11_ONLY | V12_ONLY | V13_ONLY | V14_ONLY | V15_ONLY
-        | V16_ONLY | V17_ONLY | V18_ONLY
+        | V16_ONLY | V17_ONLY | V18_ONLY | V19_ONLY
     )
     tables = _tables(conn)
     assert not (V3_ONLY & tables)

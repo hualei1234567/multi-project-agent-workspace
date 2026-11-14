@@ -14,7 +14,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 LEVELS = ("A0", "A1", "A2", "A3", "A4")
 LEVEL_ORDER = {name: index for index, name in enumerate(LEVELS)}
@@ -91,6 +91,7 @@ def submit_evidence(conn: sqlite3.Connection, eligibility_id: str,
     return get(conn, eligibility_id)
 
 
+@audited("autonomy.level.approve", "autonomy_eligibility", id_arg="eligibility_id")
 def approve_level(conn: sqlite3.Connection, eligibility_id: str, *,
                   level: str, approved_by: str, reason: str) -> dict[str, Any]:
     if level not in LEVELS:
