@@ -2993,14 +2993,20 @@ function renderUsageRich(s, container) {
   const source = pu?.source || (u?.source === "ccusage" ? "ccusage" : u?.source || "—");
   // 优先用平台库（token_usage_events）的明细；本机 ccusage 只作兜底
   const ub = s.usage_breakdown && s.usage_breakdown.available ? s.usage_breakdown : null;
-  const cache = ub ? ub.today_tokens.cache_read : u?.cache_read_tokens;
-  const inp = ub ? ub.today_tokens.input : u?.input_tokens;
-  const out = ub ? ub.today_tokens.output : u?.output_tokens;
+  // 近 6 天没有数据、但历史上有：用「最近有数据的一天」的真实构成，并标出日期，
+  // 不要让 2102 条记录显示成「暂无构成数据」。
+  const stale = ub && ub.window_empty && ub.last_active_day ? ub.last_active_day : null;
+  const comp = ub ? (ub.window_empty && stale ? stale.tokens : ub.today_tokens) : null;
+  const cache = comp ? comp.cache_read : u?.cache_read_tokens;
+  const inp = comp ? comp.input : u?.input_tokens;
+  const out = comp ? comp.output : u?.output_tokens;
   const sum = (cache || 0) + (inp || 0) + (out || 0);
   const compOk = sum > 0;
   const days = ub ? (ub.days || []).slice(-6) : (Array.isArray(u?.days) ? u.days.slice(-6) : []);
   const maxDay = Math.max(1, ...days.map(d => d.tokens || 0));
-  const models = ub ? (ub.model_breakdown || []) : (Array.isArray(u?.model_breakdown) ? u.model_breakdown : []);
+  const models = ub
+    ? (ub.window_empty && stale ? (stale.models || []) : (ub.model_breakdown || []))
+    : (Array.isArray(u?.model_breakdown) ? u.model_breakdown : []);
   const maxModel = Math.max(1, ...models.map(m => m.tokens || 0));
   const scopeLabel = ub ? "项目口径" : "本机口径";
   const srcEl = $("#usage-src");
@@ -3018,7 +3024,7 @@ function renderUsageRich(s, container) {
     </div>
     <div class="divider"></div>
     <div>
-      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">${scopeLabel}</span>${ub && !ub.is_today ? `<span class="chip" title="今日还没有用量，这里展示最近有数据的一天">${esc(ub.focus_day)}</span>` : ""}</div>
+      <div class="u-label">缓存 / 输入 / 输出 <span class="chip">${scopeLabel}</span>${stale ? `<span class="chip" title="近 6 天没有用量，这里展示最近有数据的一天">${esc(stale.date)}</span>` : (ub && !ub.is_today ? `<span class="chip" title="今日还没有用量，这里展示最近有数据的一天">${esc(ub.focus_day)}</span>` : "")}</div>
       ${compOk ? `<div class="usage-bar" style="display:flex;margin-top:6px">
         <i style="width:${(cache/sum*100).toFixed(1)}%;border-radius:0"></i>
         <i style="width:${(inp/sum*100).toFixed(1)}%;background:#7b5cff;border-radius:0"></i>

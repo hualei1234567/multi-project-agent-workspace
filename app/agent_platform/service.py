@@ -1607,6 +1607,13 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
             " ORDER BY occurred_at ASC",
             (project_id, start_utc),
         ).fetchall()
+        latest = conn.execute(
+            "SELECT MAX(occurred_at) FROM token_usage_events WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()[0]
+        total_all = _scalar(
+            conn, "SELECT COUNT(*) FROM token_usage_events WHERE project_id = ?", (project_id,)
+        )
     totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
     per_day = {d.isoformat(): 0 for d in
                [today - timedelta(days=days - 1 - i) for i in range(days)]}
@@ -1637,10 +1644,49 @@ def usage_breakdown(project_id: str, *, days: int = 6) -> dict[str, Any]:
         totals["total"] += total
         name = str(row["model"] or "unknown")
         models[name] = models.get(name, 0) + total
+    # 窗口内没数据但历史上有时：把最近有数据的那天单独给出来，
+    # 页面能显示真实构成，而不是「暂无」——有数据却装作没有是最误导人的状态。
+    latest_day = None
+    latest_row = None
+    if latest and not rows:
+        latest_day = _local_day(str(latest), tz_local)
+    if latest_day:
+        with store.session() as conn:
+            items = conn.execute(
+                "SELECT occurred_at, model, input_tokens, output_tokens, cache_read_tokens,"
+                " cache_write_tokens, total_tokens, cost_usd"
+                " FROM token_usage_events WHERE project_id = ? ORDER BY occurred_at DESC LIMIT 400",
+                (project_id,),
+            ).fetchall()
+        span = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+        span_models: dict[str, int] = {}
+        for row in items:
+            if _local_day(str(row["occurred_at"] or ""), tz_local) != latest_day:
+                continue
+            span["input"] += int(row["input_tokens"] or 0)
+            span["output"] += int(row["output_tokens"] or 0)
+            span["cache_read"] += int(row["cache_read_tokens"] or 0)
+            span["cache_write"] += int(row["cache_write_tokens"] or 0)
+            span["total"] += int(row["total_tokens"] or 0)
+            name = str(row["model"] or "unknown")
+            span_models[name] = span_models.get(name, 0) + int(row["total_tokens"] or 0)
+        if span["total"] > 0:
+            latest_row = {
+                "date": latest_day,
+                "tokens": span,
+                "models": [
+                    {"name": name, "tokens": n}
+                    for name, n in sorted(span_models.items(), key=lambda kv: kv[1], reverse=True)
+                ],
+            }
+
     return {
         "project_id": project_id,
         "source": "platform",
-        "available": bool(rows),
+        "available": bool(rows) or bool(latest_row),
+        "window_empty": not rows,
+        "last_active_day": latest_row,
+        "history_total": total_all,
         "window_days": days,
         "today": today_key,
         "focus_day": focus_key,
