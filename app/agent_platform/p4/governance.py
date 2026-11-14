@@ -40,6 +40,8 @@ ROLE_PERMISSIONS: dict[str, dict[str, frozenset[str]]] = {
         "evaluation_run": frozenset({"read", "list", "create", "cancel"}),
         "workflow_test_run": frozenset({"read", "list", "create"}),
         "improvement_case": frozenset({"read", "list", "create", "update"}),
+        # 运营者可以运行与关闭执行器，但不能**开启**（开启仅 owner，R1 / S-6）
+        "exec_runtime": frozenset({"read", "list"}),
     },
     "viewer": {
         "*": frozenset({"read", "list"}),
