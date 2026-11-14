@@ -70,6 +70,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform.p4 import autonomy as autonomy_service
     from agent_platform.p4 import catalog as catalog_service
     from agent_platform.p4 import evaluation as evaluation_service
+    from agent_platform.p4 import events as p4_events
     from agent_platform.p4 import governance as p4_governance
     from agent_platform.p4 import improvement as improvement_service
     from agent_platform.p4 import killswitch as p4_killswitch
@@ -2803,6 +2804,9 @@ class Handler(BaseHTTPRequestHandler):
                     to=(query.get("to") or [None])[0],
                 )
                 return
+            if rest == ["executions", "traceability"]:
+                self._platform(platform_service.execution_traceability, project_id)
+                return
             if len(rest) == 2 and rest[0] == "executions":
                 self._platform(platform_service.get_execution, project_id, rest[1])
                 return
@@ -2978,6 +2982,29 @@ def main() -> int:
             time.sleep(60)
 
     threading.Thread(target=_runtime_collector, daemon=True).start()
+
+    #: Event Outbox 投递线程（R2 / S-7）。
+    #:
+    #: 审计发现 ``dispatch_pending`` 只有定义和测试调用，生产代码从没调用过——
+    #: outbox 只写不投，事件永远积压。这里补一个单线程消费者：
+    #: 单飞（不并发，避免同一事件被两个线程同时标记）、失败不退出、可观测。
+    #: 间隔 5 秒：事件都是低频治理事件，不需要更低延迟。
+    def _event_dispatcher() -> None:
+        while True:
+            try:
+                conn = platform_store.connect()
+                try:
+                    stats = p4_events.dispatch_pending(conn, consumer="platform")
+                finally:
+                    conn.close()
+                # 只在有变化时打印，避免刷屏
+                if stats["dispatched"] or stats["failed"]:
+                    print(f"[agents-dashboard] 事件投递：{stats}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - 投递失败不能让线程退出
+                print(f"[agents-dashboard] 事件投递异常：{exc}", file=sys.stderr)
+            time.sleep(5)
+
+    threading.Thread(target=_event_dispatcher, daemon=True).start()
 
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()

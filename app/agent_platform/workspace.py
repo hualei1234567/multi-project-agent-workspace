@@ -553,6 +553,22 @@ def mark_notifications(conn: sqlite3.Connection, principal_id: str | None,
 SEARCH_TYPES = ("project", "task", "agent", "delivery", "workflow", "knowledge", "release")
 
 
+def _search_query(conn: sqlite3.Connection, degraded: list[dict[str, Any]],
+                  sql: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
+    """执行一类搜索查询；失败时记录到 ``degraded`` 而不是静默吞掉（R2 / S-8）。
+
+    早期实现对 workflow/knowledge/release 三类查询写了 ``except OperationalError: pass``：
+    表名写错导致永远查不到数据，而调用方只看到"没有结果"，把「功能坏了」
+    误当成「确实没有匹配」。现在失败会出现在返回的 ``degraded`` 里，
+    前端可以提示"这一类搜索暂不可用"，而不是假装搜过。
+    """
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        degraded.append({"reason": "query_failed", "detail": str(exc)[:200]})
+        return []
+
+
 def search(conn: sqlite3.Connection | None = None,
            q: str = "",
            types: Iterable[str] | None = None,
@@ -573,6 +589,8 @@ def search(conn: sqlite3.Connection | None = None,
         wanted = {t for t in (types or SEARCH_TYPES) if t in SEARCH_TYPES}
         like = f"%{term}%"
         results: list[dict[str, Any]] = []
+        # R2 / S-8：搜索降级记录，不再静默吞异常
+        degraded: list[dict[str, Any]] = []
         if not ids:
             return {"query": term, "count": 0, "results": [], "searched_projects": []}
         marks = ",".join("?" for _ in ids)
@@ -631,42 +649,40 @@ def search(conn: sqlite3.Connection | None = None,
             ), "title", "subtitle", "deliveries")
 
         if "workflow" in wanted:
-            try:
-                add("workflow", conn.execute(
-                    "SELECT w.id, w.project_id, p.code AS project_code, w.name AS title,"
-                    " w.status AS subtitle FROM p4_workflow_definitions w"
-                    " JOIN agent_projects p ON p.id = w.project_id"
-                    f" WHERE w.project_id IN ({marks}) AND w.name LIKE ? LIMIT ?",
-                    (*ids, like, limit),
-                ), "title", "subtitle", "workflows")
-            except sqlite3.OperationalError:
-                pass
+            # R2 / S-8：真实表是 workflow_definitions（无 p4_ 前缀）
+            add("workflow", _search_query(
+                conn, degraded,
+                "SELECT w.id, w.project_id, p.code AS project_code, w.name AS title,"
+                " w.status AS subtitle FROM workflow_definitions w"
+                " JOIN agent_projects p ON p.id = w.project_id"
+                f" WHERE w.project_id IN ({marks}) AND w.name LIKE ? LIMIT ?",
+                (*ids, like, limit),
+            ), "title", "subtitle", "workflows")
 
         if "knowledge" in wanted:
-            try:
-                add("knowledge", conn.execute(
-                    "SELECT k.id, k.project_id, p.code AS project_code, k.title,"
-                    " k.status AS subtitle FROM p4_knowledge_items k"
-                    " JOIN agent_projects p ON p.id = k.project_id"
-                    f" WHERE k.project_id IN ({marks}) AND k.title LIKE ? LIMIT ?",
-                    (*ids, like, limit),
-                ), "title", "subtitle", "knowledge")
-            except sqlite3.OperationalError:
-                pass
+            # R2 / S-8：真实表是 knowledge_items（无 p4_ 前缀）
+            add("knowledge", _search_query(
+                conn, degraded,
+                "SELECT k.id, k.project_id, p.code AS project_code, k.title,"
+                " k.status AS subtitle FROM knowledge_items k"
+                " JOIN agent_projects p ON p.id = k.project_id"
+                f" WHERE k.project_id IN ({marks}) AND k.title LIKE ? LIMIT ?",
+                (*ids, like, limit),
+            ), "title", "subtitle", "knowledge")
 
         if "release" in wanted:
-            try:
-                add("release", conn.execute(
-                    "SELECT r.id, r.project_id, p.code AS project_code, r.name AS title,"
-                    " r.status AS subtitle FROM p4_releases r"
-                    " JOIN agent_projects p ON p.id = r.project_id"
-                    f" WHERE r.project_id IN ({marks}) AND r.name LIKE ? LIMIT ?",
-                    (*ids, like, limit),
-                ), "title", "subtitle", "releases")
-            except sqlite3.OperationalError:
-                pass
+            # R2 / S-8：不是 p4_releases，真实表是 agent_releases
+            add("release", _search_query(
+                conn, degraded,
+                "SELECT r.id, r.project_id, p.code AS project_code, r.name AS title,"
+                " r.status AS subtitle FROM agent_releases r"
+                " JOIN agent_projects p ON p.id = r.project_id"
+                f" WHERE r.project_id IN ({marks}) AND r.name LIKE ? LIMIT ?",
+                (*ids, like, limit),
+            ), "title", "subtitle", "releases")
 
         return {
+            "degraded": degraded,
             "query": term,
             "types": sorted(wanted),
             "searched_projects": ids,

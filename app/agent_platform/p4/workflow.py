@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 NODE_TYPES = ("task", "agent", "human_gate", "quality_gate")
 
@@ -209,6 +209,7 @@ def test_version(conn: sqlite3.Connection, version_id: str) -> dict[str, Any]:
     return result
 
 
+@audited("workflow.version.publish", "workflow_version", id_arg="version_id")
 def publish_version(conn: sqlite3.Connection, version_id: str, *, published_by: str) -> dict[str, Any]:
     version = get_version(conn, version_id)
     if version["status"] not in {"tested", "draft"}:

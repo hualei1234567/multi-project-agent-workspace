@@ -834,6 +834,15 @@ async function main() {
     check(typeof sessApi.total === "number", "会话接口返回总数", String(sessApi.total));
     await page.goto(`${BASE}/#/p/material/agents`, { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="sessions-list"]').waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    // 列表是异步加载的：容器一出现就读文本会读到骨架屏（空字符串）导致误判。
+    // 等「有会话行」或「空态文案」任一出现，再取文本。
+    await page.waitForFunction(() => {
+      const box = document.querySelector('[data-testid="sessions-list"]');
+      if (!box) return false;
+      const text = (box.innerText || "").trim();
+      return box.querySelector('[data-testid="session-row"]') !== null
+        || /没有可查看的会话|暂无/.test(text);
+    }, null, { timeout: 15000 }).catch(() => {});
     const sessText = await page.locator('[data-testid="sessions-list"]').innerText().catch(() => "");
     if (sessApi.total > 0) {
       await page.locator('[data-testid="session-row"]').first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});

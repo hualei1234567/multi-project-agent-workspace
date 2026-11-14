@@ -137,6 +137,29 @@ V15_TABLES = ("team_sessions",)
 #: v18（窗口会话可见）：桥接把远端窗口的会话 trace 推上来，平台才能「进去看」。
 V18_TABLES = ("device_traces",)
 
+#: v19（R2）：执行追溯质量 + 成本口径分离。
+V19_TABLES = ("model_price_versions",)
+
+#: v19 新增列：不重命名 cost_usd（三期已写入，改名会破坏兼容），
+#: 而是加两列分别承载真实与估算，cost_usd 降级为「账面值」保留。
+V19_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("executions", (
+        ("link_quality", "TEXT"),
+        ("first_seen_source", "TEXT"),
+        # 执行粒度成本：actual 来自 CLI 结果里的 total_cost_usd（provider 侧），
+        # estimated 由价格版本算出；两列都空即 UNKNOWN，不倒填。
+        ("actual_cost_usd", "REAL"),
+        ("estimated_cost_usd", "REAL"),
+        ("cost_quality", "TEXT"),
+        ("price_version", "TEXT"),
+    )),
+    ("token_usage_events", (
+        ("actual_cost_usd", "REAL"),
+        ("estimated_cost_usd", "REAL"),
+        ("cost_quality", "TEXT"),
+    )),
+)
+
 #: v17（窗口派发）：各机器打开的 Claude CLI 会话登记 + 平台下发的指令队列。
 V17_TABLES = ("device_sessions", "device_commands")
 
@@ -286,6 +309,78 @@ def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE agent_events SET reported_state = ? WHERE id = ?", (state, row["id"])
         )
+
+
+def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
+    """R2 数据修正：标注历史执行追溯质量 + 成本口径分层。
+
+    D-1（不伪造关联）：历史 12 条 execution 全部 ``source='transcript'`` 且
+    ``task_id IS NULL``。transcript 采集的是「本机跑过的 Claude 会话」，
+    这些会话本来就不由平台调度，因此**没有** Task 归属是正常语义，
+    而不是丢了关联。这里只做标注：
+
+    * 能通过 ``dispatch_items.session_id`` 精确匹配到调度项的 → ``linked``
+      并补上 task_id（这是确定性证据，不是猜测）；
+    * 其余 transcript 记录 → ``legacy_unlinked``，``task_id`` 保持 NULL。
+
+    绝不按时间或文本相似度回填 Task。
+
+    D-2（不按现价倒填）：历史 ``cost_usd`` 全为空。价格版本表刚建立，
+    没有任何一条历史事件能证明「当时用的是哪个价格」，因此一律标
+    ``cost_quality='unknown'``，两列成本都保持 NULL。只有将来真实采集
+    到 ``total_cost_usd`` 或命中带生效区间的价格版本才写值。
+    """
+    # ---- D-1：只认确定性证据（session_id 精确匹配）
+    conn.execute(
+        """
+        UPDATE executions SET
+            task_id = (
+                SELECT d.task_id FROM dispatch_items d
+                WHERE d.session_id = executions.session_id
+                  AND d.task_id IS NOT NULL
+                LIMIT 1
+            ),
+            link_quality = 'linked'
+        WHERE task_id IS NULL
+          AND EXISTS (
+              SELECT 1 FROM dispatch_items d
+              WHERE d.session_id = executions.session_id
+                AND d.task_id IS NOT NULL
+          )
+        """
+    )
+    conn.execute(
+        "UPDATE executions SET link_quality = 'linked'"
+        " WHERE link_quality IS NULL AND task_id IS NOT NULL"
+    )
+    # 调度器写入的执行必须带 task_id（有任务才有调度项）。
+    conn.execute(
+        "UPDATE executions SET link_quality = CASE"
+        "   WHEN task_id IS NOT NULL THEN 'linked' ELSE 'dispatcher_missing_task' END"
+        " WHERE link_quality IS NULL AND source = 'dispatcher'"
+    )
+    # transcript 采集的人工会话：本来就不属于任何 Task。
+    conn.execute(
+        "UPDATE executions SET link_quality = 'legacy_unlinked'"
+        " WHERE link_quality IS NULL AND task_id IS NULL AND source = 'transcript'"
+    )
+    conn.execute(
+        "UPDATE executions SET link_quality = 'unknown' WHERE link_quality IS NULL"
+    )
+    # first_seen_source：记录这条执行第一次是被谁写进来的，便于解释口径差异。
+    conn.execute(
+        "UPDATE executions SET first_seen_source = source WHERE first_seen_source IS NULL"
+    )
+
+    # ---- D-2：历史成本一律 UNKNOWN，不倒填
+    conn.execute(
+        "UPDATE token_usage_events SET cost_quality = CASE"
+        "   WHEN actual_cost_usd IS NOT NULL THEN 'actual'"
+        "   WHEN estimated_cost_usd IS NOT NULL THEN 'estimated'"
+        "   WHEN cost_usd IS NOT NULL THEN 'legacy_ledger'"
+        "   ELSE 'unknown' END"
+        " WHERE cost_quality IS NULL"
+    )
 
 
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
@@ -463,6 +558,13 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         18,
         tables=V18_TABLES,
         description="窗口会话可见：桥接上报远端窗口的会话 trace",
+    ),
+    MigrationStep(
+        19,
+        tables=V19_TABLES,
+        columns=V19_COLUMN_UPGRADES,
+        backfill=_migrate_v18_to_v19,
+        description="R2：执行追溯质量 + 成本口径分离（真实/估算/未知）+ 价格版本表",
     ),
 )
 

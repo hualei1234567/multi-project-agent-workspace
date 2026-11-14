@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 

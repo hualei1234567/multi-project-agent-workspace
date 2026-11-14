@@ -299,3 +299,76 @@ def test_bootstrapped_agents_start_idle_and_counted(env):
         assert service.overview(conn)["agent_idle"] == 7
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# R2 / D-2：执行粒度成本
+# ---------------------------------------------------------------------------
+def _fake_claude(tmp_path, payload):
+    """造一个假的 claude 可执行文件，输出给定的 stream-json 结果。
+
+    真正起 claude 会消耗额度且不可复现，这里验证的是**平台如何消费 CLI 输出**，
+    所以用一个只说固定话的替身，比接真实 LLM 更严格也更确定。
+    """
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat <<'EOF'\n"
+        f"{payload}\n"
+        "EOF\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def test_execution_records_provider_cost(env, tmp_path, monkeypatch):
+    """D-2：CLI 给出的 total_cost_usd 必须落进 executions.actual_cost_usd。"""
+    item = _item(env, key="EX-COST-1")
+    _enable_project(env)
+    fake = _fake_claude(
+        tmp_path,
+        '{"type":"result","subtype":"success","total_cost_usd":0.0425,'
+        '"modelUsage":{"m1":{"costUSD":0.04,"costBasis":"list"}}}',
+    )
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(fake))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        row = conn.execute(
+            "SELECT actual_cost_usd, cost_quality, link_quality, task_id"
+            " FROM executions WHERE source = 'dispatcher'",
+        ).fetchone()
+        assert row is not None, "执行记录没写入"
+        assert row["actual_cost_usd"] == 0.0425
+        assert row["cost_quality"] == "actual"
+        # D-1：调度器执行必须带 task 关联
+        assert row["task_id"] == item["task_id"]
+        assert row["link_quality"] == "linked"
+    finally:
+        conn.close()
+
+
+def test_execution_without_cost_is_unknown_not_zero(env, tmp_path, monkeypatch):
+    """D-2：CLI 没给 cost 时必须是 UNKNOWN，不能写 0 冒充账单。"""
+    item = _item(env, key="EX-COST-2")
+    _enable_project(env)
+    fake = _fake_claude(tmp_path, '{"type":"result","subtype":"success"}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(fake))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        # executions.id 是 stable_id 哈希，不能按前缀找；
+        # 只有这一个调度项，直接取 source='dispatcher' 的唯一那条。
+        row = conn.execute(
+            "SELECT actual_cost_usd, cost_quality FROM executions"
+            " WHERE source = 'dispatcher'",
+        ).fetchone()
+        assert row is not None
+        assert row["actual_cost_usd"] is None
+        assert row["cost_quality"] == "unknown"
+    finally:
+        conn.close()

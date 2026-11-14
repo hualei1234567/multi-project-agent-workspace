@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 
 from .. import store
-from . import events
+from . import audited, events
 
 ARTIFACT_TYPES = ("prompt", "skill", "model", "workflow")
 
@@ -194,6 +194,7 @@ def request_approval(conn: sqlite3.Connection, release_id: str, *,
     return {"approval_id": approval_id, "release_id": release_id, "status": "pending_approval"}
 
 
+@audited("agent.release.approve", "agent_release", id_arg="approval_id")
 def approve(conn: sqlite3.Connection, approval_id: str, *,
             approved_by: str, note: str | None = None) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
@@ -230,6 +231,7 @@ def approve(conn: sqlite3.Connection, approval_id: str, *,
     return {"approval_id": approval_id, "status": "approved", "release_id": release["id"]}
 
 
+@audited("agent.release.publish", "agent_release", id_arg="release_id")
 def publish(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
     release = get_release(conn, release_id)
     if release["status"] != "approved":
@@ -247,6 +249,7 @@ def publish(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # Canary 与回滚
 # --------------------------------------------------------------------------
+@audited("agent.release.canary.start", "canary_deployment", id_arg="release_id")
 def start_canary(conn: sqlite3.Connection, release_id: str, *,
                  traffic_pct: int = 5, stop_threshold: dict[str, Any] | None = None,
                  created_by: str = "local") -> dict[str, Any]:
@@ -317,6 +320,7 @@ def promote_canary(conn: sqlite3.Connection, deployment_id: str) -> dict[str, An
     return {"deployment_id": deployment_id, "status": "promoted"}
 
 
+@audited("agent.release.rollback", "agent_release", id_arg="release_id")
 def rollback(conn: sqlite3.Connection, release_id: str, *,
              reason: str, deployment_id: str | None = None,
              created_by: str = "local") -> dict[str, Any]:
