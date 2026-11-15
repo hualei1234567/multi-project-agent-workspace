@@ -282,6 +282,12 @@ const STATIC_CACHE = `agws-static-${VERSION}`;
 const OFFLINE_URL = "__OFFLINE__";
 
 // 预缓存：装不上任何一个都不该让 SW 整体失败，故用 allSettled 兜底。
+//
+// 已知限制：远端实例开了令牌鉴权（AGWS_PLATFORM_AUTH=on）时，令牌存在页面的
+// localStorage 里，SW 读不到也带不上 Authorization 头，因此 "/" 的预缓存会
+// 401 失败。外壳资源（manifest / sw.js / 图标 / offline.html）在服务端已放行，
+// 仍然能进缓存，所以离线时至少能显示离线说明页。要真正离线出看板外壳，
+// 需要在页面注册成功后把令牌交给 SW（postMessage + IndexedDB）。
 const PRECACHE = [
   OFFLINE_URL,
   "__MANIFEST__",
