@@ -149,13 +149,14 @@ def schedulable(
     agents = _agent_modes(conn, project_id)
     registry_blocked = _registry_blocked_roles(conn)
     budget_blocked = _budget_block_reason(conn, project_id)
+    circuit_blocked = _circuit_block_reason(conn, project_id)
     memo: dict[str, int] = {}
 
     ready: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for task in tasks.values():
         reason = _skip_reason(task, tasks, dep_tasks, deps, active, agents,
-                              registry_blocked, budget_blocked)
+                              registry_blocked, budget_blocked, circuit_blocked)
         if reason:
             skipped.append({
                 "task_id": task["id"],
@@ -178,6 +179,18 @@ def schedulable(
         t["task_key"],
     ))
     return ready, skipped
+
+
+def _circuit_block_reason(conn: sqlite3.Connection, project_id: str) -> str | None:
+    """熔断中 → 返回拒绝原因；否则 None。"""
+    try:
+        from . import circuit as circuit_service
+        rec = circuit_service.is_tripped(conn, project_id)
+    except sqlite3.DatabaseError:
+        return None
+    if rec is None:
+        return None
+    return f"项目已熔断：{rec.get('reason') or '连续失败自动暂停'}"
 
 
 def _budget_block_reason(conn: sqlite3.Connection, project_id: str) -> str | None:
@@ -226,6 +239,7 @@ def _skip_reason(
     agents: dict[str, dict[str, Any]],
     registry_blocked: dict[str, str] | None = None,
     budget_blocked: str | None = None,
+    circuit_blocked: str | None = None,
 ) -> str | None:
     if task["status"] not in SCHEDULABLE_STATUSES:
         return f"状态 {task['status']} 不可调度"
@@ -238,6 +252,10 @@ def _skip_reason(
         return "指派的角色不属于本项目"
     if agent["execution_mode"] not in EXECUTABLE_MODES:
         return f"角色执行模式 {agent['execution_mode']} 不允许自动执行"
+    # P3-M9 前置熔断：连续失败到阈值后暂停该项目派发。
+    # 与预算/Registry 同一层——硬约束先于评分。
+    if circuit_blocked:
+        return circuit_blocked
     # P3-M7 预算硬过滤：超支项目暂停新任务（不强杀运行中的，契约 CF-5 §3）。
     # 与 Registry 过滤同一层——硬约束先于评分。
     if budget_blocked:

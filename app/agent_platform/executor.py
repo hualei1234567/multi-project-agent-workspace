@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import threading
 import time
@@ -388,6 +389,16 @@ def _finish(conn, item_id: str, status: str, exit_code: int | None,            e
             _set_agent_status(conn, row["agent_id"], "idle", None)
             _record_execution(conn, item_id, row, status, exit_code,
                               cost=(extra or {}).get("cli_cost"))
+            # P3-M9 前置：失败后检查熔断。连续失败到阈值即自动暂停该项目派发。
+            # 放在 _finish 里是因为这是所有执行终态的唯一汇聚点。
+            if status == "failed":
+                try:
+                    from . import circuit as circuit_service
+                    circuit_service.check_after_failure(conn, row["project_id"])
+                except sqlite3.DatabaseError:
+                    # 熔断检查失败不能影响执行记录——记录优先。
+                    # DesignError 覆盖表不存在等结构性故障。
+                    pass
             _safe_audit(
                 conn, row["project_id"], "dispatch.item.finish", "dispatch_item", item_id,
                 {
