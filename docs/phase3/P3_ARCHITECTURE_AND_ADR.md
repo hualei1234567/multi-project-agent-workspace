@@ -80,15 +80,31 @@
 
 ### ADR-P3-003 · Gateway 与 CLI Adapter 边界
 
-**状态**：**待实施**（P3-M4）
+**状态**：**已落地（平台侧）**（P3-M4，schema v26）
 
 **决策**：
 - **CLI Adapter**：负责 argv 构造、版本兼容、状态映射（CREATED…UNKNOWN）
 - **Mac Gateway**：独立进程，设备认证/心跳/撤销，**只允许出站连接**
 
+**落地范围（严格区分）**：
+
+| 项 | 状态 | 落点 |
+|---|---|---|
+| argv 收敛（不重复实现白名单，全部委托 `executor_policy`） | ✅ 已实现 | `cli_adapter.py` |
+| 状态映射 CREATED…UNKNOWN（未知一律 UNKNOWN） | ✅ 已实现 | `cli_adapter.map_status` |
+| CLI 版本读取（拿不到返回 None） | ✅ 已实现 | `cli_adapter.cli_version` |
+| 设备命令队列：拉取 / 认领 / 终态 / 过期 / 撤销闸门 | ✅ 已实现 | `gateway.py` |
+| 设备凭据摘要 + 撤销双写 `registry_runtimes` | ✅ 已实现 | `gateway_devices`（v26） |
+| **Gateway 进程本体**（长轮询循环、开机自启、凭据落盘） | ⛔ **未实现** | — |
+| **Gateway 相关 HTTP 接口**（平台侧调用面） | ⛔ **未实现** | 本阶段只做库函数，未加路由 |
+
+出站约束如何被保证：平台侧**只提供查询/认领/回报函数**，没有监听端口；
+Gateway 进程要做的全部是「主动连平台」。本轮未实现进程本体，因此也没有引入入站面。
+
 **理由**：把「怎么起进程」与「在哪台机器起」解耦；出站连接消除公网入站攻击面。
 
-**回滚**：Gateway 未部署时，Adapter 可本地直连（等同现状）。
+**回滚**：Gateway 未部署时，Adapter 可本地直连（等同现状）。`gateway.py` 不被调用即无效，
+v26 只加表加列，回滚无数据副作用。
 
 ---
 
