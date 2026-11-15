@@ -264,6 +264,10 @@ CREATE TABLE IF NOT EXISTS dispatch_plans (
   project_id  TEXT NOT NULL REFERENCES agent_projects(id),
   status      TEXT NOT NULL DEFAULT 'draft',   -- draft/approved/running/done/aborted
   strategy    TEXT NOT NULL DEFAULT 'manual',  -- manual/priority/dependency
+  mode        TEXT NOT NULL DEFAULT 'assisted',
+              -- shadow / recommend / assisted（契约 CF-4）
+              -- 历史计划都是可执行形态，默认 assisted 才诚实；
+              -- 新计划由代码显式传 mode（默认 recommend）
   created_by  TEXT,
   notes       TEXT,
   created_at  TEXT NOT NULL,
@@ -1414,3 +1418,26 @@ CREATE TABLE IF NOT EXISTS event_catalog (
   schema_version INTEGER NOT NULL DEFAULT 1,
   created_at     TEXT NOT NULL
 );
+
+
+-- schema v24（P3-M3）：三模式候选
+--
+-- SHADOW / RECOMMEND 只写候选表，**不写 dispatch_items**。
+-- 执行器只认 dispatch_items，所以这两种模式在结构上就不可能起进程——
+-- 这是结构性保证，不是靠"记得别调执行器"。
+CREATE TABLE IF NOT EXISTS dispatch_plan_candidates (
+  id           TEXT PRIMARY KEY,
+  plan_id      TEXT NOT NULL REFERENCES dispatch_plans(id),
+  project_id   TEXT NOT NULL REFERENCES agent_projects(id),
+  task_id      TEXT,
+  agent_id     TEXT,
+  role_key     TEXT,
+  score        REAL NOT NULL DEFAULT 0,
+  score_detail TEXT NOT NULL DEFAULT '{}',
+  reason       TEXT,
+  rank         INTEGER,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_candidates_plan
+  ON dispatch_plan_candidates(plan_id, rank);

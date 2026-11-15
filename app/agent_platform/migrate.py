@@ -148,6 +148,17 @@ V20_TABLES = (
     "knowledge_grants",
 )
 
+#: v24（P3-M3）：三模式候选表 + 计划模式列。
+V24_TABLES = ("dispatch_plan_candidates",)
+
+V24_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("dispatch_plans", (
+        # 历史计划都是可执行形态，默认 assisted 才诚实；
+        # 新计划由代码显式传 mode（默认 recommend）。
+        ("mode", "TEXT NOT NULL DEFAULT 'assisted'"),
+    )),
+)
+
 #: v23（P3-M1）：事件平面扩展。退避时间列 + 事件目录表。
 V23_TABLES = ("event_catalog",)
 
@@ -742,6 +753,12 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         columns=V23_COLUMN_UPGRADES,
         backfill=_migrate_v22_to_v23,
         description="P3-M1：事件平面扩展（退避重试 + 事件目录）",
+    ),
+    MigrationStep(
+        24,
+        tables=V24_TABLES,
+        columns=V24_COLUMN_UPGRADES,
+        description="P3-M3：三模式（SHADOW/RECOMMEND 只写候选不建 item）",
     ),
 )
 

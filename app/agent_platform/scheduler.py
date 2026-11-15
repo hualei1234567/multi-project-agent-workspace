@@ -34,6 +34,16 @@ PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 EXECUTABLE_MODES = frozenset({"worktree", "subagent"})
 
 PLAN_STATUSES = frozenset({"draft", "approved", "running", "done", "aborted"})
+
+#: 三模式（契约 CF-4）。核心区别：shadow/recommend **不创建 dispatch_item**，
+#: 执行器只认 dispatch_items，所以它们在结构上就不可能起进程。
+PLAN_MODES = frozenset({"shadow", "recommend", "assisted"})
+
+#: 平台默认模式。RECOMMEND = 展示推荐等人决策，不自动派发。
+DEFAULT_MODE = "recommend"
+
+#: 会创建 dispatch_item 的模式（只有 assisted）。
+EXECUTABLE_PLAN_MODES = frozenset({"assisted"})
 ITEM_STATUSES = frozenset(
     {"queued", "leased", "running", "succeeded", "failed", "cancelled", "skipped"}
 )
@@ -226,6 +236,97 @@ def _skip_reason(
 
 
 # ---------------------------------------------------------------------------
+# 候选评分（契约 CF-4 §3）
+# ---------------------------------------------------------------------------
+def _score_candidates(
+    conn: sqlite3.Connection, ready: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """给候选打分并生成「为什么推荐它」的理由。
+
+    维度：优先级 40 / 依赖就绪 20 / 角色能力 25 / 等待时长 15。
+
+    Registry 能力分为 0 时**不减分**，只标 ``capability_unknown``——
+    不能因为没登记能力就永远排最后，那是用数据缺失惩罚功能。
+    """
+    from . import registry as registry_service
+
+    out: list[dict[str, Any]] = []
+    now = store.now_iso()
+    for task in ready:
+        agent = task.get("agent") or {}
+        role_key = agent.get("role_key") or ""
+        prio = PRIORITY_ORDER.get(task.get("priority") or "P2", 2)
+        prio_score = 40 - prio * 10  # P0=40 P1=30 P2=20 P3=10
+
+        # 能走到这里说明依赖已就绪（硬过滤在前），给满分。
+        dep_score = 20
+
+        # 角色能力：取该角色最高能力分做归一（0..5 → 0..25）
+        cap_score = 0.0
+        cap_note = "capability_unknown"
+        role_id = agent.get("registry_role_id") or f"role_{role_key}"
+        try:
+            rows = conn.execute(
+                "SELECT capability FROM registry_agent_capabilities WHERE role_id = ?",
+                (role_id,),
+            ).fetchall()
+            if rows:
+                best = max(
+                    (registry_service.capability_score(conn, role_id, r["capability"])
+                     for r in rows),
+                    default=0.0,
+                )
+                cap_score = (best / 5.0) * 25.0
+                cap_note = f"capability_best={best:.1f}"
+        except sqlite3.DatabaseError:
+            # Registry 表不存在（老库未迁移）时不影响评分，
+            # 只是拿不到能力分——不给功能挖坑。
+            cap_score = 0.0
+
+        # 等待时长：越旧越靠前，最多 15 分（24h 封顶）
+        wait_score = 0.0
+        updated = task.get("updated_at")
+        if updated:
+            from datetime import datetime, timezone
+            try:
+                age_h = (datetime.now(timezone.utc)
+                         - datetime.fromisoformat(updated)).total_seconds() / 3600
+                wait_score = min(age_h / 24.0, 1.0) * 15.0
+            except ValueError:
+                pass
+
+        total = round(prio_score + dep_score + cap_score + wait_score, 2)
+        reason_bits = [
+            f"优先级 {task.get('priority') or 'P2'}（{prio_score} 分）",
+            "依赖已就绪（20 分）",
+        ]
+        if cap_score > 0:
+            reason_bits.append(f"角色能力匹配（{cap_score:.1f} 分）")
+        else:
+            reason_bits.append("角色未登记能力（不加分也不减分）")
+        if wait_score > 0:
+            reason_bits.append(f"等待时长（{wait_score:.1f} 分）")
+
+        out.append({
+            "task_id": task["id"],
+            "agent_id": task.get("assignee_agent_id"),
+            "role_key": role_key,
+            "score": total,
+            "score_detail": {
+                "priority": prio_score,
+                "dependency": dep_score,
+                "capability": round(cap_score, 2),
+                "wait": round(wait_score, 2),
+                "capability_note": cap_note,
+                "computed_at": now,
+            },
+            "reason": " · ".join(reason_bits),
+        })
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 计划
 # ---------------------------------------------------------------------------
 def create_plan(
@@ -235,10 +336,20 @@ def create_plan(
     created_by: str = "local",
     max_items: int | None = None,
     notes: str | None = None,
+    mode: str = DEFAULT_MODE,
 ) -> dict[str, Any]:
-    """生成一份 draft 计划（纯计算后落库，不执行）。"""
+    """生成一份 draft 计划（纯计算后落库，不执行）。
+
+    ``mode`` 决定落库形态（契约 CF-4）：
+    - ``shadow`` / ``recommend``：只写 ``dispatch_plan_candidates``，
+      **不写 ``dispatch_items``**——执行器看不到，结构上不可能派发。
+    - ``assisted``：写 ``dispatch_items``，需审批后执行。
+    """
     if strategy not in {"manual", "priority", "dependency"}:
         raise SchedulerError("invalid_payload", 422, "strategy 非法")
+    if mode not in PLAN_MODES:
+        raise SchedulerError("invalid_mode", 422,
+                             f"mode 必须是 {sorted(PLAN_MODES)} 之一")
 
     conn = store.connect()
     try:
@@ -256,34 +367,61 @@ def create_plan(
         with store.write_tx(conn):
             conn.execute(
                 "INSERT INTO dispatch_plans"
-                " (id, project_id, status, strategy, created_by, notes, created_at, version)"
-                " VALUES (?, ?, 'draft', ?, ?, ?, ?, 1)",
-                (plan_id, project_id, strategy, created_by, notes, now),
+                " (id, project_id, status, strategy, mode, created_by, notes,"
+                "  created_at, version)"
+                " VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, 1)",
+                (plan_id, project_id, strategy, mode, created_by, notes, now),
             )
-            for task in ready:
-                conn.execute(
-                    "INSERT INTO dispatch_items"
-                    " (id, plan_id, project_id, task_id, agent_id, role_key, status, priority,"
-                    "  attempt, max_attempts, result_json, created_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, '{}', ?, ?)",
-                    (
-                        uuid.uuid4().hex,
-                        plan_id,
-                        project_id,
-                        task["id"],
-                        task["assignee_agent_id"],
-                        task["agent"]["role_key"],
-                        task["priority"] or "P2",
-                        _max_attempts(conn, project_id),
-                        now,
-                        now,
-                    ),
-                )
+            if mode in EXECUTABLE_PLAN_MODES:
+                # ASSISTED：写 dispatch_items，走审批闸门后执行。
+                for task in ready:
+                    conn.execute(
+                        "INSERT INTO dispatch_items"
+                        " (id, plan_id, project_id, task_id, agent_id, role_key, status,"
+                        "  priority, attempt, max_attempts, result_json, created_at, updated_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, '{}', ?, ?)",
+                        (
+                            uuid.uuid4().hex,
+                            plan_id,
+                            project_id,
+                            task["id"],
+                            task["assignee_agent_id"],
+                            task["agent"]["role_key"],
+                            task["priority"] or "P2",
+                            _max_attempts(conn, project_id),
+                            now,
+                            now,
+                        ),
+                    )
+            else:
+                # SHADOW / RECOMMEND：只写候选，不建 item。
+                for rank, item in enumerate(_score_candidates(conn, ready), start=1):
+                    conn.execute(
+                        "INSERT INTO dispatch_plan_candidates"
+                        " (id, plan_id, project_id, task_id, agent_id, role_key,"
+                        "  score, score_detail, reason, rank, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            uuid.uuid4().hex,
+                            plan_id,
+                            project_id,
+                            item["task_id"],
+                            item["agent_id"],
+                            item["role_key"],
+                            item["score"],
+                            store.dumps_json(item["score_detail"]),
+                            item["reason"],
+                            rank,
+                            now,
+                        ),
+                    )
         _safe_audit(conn, project_id, "dispatch.plan.create", "dispatch_plan", plan_id, {
             "strategy": strategy,
+            "mode": mode,
             "items": len(ready),
             "skipped": len(_skipped),
             "created_by": created_by,
+            "creates_dispatch_items": mode in EXECUTABLE_PLAN_MODES,
         })
         return get_plan(project_id, plan_id, conn=conn)
     finally:
@@ -349,10 +487,30 @@ def get_plan(
             item["result"] = store.loads_json(item.pop("result_json", None), {})
         plan["items"] = items
         plan["counts"] = _item_counts(items)
+        # SHADOW / RECOMMEND 没有 items，候选在候选表里（契约 CF-4）。
+        plan["candidates"] = _plan_candidates(conn, plan_id)
+        plan["creates_dispatch_items"] = plan.get("mode") in EXECUTABLE_PLAN_MODES
         return plan
     finally:
         if own:
             conn.close()
+
+
+def _plan_candidates(conn: sqlite3.Connection, plan_id: str) -> list[dict[str, Any]]:
+    """计划的候选集（SHADOW / RECOMMEND 才有）。含评分明细与理由。"""
+    try:
+        rows = conn.execute(
+            "SELECT * FROM dispatch_plan_candidates WHERE plan_id = ? ORDER BY rank",
+            (plan_id,),
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["score_detail"] = store.loads_json(item.get("score_detail"), {}) or {}
+        out.append(item)
+    return out
 
 
 def list_plans(

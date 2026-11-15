@@ -1235,6 +1235,34 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 }
 
 
+/* 调度模式选择（P3-M3） */
+.dp-mode-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.dp-mode-pick select { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); font: inherit; font-size: 12px; }
+.dp-mode-pick select:focus { outline: none; border-color: var(--primary); }
+
+/* 模式提示：说清楚这次会不会派发 */
+.dp-mode-note { font-size: 11.5px; padding: 6px 10px; border-radius: 8px; margin: 8px 0;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text-2); }
+.dp-mode-note.assisted { background: var(--run-weak); border-color: transparent; color: var(--run); }
+.dp-mode-note.shadow { background: var(--panel-2); color: var(--muted); }
+.dp-mode-note.recommend { background: var(--primary-weak); border-color: transparent; color: var(--primary); }
+
+/* 候选卡片（SHADOW / RECOMMEND 才有） */
+.cand-list { display: grid; gap: 8px; }
+.cand-row { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; gap: 10px;
+  align-items: center; padding: 9px 12px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--panel-2); }
+.cand-rank { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px;
+  background: var(--primary-weak); color: var(--primary); font-size: 11.5px; font-weight: 680; }
+.cand-main { min-width: 0; }
+.cand-title { font-size: 12.5px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cand-reason { font-size: 11px; color: var(--muted); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cand-score { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 680;
+  color: var(--primary); }
+
 /* ---------- 实时会话 ---------- */
 .sess-list { display: flex; flex-direction: column; gap: 6px; }
 .sess-row { display: grid; grid-template-columns: 8px minmax(90px,130px) 62px 70px minmax(0,1fr) auto auto; gap: 10px; align-items: center;
@@ -4860,6 +4888,14 @@ function renderDispatchPage(el) {
           <span class="desc">可执行任务 · 生成计划 · 手动触发</span>
           <div class="spacer"></div>
           <button class="btn" id="dp-refresh">↻ 刷新</button>
+          <label class="dp-mode-pick" title="SHADOW/RECOMMEND 只算不派发；ASSISTED 才会创建可执行项">
+            <span>模式</span>
+            <select id="dp-mode" aria-label="调度模式">
+              <option value="recommend" selected>RECOMMEND（只推荐）</option>
+              <option value="shadow">SHADOW（只评估）</option>
+              <option value="assisted">ASSISTED（可执行）</option>
+            </select>
+          </label>
           <button class="btn primary" id="dp-plan">生成计划</button>
         </div>
         <div class="panel-body">
@@ -4946,12 +4982,17 @@ async function loadDispatch(force = false) {
 
 async function createDispatchPlan() {
   const key = dispatchProjectKey();
+  const mode = ($("#dp-mode")?.value) || "recommend";
   try {
     const plan = await fetchJSON(`/api/projects/${encodeURIComponent(key)}/dispatch/plan`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ strategy: "priority" }),
+      body: JSON.stringify({ strategy: "priority", mode }),
     });
-    dispatchNotice(`已生成计划：${plan.items?.length ?? 0} 项`);
+    // 说清楚这次到底会不会派发——这是三模式最容易被误解的地方
+    const n = plan.creates_dispatch_items
+      ? `${plan.items?.length ?? 0} 个可执行项（需审批后运行）`
+      : `${plan.candidates?.length ?? 0} 个候选（不会派发）`;
+    dispatchNotice(`已生成 ${plan.mode} 计划：${n}`);
     await loadDispatch(true);
     openDispatchDetail(plan.id, Boolean(APP.dispatch?.executor?.global_enabled));
   } catch (err) {
@@ -4981,10 +5022,32 @@ async function openDispatchDetail(planId, executorEnabled) {
         <button class="btn small" data-logs="${esc(item.id)}">日志</button>
       </td>
     </tr>`).join("");
+  const mode = plan.mode || "assisted";
+  const MODE_DESC = {
+    shadow: "SHADOW · 只评估，不创建可执行项，绝不派发",
+    recommend: "RECOMMEND · 展示推荐等你决策，不派发",
+    assisted: "ASSISTED · 创建可执行项，需审批后运行",
+  };
+  const cands = plan.candidates || [];
+  // SHADOW / RECOMMEND 没有 items，展示候选与推荐理由。
+  const body = plan.creates_dispatch_items
+    ? `<div class="table-wrap"><table><thead><tr><th>优先级</th><th>角色</th><th>状态</th><th>重试</th><th>错误</th><th>操作</th></tr></thead>
+       <tbody>${rows || '<tr><td colspan="6">计划里没有可执行项</td></tr>'}</tbody></table></div>`
+    : `<div class="cand-list">${cands.length ? cands.map(c => `
+        <div class="cand-row">
+          <span class="cand-rank">${c.rank}</span>
+          <div class="cand-main">
+            <div class="cand-title">${esc(c.role_key || "—")} · ${esc(c.task_id ? String(c.task_id).slice(0, 8) : "")}</div>
+            <div class="cand-reason" title="${esc(c.reason || "")}">${esc(c.reason || "")}</div>
+          </div>
+          <span class="cand-score">${Number(c.score || 0).toFixed(1)}</span>
+        </div>`).join("")
+      : emptyBox("没有候选任务", "当前没有满足硬过滤条件的任务（依赖未就绪 / 角色不可执行 / 已有在途调度项）")}</div>`;
+
   openDispatchDrawer(`调度计划 ${plan.id.slice(0, 8)}`, `
     <div class="note">${dispatchStatusBadge(plan.status)} · 策略 ${esc(plan.strategy)} · ${esc(fmtTime(plan.created_at))}</div>
-    <div class="table-wrap"><table><thead><tr><th>优先级</th><th>角色</th><th>状态</th><th>重试</th><th>错误</th><th>操作</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6">计划里没有可执行项</td></tr>'}</tbody></table></div>
+    <div class="dp-mode-note ${esc(mode)}">${esc(MODE_DESC[mode] || mode)}</div>
+    ${body}
     <pre class="dp-log" id="dp-log"></pre>`);
 
   const log = $("#dp-log");

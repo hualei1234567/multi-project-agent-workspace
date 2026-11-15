@@ -77,7 +77,7 @@ def _item(env, key="EX-100", role="frontend-engineer"):
     service.create_task("default", {
         "title": f"任务 {key}", "task_key": key, "assignee_agent_id": agent["id"],
     })
-    plan = scheduler.create_plan("default")
+    plan = scheduler.create_plan("default", mode="assisted")
     return next(i for i in plan["items"] if i["role_key"] == role)
 
 
@@ -219,7 +219,7 @@ def test_prompt_includes_acceptance_criteria(env):
         "title": "带验收标准", "task_key": "EX-105", "assignee_agent_id": agent["id"],
         "acceptance_criteria": ["接口返回 200", "有回归用例"],
     })
-    plan = scheduler.create_plan("default")
+    plan = scheduler.create_plan("default", mode="assisted")
     item = next(i for i in plan["items"] if i["task_id"])
     argv = executor.run_item(item["id"], dry_run=True)["argv"]
     prompt = argv[argv.index("-p") + 1]

@@ -131,7 +131,7 @@ def test_priority_ordering(env):
 
 def test_plan_creates_items_and_is_idempotent_against_active(env):
     task = _task(env, "S-010")
-    plan = scheduler.create_plan("default")
+    plan = scheduler.create_plan("default", mode="assisted")
     assert plan["status"] == "draft"
     keys = [i["task_id"] for i in plan["items"]]
     assert task["id"] in keys
@@ -145,13 +145,13 @@ def test_plan_creates_items_and_is_idempotent_against_active(env):
 def test_plan_max_items(env):
     for i in range(3):
         _task(env, f"S-02{i}")
-    plan = scheduler.create_plan("default", max_items=2)
+    plan = scheduler.create_plan("default", mode="assisted", max_items=2)
     assert len(plan["items"]) == 2
 
 
 def test_plan_detail_and_list(env):
     _task(env, "S-030")
-    plan = scheduler.create_plan("default")
+    plan = scheduler.create_plan("default", mode="assisted")
     detail = scheduler.get_plan("default", plan["id"])
     assert detail["id"] == plan["id"]
     assert detail["items"]

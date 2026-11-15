@@ -66,7 +66,7 @@ def test_plan_audit_records_counts(env):
     service.create_task("default", {
         "title": "审计用例2", "task_key": "AU-002", "assignee_agent_id": _agent(),
     })
-    plan = scheduler.create_plan("default")
+    plan = scheduler.create_plan("default", mode="assisted")
     with store.session() as conn:
         row = conn.execute(
             "SELECT detail_json FROM audit_logs WHERE action='dispatch.plan.create'"
@@ -74,6 +74,9 @@ def test_plan_audit_records_counts(env):
     detail = json.loads(row["detail_json"])
     assert detail["items"] == len(plan["items"])
     assert "strategy" in detail
+    # P3-M3：审计必须记录模式，否则查不出"这次到底会不会派发"
+    assert detail["mode"] == "assisted"
+    assert detail["creates_dispatch_items"] is True
 
 
 # ---------------------------------------------------------------------------

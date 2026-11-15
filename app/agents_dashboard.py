@@ -59,6 +59,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import config as platform_config
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
+    from agent_platform import facade as facade_service
     from agent_platform import openapi as openapi_service
     from agent_platform import registry as registry_service
     from agent_platform import resources as resource_service
@@ -88,6 +89,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import config as platform_config
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
+    from app.agent_platform import facade as facade_service
     from app.agent_platform import openapi as openapi_service
     from app.agent_platform import registry as registry_service
     from app.agent_platform import resources as resource_service
@@ -1408,7 +1410,28 @@ def _team_preflight(project_id: str) -> dict[str, Any]:
     return team_service.preflight(_project_dict(project_id))
 
 
-def _team_launch(project_id: str, instruction: str, *, actor: str = "local") -> dict[str, Any]:
+def _team_launch(project_id: str, instruction: str, *, actor: str = "local",
+                 principal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """启动后台会话。
+
+    P3-M3 / ADR-P3-002：这是 ``team.py`` 唯一会被业务代码调用的启动入口，
+    所以门面闸门挂在这里。此前 ``launch_team`` 只套了工具白名单，
+    **不过 Policy、不过 Kill Switch**——那是蓝图点名的「旧入口绕过 Facade」。
+    """
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        try:
+            facade_service.guard(conn, entry="team.launch", project_id=project_id,
+                                 principal=principal)
+        except facade_service.FacadeError as exc:
+            facade_service.audit_denial(conn, entry="team.launch",
+                                        project_id=project_id, actor=actor,
+                                        reason=exc.message)
+            raise platform_service.PlatformError(exc.code, exc.status,
+                                                 exc.message) from exc
+    finally:
+        conn.close()
     return team_service.launch_team(_project_dict(project_id), instruction, actor=actor)
 
 
@@ -2864,10 +2887,12 @@ class Handler(BaseHTTPRequestHandler):
         # 自主调度（M3-1）：生成计划是纯计算 + 落库，不执行任何进程。
         if rest == ["dispatch", "plan"]:
             body = self._body()
+            # 三模式（契约 CF-4）：默认 recommend = 展示推荐不派发。
             self._platform(
                 scheduler_service.create_plan, project_id,
                 strategy=str(body.get("strategy") or "priority"),
                 created_by=str(body.get("created_by") or "local"),
+                mode=str(body.get("mode") or scheduler_service.DEFAULT_MODE),
                 max_items=body.get("max_items"),
                 notes=body.get("notes"),
             )
@@ -2880,8 +2905,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if rest == ["team", "launch"]:
             body = self._body()
+            # principal 必须从认证上下文传进来，不能从请求体取——
+            # 否则任何人都能自称 owner 绕过 Policy。
             self._platform(_team_launch, project_id, str(body.get("instruction") or ""),
-                           actor=self._principal_id())
+                           actor=self._principal_id(),
+                           principal=getattr(self, "principal", None))
             return
         if len(rest) == 3 and rest[0] == "team" and rest[2] == "attach":
             body = self._body()
