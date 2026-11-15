@@ -536,8 +536,12 @@ def _record_execution(conn, item_id: str, row, status: str, exit_code: int | Non
             "   duration_ms = excluded.duration_ms,"
             "   summary = excluded.summary,"
             "   correlation_id = excluded.correlation_id,"
+            # 金额与质量必须成对更新：COALESCE 保住了旧金额，却把 quality
+            # 覆盖成新值，会产出「有金额却标 unknown」这种自相矛盾的记录。
+            # 规则：金额用了旧的，quality 也沿用旧值。
+            "   cost_quality = CASE WHEN excluded.actual_cost_usd IS NOT NULL"
+            "     THEN excluded.cost_quality ELSE executions.cost_quality END,"
             "   actual_cost_usd = COALESCE(excluded.actual_cost_usd, executions.actual_cost_usd),"
-            "   cost_quality = excluded.cost_quality,"
             "   link_quality = excluded.link_quality,"
             "   task_id = COALESCE(excluded.task_id, executions.task_id)",
             (

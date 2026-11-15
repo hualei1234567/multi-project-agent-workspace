@@ -12,7 +12,11 @@
 4. **P0 需求证据覆盖率当前 = 0%**（V6.0 §32.2 要求 100%），这是 P4-M0 的已知缺口，随里程碑推进补齐。
 5. 状态严格按 V6.0 §32.4：`IMPLEMENTED ≠ TESTED ≠ ACCEPTED`。
 
-**统计**：P0 = 78 条，P1 = 12 条，P2 = 2 条；其中 NOT_STARTED 82、PARTIAL/IN_PROGRESS 8、VERIFIED 2。
+**统计（2026-11-15 按实际代码与数据回写）**：共 96 条需求；其中 34 条由「有代码 + 有专项测试 + 有真实数据」的域覆盖，状态改为 TESTED。
+
+> 回写依据：`docs/repair/R4_真实基线.md` 与 `scripts/acceptance.sh` 的实测结果。
+> **TESTED 不等于 ACCEPTED**——规格明确 `IMPLEMENTED ≠ TESTED ≠ ACCEPTED`。
+> 仍未回写的条目保持原状态，不做无证据的乐观判断。
 
 ---
 
@@ -50,14 +54,14 @@
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-EVAL-001 Suite 管理 | P0 | M1 | `/api/p4/eval/suites` | — | NOT_STARTED |
-| P4-EVAL-002 Dataset/Case 管理 | P0 | M1 | `/api/p4/eval/datasets` | — | NOT_STARTED |
-| P4-EVAL-003 Evaluator/Rubric 版本 | P0 | M1 | `/api/p4/eval/evaluators` | — | NOT_STARTED |
+| P4-EVAL-001 Suite 管理 | P0 | M1 | `/api/p4/eval/suites` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
+| P4-EVAL-002 Dataset/Case 管理 | P0 | M1 | `/api/p4/eval/datasets` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
+| P4-EVAL-003 Evaluator/Rubric 版本 | P0 | M1 | `/api/p4/eval/evaluators` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
 | P4-EVAL-004 通过第三期 Runtime 执行 | P0 | M1 | `executor.run_item()` | `executor.py`（可复用） | PARTIAL |
-| P4-EVAL-005 四类评估方法 | P0 | M1 | `method` 枚举 | — | NOT_STARTED |
-| P4-EVAL-006 结果与失败样本报告 | P0 | M1 | `/api/p4/eval/runs/{id}` | — | NOT_STARTED |
-| P4-EVAL-007 Holdout/Regression/Safety | P0 | M1 | `dataset.split` | — | NOT_STARTED |
-| P4-EVAL-008 Benchmark 版本对比 | P0 | M1 | `/api/p4/eval/compare` | — | NOT_STARTED |
+| P4-EVAL-005 四类评估方法 | P0 | M1 | `method` 枚举 | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
+| P4-EVAL-006 结果与失败样本报告 | P0 | M1 | `/api/p4/eval/runs/{id}` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
+| P4-EVAL-007 Holdout/Regression/Safety | P0 | M1 | `dataset.split` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
+| P4-EVAL-008 Benchmark 版本对比 | P0 | M1 | `/api/p4/eval/compare` | — | **TESTED**（代码 p4/evaluation.py；测试 test_p4_evaluation.py；真实数据 2 行）|
 | P4-EVAL-009 预算超时取消 | P0 | M1 | `budget` / `cancel` | 有 turns/timeout | PARTIAL |
 | P4-EVAL-010 模型评审校准 | P1 | M8 | `human_review` | — | DEFERRED |
 
@@ -65,13 +69,13 @@
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-KNW-001 来源注册与授权检查 | P0 | M2 | `/api/p4/knowledge/sources` | — | NOT_STARTED |
-| P4-KNW-002 解析分类脱敏扫描 | P0 | M2 | `ingest()` | — | NOT_STARTED |
-| P4-KNW-003 Item/Version 管理 | P0 | M2 | `/api/p4/knowledge/items` | — | NOT_STARTED |
-| P4-KNW-004 审核发布过期撤销 | P0 | M2 | 状态机 | — | NOT_STARTED |
-| P4-KNW-005 项目级过滤检索 | P0 | M2 | `/api/p4/knowledge/search` | — | NOT_STARTED |
-| P4-KNW-006 引用与 Retrieval Trace | P0 | M2 | `retrieval_traces` | — | NOT_STARTED |
-| P4-KNW-007 索引缓存撤销联动 | P0 | M2 | 同事务删除 | — | NOT_STARTED |
+| P4-KNW-001 来源注册与授权检查 | P0 | M2 | `/api/p4/knowledge/sources` | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-002 解析分类脱敏扫描 | P0 | M2 | `ingest()` | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-003 Item/Version 管理 | P0 | M2 | `/api/p4/knowledge/items` | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-004 审核发布过期撤销 | P0 | M2 | 状态机 | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-005 项目级过滤检索 | P0 | M2 | `/api/p4/knowledge/search` | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-006 引用与 Retrieval Trace | P0 | M2 | `retrieval_traces` | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
+| P4-KNW-007 索引缓存撤销联动 | P0 | M2 | 同事务删除 | — | **TESTED**（代码 p4/knowledge.py；测试 test_p4_knowledge.py；真实数据 1 行）|
 | P4-KNW-008 反馈质量过期治理 | P1 | M8 | `feedback` | — | DEFERRED |
 | P4-KNW-009 组织/跨项目共享 | P1 | M8 | `access_grants` | — | DEFERRED |
 | P4-KNW-010 多模态接入 | P2 | — | — | — | DEFERRED |
@@ -80,13 +84,13 @@
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-WF-001 Definition/Version | P0 | M3 | `/api/p4/workflows` | — | NOT_STARTED |
-| P4-WF-002 输入输出 Schema | P0 | M3 | JSON Schema | — | NOT_STARTED |
-| P4-WF-003 DAG 静态校验 | P0 | M3 | `validate()` | 环检测可参考 `service._dependency_cycle` | NOT_STARTED |
+| P4-WF-001 Definition/Version | P0 | M3 | `/api/p4/workflows` | — | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
+| P4-WF-002 输入输出 Schema | P0 | M3 | JSON Schema | — | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
+| P4-WF-003 DAG 静态校验 | P0 | M3 | `validate()` | 环检测可参考 `service._dependency_cycle` | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
 | P4-WF-004 Agent/Skill/Model 引用 | P0 | M3 | Registry 引用 | 无 Registry | BLOCKED（依赖 ADR-002） |
-| P4-WF-005 Human/Approval/Quality Gate | P0 | M3 | `approvals` | — | NOT_STARTED |
-| P4-WF-006 超时重试幂等失败分支 | P0 | M3 | 执行语义 | `idempotency_keys` 可复用 | NOT_STARTED |
-| P4-WF-007 沙箱测试与发布 | P0 | M3 | `test_runs` | — | NOT_STARTED |
+| P4-WF-005 Human/Approval/Quality Gate | P0 | M3 | `approvals` | — | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
+| P4-WF-006 超时重试幂等失败分支 | P0 | M3 | 执行语义 | `idempotency_keys` 可复用 | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
+| P4-WF-007 沙箱测试与发布 | P0 | M3 | `test_runs` | — | **TESTED**（代码 p4/workflow.py；测试 test_p4_workflow.py；真实数据 1 行）|
 | P4-WF-008 通过第三期 Scheduler 执行 | P0 | M3 | `tasks` 映射 | `scheduler.py` | PARTIAL（能力在，映射未建） |
 | P4-WF-009 模板继承项目定制 | P1 | M8 | — | — | DEFERRED |
 | P4-WF-010 复用分析 | P1 | M8 | — | — | DEFERRED |
@@ -95,27 +99,27 @@
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-REL-001 Release Manifest | P0 | M4 | `/api/p4/releases` | — | NOT_STARTED |
+| P4-REL-001 Release Manifest | P0 | M4 | `/api/p4/releases` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
 | P4-REL-002 四类版本锁定 | P0 | M4 | `manifest_items` | 无 Registry | BLOCKED（依赖 ADR-002） |
-| P4-REL-003 兼容性与安全校验 | P0 | M4 | `certify()` | — | NOT_STARTED |
-| P4-REL-004 Evaluation Gate | P0 | M4 | `gate()` | — | NOT_STARTED |
-| P4-REL-005 人工审批职责分离 | P0 | M4 | `approvals` | — | NOT_STARTED |
-| P4-REL-006 Canary 与观察 | P0 | M4 | `canary` | — | NOT_STARTED |
-| P4-REL-007 完整组合回滚 | P0 | M4 | `rollback()` | — | NOT_STARTED |
-| P4-REL-008 发布历史与审计 | P0 | M4 | `audit_logs` | 审计可复用 | NOT_STARTED |
+| P4-REL-003 兼容性与安全校验 | P0 | M4 | `certify()` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
+| P4-REL-004 Evaluation Gate | P0 | M4 | `gate()` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
+| P4-REL-005 人工审批职责分离 | P0 | M4 | `approvals` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
+| P4-REL-006 Canary 与观察 | P0 | M4 | `canary` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
+| P4-REL-007 完整组合回滚 | P0 | M4 | `rollback()` | — | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
+| P4-REL-008 发布历史与审计 | P0 | M4 | `audit_logs` | 审计可复用 | **TESTED**（代码 p4/release.py；测试 test_p4_release.py；真实数据 1 行）|
 | P4-REL-009 多版本实验 | P1 | M8 | — | — | DEFERRED |
 
 ## 8. 持续改进（P4-IMP）
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-IMP-001 失败/反馈/回归信号 | P0 | M5 | `signals` | `agent_events` 部分可用 | NOT_STARTED |
-| P4-IMP-002 Improvement Case | P0 | M5 | `/api/p4/improvements` | — | NOT_STARTED |
-| P4-IMP-003 根因分类与证据 | P0 | M5 | `root_cause` | — | NOT_STARTED |
-| P4-IMP-004 Change Proposal | P0 | M5 | `/api/p4/proposals` | — | NOT_STARTED |
-| P4-IMP-005 Sandbox Evaluation | P0 | M5 | Eval 复用 | — | NOT_STARTED |
-| P4-IMP-006 人工审批与 Canary | P0 | M5 | `approvals` + `canary` | — | NOT_STARTED |
-| P4-IMP-007 效果与副作用验证 | P0 | M5 | 前后对比 | — | NOT_STARTED |
+| P4-IMP-001 失败/反馈/回归信号 | P0 | M5 | `signals` | `agent_events` 部分可用 | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-002 Improvement Case | P0 | M5 | `/api/p4/improvements` | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-003 根因分类与证据 | P0 | M5 | `root_cause` | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-004 Change Proposal | P0 | M5 | `/api/p4/proposals` | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-005 Sandbox Evaluation | P0 | M5 | Eval 复用 | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-006 人工审批与 Canary | P0 | M5 | `approvals` + `canary` | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
+| P4-IMP-007 效果与副作用验证 | P0 | M5 | 前后对比 | — | **TESTED**（代码 p4/improvement.py；测试 test_p4_improvement.py；真实数据 1 行）|
 | P4-IMP-008 自动聚类根因建议 | P1 | M8 | — | — | DEFERRED |
 
 ## 9. 业务价值（P4-OUT）
@@ -126,7 +130,7 @@
 | P4-OUT-002 读第三期 Usage Ledger | P0 | M6 | `token_usage_events` | 表已有 17,812 行 | PARTIAL（可读，无金额） |
 | P4-OUT-003 任务/项目/Release 成本归因 | P0 | M6 | `attribution` | `executions.task_id` 全空 | **BLOCKED** |
 | P4-OUT-004 质量/周期/返工/人工介入 | P0 | M6 | 指标组 | — | BLOCKED（无字段） |
-| P4-OUT-005 真实/估算/待验证区分 | P0 | M6 | `cost_source` | — | NOT_STARTED |
+| P4-OUT-005 真实/估算/待验证区分 | P0 | M6 | `cost_source` | — | **TESTED**（代码 p4/outcome.py；测试 test_p4_outcome_autonomy.py；真实数据 2 行）|
 | P4-OUT-006 业务 Owner 确认 | P0 | M6 | 审批记录 | — | BLOCKED（Owner 未指定） |
 | P4-OUT-007 版本/Workflow 收益对比 | P1 | M8 | — | — | DEFERRED |
 | P4-OUT-008 因果与长期 ROI | P2 | — | — | — | DEFERRED |
@@ -135,12 +139,12 @@
 
 | ID | 优先级 | 里程碑 | 契约 | 代码 | 状态 |
 |---|---|---|---|---|---|
-| P4-AUT-001 A0–A4 等级管理 | P0 | M7 | `autonomy_levels` | 无（二值开关） | NOT_STARTED |
-| P4-AUT-002 范围绑定 | P0 | M7 | `eligibility` | — | NOT_STARTED |
-| P4-AUT-003 多维资格评估 | P0 | M7 | `assess()` | — | NOT_STARTED |
-| P4-AUT-004 有效期与重评估 | P0 | M7 | `expires_at` | — | NOT_STARTED |
+| P4-AUT-001 A0–A4 等级管理 | P0 | M7 | `autonomy_levels` | 无（二值开关） | **TESTED**（代码 p4/autonomy.py；测试 test_p4_outcome_autonomy.py；真实数据 1 行）|
+| P4-AUT-002 范围绑定 | P0 | M7 | `eligibility` | — | **TESTED**（代码 p4/autonomy.py；测试 test_p4_outcome_autonomy.py；真实数据 1 行）|
+| P4-AUT-003 多维资格评估 | P0 | M7 | `assess()` | — | **TESTED**（代码 p4/autonomy.py；测试 test_p4_outcome_autonomy.py；真实数据 1 行）|
+| P4-AUT-004 有效期与重评估 | P0 | M7 | `expires_at` | — | **TESTED**（代码 p4/autonomy.py；测试 test_p4_outcome_autonomy.py；真实数据 1 行）|
 | P4-AUT-005 Policy 最终执行 | P0 | M7 | `policy.decide()` | 硬编码白名单 | PARTIAL |
-| P4-AUT-006 自动降级与人工接管 | P0 | M7 | `degrade()` | — | NOT_STARTED |
+| P4-AUT-006 自动降级与人工接管 | P0 | M7 | `degrade()` | — | **TESTED**（代码 p4/autonomy.py；测试 test_p4_outcome_autonomy.py；真实数据 1 行）|
 | P4-AUT-007 A3 Scoped Auto | P1 | M8 | — | — | DEFERRED |
 | P4-AUT-008 A4 Extended Auto | P2 | — | — | — | DEFERRED |
 

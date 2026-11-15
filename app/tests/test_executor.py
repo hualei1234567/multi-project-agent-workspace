@@ -456,3 +456,44 @@ def test_retry_updates_execution_to_latest_result(env, tmp_path, monkeypatch):
         assert rows[0]["actual_cost_usd"] == 0.02
     finally:
         conn.close()
+
+
+def test_cost_quality_stays_paired_with_amount_on_retry(env, tmp_path, monkeypatch):
+    """R5 实测缺陷：重跑时金额与质量必须成对更新。
+
+    upsert 用 COALESCE 保住旧金额，却无条件覆盖 cost_quality，
+    会产出「有金额却标 unknown」这种自相矛盾的记录。
+    """
+    item = _item(env, key="EX-COST-PAIR")
+    _enable_project(env)
+    ok = _fake_claude(tmp_path, '{"type":"result","subtype":"success",'
+                                '"total_cost_usd":0.03}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(ok))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        row = conn.execute("SELECT actual_cost_usd, cost_quality FROM executions"
+                           " WHERE source='dispatcher'").fetchone()
+        assert row["actual_cost_usd"] == 0.03
+        assert row["cost_quality"] == "actual"
+        # 重置后重跑一次「没有成本」的执行
+        conn.execute("UPDATE dispatch_items SET status='queued', lease_owner=NULL,"
+                     " lease_expires_at=NULL WHERE id = ?", (item["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    no_cost = _fake_claude(tmp_path, '{"type":"result","subtype":"success"}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(no_cost))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        row = conn.execute("SELECT actual_cost_usd, cost_quality FROM executions"
+                           " WHERE source='dispatcher'").fetchone()
+        # 金额沿用旧值 → quality 也必须沿用，不能变成 unknown
+        assert row["actual_cost_usd"] == 0.03
+        assert row["cost_quality"] == "actual", "金额与质量脱节"
+    finally:
+        conn.close()
