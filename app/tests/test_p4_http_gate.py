@@ -8,9 +8,10 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import pytest
+from conftest import local_urlopen
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 if str(SCRIPTS) not in sys.path:
@@ -67,7 +68,7 @@ def _request(base: str, path: str, method: str = "GET", body: dict | None = None
     req = Request(base + path, data=data, method=method,
                   headers={"Content-Type": "application/json"})
     try:
-        with urlopen(req, timeout=10) as resp:
+        with local_urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))

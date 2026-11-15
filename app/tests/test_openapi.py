@@ -5,7 +5,6 @@ import json
 import sys
 import threading
 from pathlib import Path
-from urllib.request import urlopen
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 if str(SCRIPTS) not in sys.path:
@@ -13,6 +12,7 @@ if str(SCRIPTS) not in sys.path:
 
 import agents_dashboard as dash
 from agent_platform import openapi
+from conftest import local_urlopen
 
 
 def _doc():
@@ -84,7 +84,7 @@ def test_served_over_http():
     thread.start()
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        with urlopen(base + "/api/openapi.json", timeout=10) as resp:
+        with local_urlopen(base + "/api/openapi.json", timeout=10) as resp:
             assert resp.status == 200
             assert resp.headers.get_content_type() == "application/json"
             body = json.loads(resp.read().decode("utf-8"))

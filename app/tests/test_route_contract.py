@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import pytest
 
@@ -24,6 +24,7 @@ if str(SCRIPTS) not in sys.path:
 
 import agents_dashboard as dash
 from agent_platform import openapi, service, sources
+from conftest import local_urlopen
 
 
 def _write(path: Path, text: str) -> None:
@@ -81,7 +82,7 @@ def _request(base: str, path: str, method: str = "GET", body: dict | None = None
     req = Request(base + path, data=data, method=method,
                   headers={"Content-Type": "application/json"})
     try:
-        with urlopen(req, timeout=10) as resp:
+        with local_urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         raw = exc.read().decode("utf-8")
