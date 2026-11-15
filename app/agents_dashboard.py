@@ -54,6 +54,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
+    from agent_platform import approvals as approval_service
     from agent_platform import auth as auth_service
     from agent_platform import config as platform_config
     from agent_platform import executor as executor_service
@@ -81,6 +82,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform.p4 import workflow as workflow_service
     from agent_platform.state_cache import StateCache
 except ImportError:  # pragma: no cover
+    from app.agent_platform import approvals as approval_service
     from app.agent_platform import auth as auth_service
     from app.agent_platform import config as platform_config
     from app.agent_platform import executor as executor_service
@@ -1609,6 +1611,38 @@ class Handler(BaseHTTPRequestHandler):
         })
         return False
 
+    def _consume_approval(self, project_id: str, resource_type: str,
+                          resource_id: str, action: str) -> bool:
+        """消费一张已批准的审批单。没有则写 412 并返回 False。
+
+        与 ``_policy_guard`` 分开是因为职责不同：Policy 判「能不能」，
+        审批判「批准了没有」。两者都过才允许执行。
+        """
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            row = approval_service.consume(
+                conn, project_id,
+                resource_type=resource_type, resource_id=resource_id, action=action,
+            )
+        except Exception:  # noqa: BLE001 - 审批校验异常按拒绝处理
+            row = None
+        finally:
+            conn.close()
+        if row is not None:
+            return True
+        self._json(412, {
+            "ok": False,
+            "error": "approval_required",
+            "message": "该操作需要审批，请先发起并获批",
+            "detail": {
+                "code": "approval_required",
+                "message": "该操作需要审批，请先发起并获批",
+                "request_url": f"/api/projects/{project_id}/approvals",
+            },
+        })
+        return False
+
     def _gate_project(self, project_id: str, action: str = "read") -> bool:
         """项目级粗粒度闸门：所有项目路由都必须先过这一关。
 
@@ -1718,6 +1752,68 @@ class Handler(BaseHTTPRequestHandler):
                              "detail": {"code": "internal_error", "message": "内部错误"}})
         finally:
             conn.close()
+
+    # ---- 通用审批闭环 ------------------------------------------------
+    def _approvals_list(self, project_id: str) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            rows = approval_service.list_pending(conn, project_id)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "approvals_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "items": rows, "total": len(rows)})
+
+    def _approvals_request(self, project_id: str, body: dict) -> None:
+        resource_type = str(body.get("resource_type") or "").strip()
+        resource_id = str(body.get("resource_id") or "").strip()
+        action = str(body.get("action") or "").strip()
+        if not (resource_type and resource_id and action):
+            self._fail(400, "invalid_request",
+                       "resource_type / resource_id / action 均为必填")
+            return
+        actor = self._actor_id() or "local"
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            row = approval_service.request(
+                conn, project_id,
+                resource_type=resource_type, resource_id=resource_id, action=action,
+                requested_by=actor, note=str(body.get("note") or ""),
+            )
+        except approval_service.ApprovalError as exc:
+            self._fail(exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "approval_request_failed", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(201, {"ok": True, "approval": row})
+
+    def _approvals_decide(self, project_id: str, approval_id: str,
+                          verb: str, body: dict) -> None:
+        actor = self._actor_id() or "local"
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            row = approval_service.decide(
+                conn, approval_id,
+                approved_by=actor,
+                decision="approve" if verb == "approve" else "reject",
+                note=str(body.get("note") or ""),
+            )
+        except approval_service.ApprovalError as exc:
+            self._fail(exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "approval_decide_failed", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "approval": row})
 
     def _release_platform(self, fn, *args, **kwargs) -> None:
         conn = platform_store.connect()
@@ -1955,6 +2051,22 @@ class Handler(BaseHTTPRequestHandler):
                 created_by=str(body.get("created_by") or "local"),
             )
             return True
+        # 通用审批闭环（不限于 release）：申请 → 批准/驳回 → 执行前消费。
+        # 必须放在 release 专用审批分支之前，否则 /approvals/{id}/approve 会被
+        # 当成 release 审批处理。
+        if method == "GET" and rest == ["approvals"]:
+            self._approvals_list(project_id)
+            return True
+        if method == "POST" and rest == ["approvals"]:
+            self._approvals_request(project_id, body)
+            return True
+        if (method == "POST" and len(rest) == 3 and rest[0] == "approvals"
+                and rest[2] in ("approve", "reject")):
+            if not self._policy_guard(project_id, "approval", rest[2], risk="R4"):
+                return True
+            self._approvals_decide(project_id, rest[1], rest[2], body)
+            return True
+
         if (method == "POST" and len(rest) == 3 and rest[0] == "approvals"
                 and rest[2] == "approve"):
             if not self._policy_guard(project_id, "agent_release", "approve", risk="R4"):
@@ -2467,8 +2579,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(rest) == 4 and rest[:2] == ["dispatch", "items"] and rest[3] in ("run", "dry-run"):
             body = self._body()
             dry = rest[3] == "dry-run"
-            if not dry and not self._policy_guard(project_id, "dispatch_item", "run", risk="R3"):
-                return
+            if not dry:
+                if not self._policy_guard(project_id, "dispatch_item", "run", risk="R3"):
+                    return
+                # 审批闸门：Policy 说「需要审批」时，必须消费一张已批准的审批单。
+                # 没有则拒绝——此前这里只有 Policy，而 policy_rules 为空，
+                # 等于点一下就起进程（见 docs/phase3/audit/P3_M3_*）。
+                if not self._consume_approval(project_id, "dispatch_item", rest[2], "run"):
+                    return
             self._platform(
                 _run_dispatch_item, project_id, rest[2],
                 dry_run=dry,

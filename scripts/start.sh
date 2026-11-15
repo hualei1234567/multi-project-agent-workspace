@@ -13,9 +13,11 @@ if [ -x "$WS/.venv/bin/python" ]; then PY="$WS/.venv/bin/python"; fi
 # 统一用工作区自己的库与配置，避免误读旧路径
 export AGWS_PLATFORM_DB="${AGWS_PLATFORM_DB:-$WS/data/platform.db}"
 export AGWS_PLATFORM_WORKSPACE="$WS"
-# 执行器默认开启：本机即服务器，平台的托管会话/派发要用它。
-# 需要关闭时显式传 AGWS_PLATFORM_EXECUTOR=off。
-export AGWS_PLATFORM_EXECUTOR="${AGWS_PLATFORM_EXECUTOR:-on}"
+# 执行器默认关闭（与 executor_policy.py 的 Deny-by-Default 一致）。
+# 需要平台真实派发时显式传 AGWS_PLATFORM_EXECUTOR=on。
+# 理由：默认开启意味着「计划 + 点一下」就能起 claude 进程，而审批规则为空时
+# 这一步没有任何闸门。先默认关，需要时再开。
+export AGWS_PLATFORM_EXECUTOR="${AGWS_PLATFORM_EXECUTOR:-off}"
 
 cd "$WS/app"
 if [ "$MODE" = "--background" ]; then

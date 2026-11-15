@@ -66,7 +66,10 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/releases/{release_id}/publish"),
     ("POST", "/api/projects/{project_id}/releases/{release_id}/canary"),
     ("POST", "/api/projects/{project_id}/releases/{release_id}/rollback"),
+    ("GET", "/api/projects/{project_id}/approvals"),
+    ("POST", "/api/projects/{project_id}/approvals"),
     ("POST", "/api/projects/{project_id}/approvals/{approval_id}/approve"),
+    ("POST", "/api/projects/{project_id}/approvals/{approval_id}/reject"),
     ("GET", "/api/projects/{project_id}/canaries"),
     ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/observe"),
     ("POST", "/api/projects/{project_id}/canaries/{deployment_id}/promote"),
@@ -559,6 +562,13 @@ def _paths() -> dict[str, Any]:
         "/api/projects/{project_id}/releases/{release_id}/rollback": {
             "post": project_op("post", "回滚并留痕（不改写历史版本，P4-M4）",
                                params=[_param("release_id", where="path", required=True)], body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/approvals": {
+            "get": project_op("get", "待审批列表")[2],
+            "post": project_op("post", "发起审批申请")[2],
+        },
+        "/api/projects/{project_id}/approvals/{approval_id}/reject": {
+            "post": project_op("post", "驳回审批", params=[_param("approval_id", where="path", required=True)], body={"type": "object"})[2],
         },
         "/api/projects/{project_id}/approvals/{approval_id}/approve": {
             "post": project_op("post", "批准发布（提案人不得自批，P4-M4）",
