@@ -137,12 +137,14 @@ def schedulable(
     dep_tasks = _dep_tasks(conn, dep_ids)
     active = _active_task_ids(conn, project_id)
     agents = _agent_modes(conn, project_id)
+    registry_blocked = _registry_blocked_roles(conn)
     memo: dict[str, int] = {}
 
     ready: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for task in tasks.values():
-        reason = _skip_reason(task, tasks, dep_tasks, deps, active, agents)
+        reason = _skip_reason(task, tasks, dep_tasks, deps, active, agents,
+                              registry_blocked)
         if reason:
             skipped.append({
                 "task_id": task["id"],
@@ -167,6 +169,27 @@ def schedulable(
     return ready, skipped
 
 
+def _registry_blocked_roles(conn: sqlite3.Connection) -> dict[str, str]:
+    """Registry 里状态不是 active 的角色 → 拒绝原因。
+
+    只查一次给整批候选使用。表不存在时（老库未迁移）返回空——
+    不能因为 Registry 没建就把整个调度打死。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT role_key, status FROM registry_agent_roles WHERE status <> 'active'"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    out: dict[str, str] = {}
+    for row in rows:
+        if row["status"] == "revoked":
+            out[row["role_key"]] = "角色在 Registry 中已撤销"
+        else:
+            out[row["role_key"]] = f"角色在 Registry 中状态为 {row['status']}"
+    return out
+
+
 def _skip_reason(
     task: dict[str, Any],
     tasks: dict[str, dict[str, Any]],
@@ -174,6 +197,7 @@ def _skip_reason(
     deps: dict[str, set[str]],
     active: set[str],
     agents: dict[str, dict[str, Any]],
+    registry_blocked: dict[str, str] | None = None,
 ) -> str | None:
     if task["status"] not in SCHEDULABLE_STATUSES:
         return f"状态 {task['status']} 不可调度"
@@ -186,6 +210,10 @@ def _skip_reason(
         return "指派的角色不属于本项目"
     if agent["execution_mode"] not in EXECUTABLE_MODES:
         return f"角色执行模式 {agent['execution_mode']} 不允许自动执行"
+    # P3-M2 Registry 硬过滤：角色被撤销/废弃的不进候选。
+    # 这是"注册中心真的影响调度"的接线点——建了不用的 Registry 等于没建。
+    if registry_blocked and agent["role_key"] in registry_blocked:
+        return registry_blocked[agent["role_key"]]
     if task["id"] in active:
         return "已有在途调度项"
     for dep_id in deps.get(task["id"], ()):  # type: ignore[union-attr]

@@ -1237,3 +1237,162 @@ CREATE TABLE IF NOT EXISTS knowledge_grants (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_grants_target
   ON knowledge_grants(target_project_id, status);
+
+-- schema v22（P3-M2）：资源注册中心
+--
+-- V4.0 要求把「资源定义」与「资源实例」分开。此前系统里只有 project_agents
+-- （实例），没有地方回答「系统里有哪些角色/技能/模型/运行时」。结果是调度只能
+-- 按优先级排序，做不到按能力匹配。
+--
+-- 五层分离（见 docs/phase3/contracts/CF-2_REGISTRY_SCHEMA_v1.md）：
+--   registry_agent_roles        角色定义（≠ project_agents 实例）
+--   registry_agent_capabilities 能力画像（带 evidence，否则视为声明无依据）
+--   registry_skills             技能定义（带扫描状态）
+--   registry_models             模型能力（≠ model_price_versions 价格）
+--   registry_runtimes           运行时（≠ runtime_services 健康采集）
+--
+-- 与 capability_listings 的区别：那是「某项目被授权用什么」，这里是「系统里有什么」。
+
+CREATE TABLE IF NOT EXISTS registry_agent_roles (
+  id             TEXT PRIMARY KEY,
+  role_key       TEXT NOT NULL UNIQUE,
+  display_name   TEXT NOT NULL,
+  description    TEXT,
+  execution_mode TEXT NOT NULL DEFAULT 'readonly',
+                 -- readonly / worktree / subagent / main_session
+  default_model  TEXT,
+  source         TEXT NOT NULL DEFAULT 'builtin',
+                 -- builtin / project / user
+  version        INTEGER NOT NULL DEFAULT 1,
+  status         TEXT NOT NULL DEFAULT 'active',
+                 -- active / deprecated / revoked
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_registry_roles_status
+  ON registry_agent_roles(status, execution_mode);
+
+-- 能力画像。evidence 为空表示「自称具备但拿不出依据」，
+-- 调度评分时权重打折——不禁止，但要诚实。
+CREATE TABLE IF NOT EXISTS registry_agent_capabilities (
+  id          TEXT PRIMARY KEY,
+  role_id     TEXT NOT NULL REFERENCES registry_agent_roles(id),
+  capability  TEXT NOT NULL,
+  proficiency INTEGER NOT NULL DEFAULT 1,
+  evidence    TEXT,
+  created_at  TEXT NOT NULL,
+  UNIQUE(role_id, capability)
+);
+
+CREATE TABLE IF NOT EXISTS registry_skills (
+  id                TEXT PRIMARY KEY,
+  skill_key         TEXT NOT NULL UNIQUE,
+  display_name      TEXT NOT NULL,
+  description       TEXT,
+  source            TEXT NOT NULL DEFAULT 'builtin',
+                    -- builtin / project / user / plugin
+  source_ref        TEXT,
+  version           TEXT NOT NULL DEFAULT '1.0.0',
+  risk_level        TEXT NOT NULL DEFAULT 'R1',
+  requires_approval INTEGER NOT NULL DEFAULT 0,
+  scan_status       TEXT NOT NULL DEFAULT 'unscanned',
+                    -- unscanned / passed / failed
+  scan_detail       TEXT,
+  status            TEXT NOT NULL DEFAULT 'active',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_registry_skills_scan
+  ON registry_skills(status, scan_status);
+
+CREATE TABLE IF NOT EXISTS registry_skill_grants (
+  id         TEXT PRIMARY KEY,
+  skill_id   TEXT NOT NULL REFERENCES registry_skills(id),
+  role_id    TEXT NOT NULL REFERENCES registry_agent_roles(id),
+  granted_by TEXT NOT NULL,
+  note       TEXT,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  UNIQUE(skill_id, role_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_registry_skill_grants_role
+  ON registry_skill_grants(role_id, revoked_at);
+
+-- 模型能力。价格在 model_price_versions（按生效区间），两者用 model_key 关联，
+-- 不合并：价格会随时间变，能力不会。
+CREATE TABLE IF NOT EXISTS registry_models (
+  id              TEXT PRIMARY KEY,
+  model_key       TEXT NOT NULL UNIQUE,
+  provider        TEXT NOT NULL,
+  protocol        TEXT NOT NULL DEFAULT 'openai',
+  context_window  INTEGER,
+  max_output      INTEGER,
+  supports_tools  INTEGER NOT NULL DEFAULT 1,
+  supports_vision INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'active',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS registry_runtimes (
+  id              TEXT PRIMARY KEY,
+  runtime_key     TEXT NOT NULL UNIQUE,
+  service_id      TEXT REFERENCES runtime_services(id),
+  kind            TEXT NOT NULL DEFAULT 'local',
+  device_name     TEXT,
+  capabilities    TEXT,
+  max_concurrency INTEGER NOT NULL DEFAULT 1,
+  heartbeat_at    TEXT,
+  heartbeat_ttl_s INTEGER NOT NULL DEFAULT 120,
+  allocatable     INTEGER NOT NULL DEFAULT 1,
+  status          TEXT NOT NULL DEFAULT 'unknown',
+                  -- unknown / healthy / degraded / offline / revoked
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS registry_runtime_leases (
+  id          TEXT PRIMARY KEY,
+  runtime_id  TEXT NOT NULL REFERENCES registry_runtimes(id),
+  project_id  TEXT NOT NULL,
+  holder      TEXT NOT NULL,
+  slots       INTEGER NOT NULL DEFAULT 1,
+  acquired_at TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  released_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_registry_leases_active
+  ON registry_runtime_leases(runtime_id, released_at, expires_at);
+
+-- 兼容矩阵。**没有记录 = 兼容**（显式宽松决策）：全矩阵记录不现实，
+-- 默认拒绝会让新资源无法使用。只有显式 compatible=0 才拦截。
+CREATE TABLE IF NOT EXISTS registry_compat_matrix (
+  id           TEXT PRIMARY KEY,
+  subject_type TEXT NOT NULL,
+  subject_id   TEXT NOT NULL,
+  target_type  TEXT NOT NULL,
+  target_id    TEXT NOT NULL,
+  compatible   INTEGER NOT NULL DEFAULT 1,
+  reason       TEXT,
+  created_at   TEXT NOT NULL,
+  UNIQUE(subject_type, subject_id, target_type, target_id)
+);
+
+CREATE TABLE IF NOT EXISTS registry_changes (
+  id           TEXT PRIMARY KEY,
+  entity_type  TEXT NOT NULL,
+  entity_id    TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  from_version INTEGER,
+  to_version   INTEGER,
+  diff_json    TEXT,
+  changed_by   TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_registry_changes_entity
+  ON registry_changes(entity_type, entity_id, created_at);

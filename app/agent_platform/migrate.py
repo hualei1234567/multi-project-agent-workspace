@@ -148,6 +148,19 @@ V20_TABLES = (
     "knowledge_grants",
 )
 
+#: v22（P3-M2）：资源注册中心。建表语句在 schema.sql，这里只登记回滚清单。
+V22_TABLES = (
+    "registry_agent_roles",
+    "registry_agent_capabilities",
+    "registry_skills",
+    "registry_skill_grants",
+    "registry_models",
+    "registry_runtimes",
+    "registry_runtime_leases",
+    "registry_compat_matrix",
+    "registry_changes",
+)
+
 V20_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     # M4：区分「有真实流量」与「纯状态流转」
     ("agent_releases", (
@@ -438,6 +451,45 @@ def _migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
+    """P3-M2 回填：把已有 project_agents 的角色去重登记成 Role Definition。
+
+    为什么回填而不是空表开张：`project_agents` 里已经跑着 14 个真实角色，
+    如果 Registry 一开始是空的，"系统里有什么角色"这个问题仍然没有答案。
+    回填只做「登记」，不改任何现有实例。
+
+    **不编造能力**：capabilities 一条都不写。现有代码里没有能力声明的依据，
+    凭空填就是编数据。能力由后续人工/证据补齐。
+    """
+    now = store.now_iso()
+    rows = conn.execute(
+        "SELECT DISTINCT role_key, execution_mode FROM project_agents"
+        " WHERE role_key IS NOT NULL AND role_key <> ''"
+    ).fetchall()
+    for row in rows:
+        role_key = row["role_key"]
+        mode = row["execution_mode"] or "readonly"
+        exists = conn.execute(
+            "SELECT 1 FROM registry_agent_roles WHERE role_key = ?", (role_key,)
+        ).fetchone()
+        if exists is not None:
+            continue
+        conn.execute(
+            "INSERT INTO registry_agent_roles (id, role_key, display_name, description,"
+            " execution_mode, source, version, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, 'project', 1, 'active', ?, ?)",
+            (f"role_{role_key}", role_key, role_key,
+             "由 project_agents 回填（能力待补，未编造）", mode, now, now),
+        )
+        conn.execute(
+            "INSERT INTO registry_changes (id, entity_type, entity_id, action,"
+            " from_version, to_version, diff_json, changed_by, created_at)"
+            " VALUES (?, 'agent_role', ?, 'create', NULL, 1, ?, 'migration-v22', ?)",
+            (f"chg_{role_key}_{now}", f"role_{role_key}",
+             store.dumps_json({"source": "backfill_from_project_agents"}), now),
+        )
+
+
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """v3 数据修正。
 
@@ -632,6 +684,12 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         21,
         columns=(("dispatch_logs", (("attempt", "INTEGER NOT NULL DEFAULT 0"),)),),
         description="R6：调度日志按 attempt 隔离（重跑不再与旧日志混在一起）",
+    ),
+    MigrationStep(
+        22,
+        tables=V22_TABLES,
+        backfill=_migrate_v21_to_v22,
+        description="P3-M2：资源注册中心（角色/能力/技能/模型/运行时/兼容矩阵）",
     ),
 )
 

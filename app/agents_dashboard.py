@@ -60,6 +60,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
     from agent_platform import openapi as openapi_service
+    from agent_platform import registry as registry_service
     from agent_platform import resources as resource_service
     from agent_platform import runtime as runtime_service
     from agent_platform import scheduler as scheduler_service
@@ -88,6 +89,7 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
     from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import registry as registry_service
     from app.agent_platform import resources as resource_service
     from app.agent_platform import runtime as runtime_service
     from app.agent_platform import scheduler as scheduler_service
@@ -1753,6 +1755,236 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ---- 资源注册中心（P3-M2） -----------------------------------------
+    def _registry_summary(self) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            data = registry_service.summary(conn)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "registry_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, **data})
+
+    def _handle_registry(self, project_id: str, rest: list[str], method: str,
+                         query: dict) -> None:
+        """资源注册中心路由。
+
+        GET  /registry/summary
+        GET  /registry/roles            ?status=&execution_mode=
+        GET  /registry/roles/{id}
+        GET  /registry/skills
+        GET  /registry/models
+        GET  /registry/runtimes
+        GET  /registry/changes          ?entity_type=&entity_id=
+        POST /registry/roles
+        POST /registry/roles/{id}/capabilities
+        POST /registry/skills
+        POST /registry/skills/{id}/scan
+        POST /registry/skills/{id}/grant
+        POST /registry/models
+        POST /registry/runtimes
+        POST /registry/runtimes/{id}/heartbeat
+        POST /registry/runtimes/{id}/revoke
+        POST /registry/compat
+        POST /registry/precheck
+        """
+        def q1(k):
+            return (query.get(k) or [None])[0]
+
+        if not rest:
+            self._fail(404, "not_found", "接口不存在")
+            return
+
+        # ---- GET ----
+        if method == "GET":
+            if rest == ["summary"]:
+                self._registry_call(registry_service.summary)
+                return
+            if rest == ["roles"]:
+                self._registry_call(registry_service.list_roles,
+                                    status=q1("status"),
+                                    execution_mode=q1("execution_mode"))
+                return
+            if len(rest) == 2 and rest[0] == "roles":
+                self._registry_call(registry_service.get_role, rest[1])
+                return
+            if rest == ["models"]:
+                self._registry_call(registry_service.list_models, status=q1("status"))
+                return
+            if rest == ["runtimes"]:
+                self._registry_call(self._list_runtimes)
+                return
+            if rest == ["skills"]:
+                self._registry_call(self._list_skills)
+                return
+            if rest == ["changes"]:
+                self._registry_call(self._list_changes,
+                                    entity_type=q1("entity_type"),
+                                    entity_id=q1("entity_id"))
+                return
+            self._fail(404, "not_found", "接口不存在")
+            return
+
+        # ---- POST ----
+        body = self._body()
+        actor = self._actor_id(required=False) or "local"
+
+        if rest == ["roles"]:
+            self._registry_call(
+                registry_service.create_role,
+                role_key=str(body.get("role_key") or ""),
+                display_name=str(body.get("display_name") or ""),
+                execution_mode=str(body.get("execution_mode") or "readonly"),
+                description=body.get("description"),
+                default_model=body.get("default_model"),
+                source=str(body.get("source") or "user"),
+                created_by=actor,
+            )
+            return
+        if len(rest) == 3 and rest[0] == "roles" and rest[2] == "capabilities":
+            self._registry_call(
+                registry_service.add_capability,
+                role_id=rest[1],
+                capability=str(body.get("capability") or ""),
+                proficiency=int(body.get("proficiency") or 1),
+                evidence=body.get("evidence"),
+                changed_by=actor,
+            )
+            return
+        if rest == ["skills"]:
+            self._registry_call(
+                registry_service.create_skill,
+                skill_key=str(body.get("skill_key") or ""),
+                display_name=str(body.get("display_name") or ""),
+                version=str(body.get("version") or "1.0.0"),
+                risk_level=str(body.get("risk_level") or "R1"),
+                source=str(body.get("source") or "user"),
+                source_ref=body.get("source_ref"),
+                description=body.get("description"),
+                requires_approval=bool(body.get("requires_approval")),
+                changed_by=actor,
+            )
+            return
+        if len(rest) == 3 and rest[0] == "skills" and rest[2] == "scan":
+            self._registry_call(
+                registry_service.record_scan, rest[1],
+                passed=bool(body.get("passed")),
+                detail=str(body.get("detail") or ""),
+                changed_by=actor,
+            )
+            return
+        if len(rest) == 3 and rest[0] == "skills" and rest[2] == "grant":
+            self._registry_call(
+                registry_service.grant_skill,
+                skill_id=rest[1],
+                role_id=str(body.get("role_id") or ""),
+                granted_by=actor,
+                note=body.get("note"),
+            )
+            return
+        if rest == ["models"]:
+            self._registry_call(
+                registry_service.create_model,
+                model_key=str(body.get("model_key") or ""),
+                provider=str(body.get("provider") or ""),
+                protocol=str(body.get("protocol") or "openai"),
+                context_window=body.get("context_window"),
+                max_output=body.get("max_output"),
+                supports_tools=bool(body.get("supports_tools", True)),
+                supports_vision=bool(body.get("supports_vision", False)),
+                changed_by=actor,
+            )
+            return
+        if rest == ["runtimes"]:
+            self._registry_call(
+                registry_service.create_runtime,
+                runtime_key=str(body.get("runtime_key") or ""),
+                kind=str(body.get("kind") or "local"),
+                device_name=body.get("device_name"),
+                capabilities=body.get("capabilities"),
+                max_concurrency=int(body.get("max_concurrency") or 1),
+                heartbeat_ttl_s=int(body.get("heartbeat_ttl_s") or 120),
+                service_id=body.get("service_id"),
+                changed_by=actor,
+            )
+            return
+        if len(rest) == 3 and rest[0] == "runtimes" and rest[2] == "heartbeat":
+            self._registry_call(registry_service.heartbeat, rest[1])
+            return
+        if len(rest) == 3 and rest[0] == "runtimes" and rest[2] == "revoke":
+            self._registry_call(
+                registry_service.revoke_runtime, rest[1],
+                revoked_by=actor, reason=str(body.get("reason") or ""),
+            )
+            return
+        if rest == ["compat"]:
+            self._registry_call(
+                registry_service.set_compatibility,
+                subject_type=str(body.get("subject_type") or ""),
+                subject_id=str(body.get("subject_id") or ""),
+                target_type=str(body.get("target_type") or ""),
+                target_id=str(body.get("target_id") or ""),
+                compatible=bool(body.get("compatible", True)),
+                reason=body.get("reason"),
+                changed_by=actor,
+            )
+            return
+        if rest == ["precheck"]:
+            self._registry_call(
+                registry_service.dispatch_precheck,
+                role_id=str(body.get("role_id") or ""),
+                skill_ids=body.get("skill_ids"),
+                runtime_id=body.get("runtime_id"),
+            )
+            return
+        self._fail(404, "not_found", "接口不存在")
+
+    def _list_runtimes(self, conn) -> dict:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM registry_runtimes ORDER BY runtime_key")]
+        for r in rows:
+            r["effective_status"] = registry_service._effective_status(r)
+            r["active_slots"] = registry_service._active_slots(conn, r["id"])
+        return {"items": rows, "total": len(rows)}
+
+    def _list_skills(self, conn) -> dict:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM registry_skills ORDER BY skill_key")]
+        return {"items": rows, "total": len(rows)}
+
+    def _list_changes(self, conn, *, entity_type=None, entity_id=None) -> dict:
+        sql = "SELECT * FROM registry_changes WHERE 1=1"
+        args: list = []
+        if entity_type:
+            sql += " AND entity_type = ?"
+            args.append(entity_type)
+        if entity_id:
+            sql += " AND entity_id = ?"
+            args.append(entity_id)
+        sql += " ORDER BY created_at DESC LIMIT 200"
+        rows = [dict(r) for r in conn.execute(sql, args)]
+        return {"items": rows, "total": len(rows)}
+
+    def _registry_call(self, fn, *args, **kwargs) -> None:
+        """Registry 统一出口：把 RegistryError 映射成同形错误体。"""
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            result = fn(conn, *args, **kwargs)
+        except registry_service.RegistryError as exc:
+            self._fail(exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "registry_error", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200 if not isinstance(result, dict) or "created" not in result else 201,
+                   {"ok": True, "data": result})
+
     # ---- 通用审批闭环 ------------------------------------------------
     def _approvals_list(self, project_id: str) -> None:
         conn = platform_store.connect()
@@ -2575,6 +2807,10 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
+        # 资源注册中心（P3-M2）
+        if rest and rest[0] == "registry" and len(rest) >= 2:
+            self._handle_registry(project_id, rest[1:], "POST", {})
+            return
         # 执行单个调度项（M3-1 T3-103）。项目与全局两道开关默认关闭。
         if len(rest) == 4 and rest[:2] == ["dispatch", "items"] and rest[3] in ("run", "dry-run"):
             body = self._body()
@@ -2810,6 +3046,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._platform(resource_service.get_resource, rid)
             else:
                 self._not_found_route()
+        elif path == "/api/agent-platform/registry":
+            self._registry_summary()
+            return
         elif path == "/api/agent-platform/overview":
             self._platform(platform_service.overview)
         elif path == "/api/me/recent-projects":
@@ -2919,6 +3158,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["dispatch", "executor"]:
                 self._json(200, _executor_status())
+                return
+            # 资源注册中心（P3-M2）。Registry 本身是平台级的，
+            # 但挂在项目路径下便于按项目视角查看"本项目能用什么"。
+            if rest and rest[0] == "registry" and len(rest) >= 2:
+                self._handle_registry(project_id, rest[1:], "GET", query)
                 return
             if rest == ["dispatch", "schedulable"]:
                 self._platform(_schedulable_for, project_id)

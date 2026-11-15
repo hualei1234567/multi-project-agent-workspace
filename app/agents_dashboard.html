@@ -1482,8 +1482,8 @@ const fmtIdle = (sec) => {
 const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
-const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "docs", "settings"];
-const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", docs: "文档配置", settings: "项目设置" };
+const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "registry", "docs", "settings"];
+const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", registry: "资源注册", docs: "文档配置", settings: "项目设置" };
 const PLATFORM_KINDS = ["platform", "search", "work", "portfolio", "inbox", "projects", "favorites", "recent"];
 const FAV_KEY = "agws-favorites";
 const RECENT_KEY = "agws-recent";
@@ -2678,6 +2678,136 @@ function p4Badge(status) {
   return `<span class="chip" data-status="${esc(status || "")}">${esc(status || "-")}</span>`;
 }
 
+/* ---------- 资源注册中心（P3-M2） ---------- */
+async function fetchRegistrySummary() {
+  try {
+    const r = await api(`/api/projects/${encodeURIComponent(APP.currentProject.id)}/registry/summary`);
+    return r;
+  } catch (e) { return null; }
+}
+
+function registryStatCard(label, value, hint) {
+  return `<div class="kpi"><div class="label">${esc(label)}</div>
+    <div class="value">${esc(String(value ?? "—"))}</div>
+    <div class="hint">${esc(hint || "")}</div></div>`;
+}
+
+async function renderRegistryPage(el) {
+  el.innerHTML = skeletonBox(180);
+  const pid = encodeURIComponent(APP.currentProject.id);
+  // fetchJSON 抛错时返回 null，页面降级为"暂无数据"而不是整页报错。
+  const get = (path) => fetchJSON(`/api/projects/${pid}/registry/${path}`).catch(() => null);
+  const [summary, roles, skills, models, runtimes] = await Promise.all([
+    get("summary"), get("roles"), get("skills"), get("models"), get("runtimes"),
+  ]);
+  // 所有 registry 端点统一返回 {ok, data}：summary 的 data 是对象，列表的 data 是数组
+  const sum = summary?.data || {};
+  const asList = (r) => Array.isArray(r?.data) ? r.data : (r?.data?.items || []);
+  const roleRows = asList(roles);
+  const skillRows = asList(skills);
+  const modelRows = asList(models);
+  const rtRows = asList(runtimes);
+  const att = sum.attention || {};
+
+  const modeChip = (m) => {
+    const cls = m === "readonly" ? "muted" : m === "worktree" ? "ok" : "";
+    return `<span class="chip ${cls}">${esc(m)}</span>`;
+  };
+  const statusChip = (st) => {
+    const map = { active: "ok", deprecated: "warn", revoked: "bad" };
+    return `<span class="chip ${map[st] || ""}">${esc(st)}</span>`;
+  };
+
+  el.innerHTML = `
+    <section>
+      <div class="sec-head"><h2>资源注册中心</h2>
+        <span class="desc">系统里有哪些角色 / 技能 / 模型 / 运行时，以及谁能用哪个版本</span></div>
+      <div class="kpis five">
+        ${registryStatCard("角色定义", sum.roles?.total, `${sum.roles?.executable ?? 0} 个可执行`)}
+        ${registryStatCard("技能", sum.skills?.total, `${sum.skills?.scanned_passed ?? 0} 个已扫描通过`)}
+        ${registryStatCard("模型", sum.models?.total, `${sum.models?.active ?? 0} 个可用`)}
+        ${registryStatCard("运行时", sum.runtimes?.total, `${sum.runtimes?.revoked ?? 0} 个已撤销`)}
+        ${registryStatCard("需要关注", (att.roles_without_capabilities ?? 0) + (att.unscanned_skills ?? 0),
+                           `${att.roles_without_capabilities ?? 0} 角色无能力声明 · ${att.unscanned_skills ?? 0} 技能未扫描`)}
+      </div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="panel-head"><h2>角色定义</h2>
+          <span class="desc">定义 ≠ 实例：这里描述角色本身，某项目里跑的是 project_agents</span>
+          <span class="count">${roleRows.length}</span></div>
+        <div class="panel-body flush">
+          ${roleRows.length ? `<table id="reg-roles">
+            <thead><tr><th>角色</th><th>执行模式</th><th>状态</th><th>能力</th><th>技能</th><th>来源</th></tr></thead>
+            <tbody>${roleRows.map(r => `<tr>
+              <td><b>${esc(r.role_key)}</b></td>
+              <td>${modeChip(r.execution_mode)}</td>
+              <td>${statusChip(r.status)}</td>
+              <td>—</td>
+              <td>—</td>
+              <td><span class="muted">${esc(r.source || "—")}</span></td>
+            </tr>`).join("")}</tbody>
+          </table>` : emptyBox("暂无角色定义", "角色会在迁移时从已有 Agent 实例回填，也可通过 API 创建")}
+        </div>
+      </div>
+    </section>
+
+    <section class="ov-grid">
+      <div class="panel">
+        <div class="panel-head"><h2>技能</h2>
+          <span class="desc">未扫描通过的技能不能进入自动派发</span>
+          <span class="count">${skillRows.length}</span></div>
+        <div class="panel-body flush">
+          ${skillRows.length ? `<table>
+            <thead><tr><th>技能</th><th>版本</th><th>扫描</th><th>状态</th></tr></thead>
+            <tbody>${skillRows.map(s => `<tr>
+              <td><b>${esc(s.skill_key)}</b></td>
+              <td class="muted">${esc(s.version)}</td>
+              <td>${s.scan_status === "passed" ? '<span class="chip ok">已通过</span>'
+                   : s.scan_status === "failed" ? '<span class="chip bad">未通过</span>'
+                   : '<span class="chip warn">未扫描</span>'}</td>
+              <td>${statusChip(s.status)}</td>
+            </tr>`).join("")}</tbody></table>`
+          : emptyBox("暂无技能", "通过 API 创建后需要记录扫描结果才能用于自动派发")}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>运行时</h2>
+          <span class="desc">心跳超时自动判定为离线</span>
+          <span class="count">${rtRows.length}</span></div>
+        <div class="panel-body flush">
+          ${rtRows.length ? `<table>
+            <thead><tr><th>运行时</th><th>状态</th><th>并发</th></tr></thead>
+            <tbody>${rtRows.map(r => `<tr>
+              <td><b>${esc(r.runtime_key)}</b></td>
+              <td>${(r.effective_status === "healthy") ? '<span class="chip ok">健康</span>'
+                   : (r.effective_status === "offline") ? '<span class="chip bad">离线</span>'
+                   : (r.effective_status === "revoked") ? '<span class="chip bad">已撤销</span>'
+                   : '<span class="chip">未知</span>'}</td>
+              <td class="muted">${r.active_slots ?? 0} / ${r.max_concurrency ?? 1}</td>
+            </tr>`).join("")}</tbody></table>`
+          : emptyBox("暂无运行时", "登记设备后由心跳驱动状态")}
+        </div>
+      </div>
+    </section>
+
+    ${modelRows.length ? `<section><div class="panel">
+      <div class="panel-head"><h2>模型能力</h2><span class="desc">价格在独立的版本表里，这里只描述能力</span>
+        <span class="count">${modelRows.length}</span></div>
+      <div class="panel-body flush"><table>
+        <thead><tr><th>模型</th><th>提供方</th><th>协议</th><th>上下文</th><th>工具</th></tr></thead>
+        <tbody>${modelRows.map(m => `<tr>
+          <td><b>${esc(m.model_key)}</b></td>
+          <td class="muted">${esc(m.provider)}</td>
+          <td class="muted">${esc(m.protocol)}</td>
+          <td class="muted">${m.context_window ? fmtNum(m.context_window) : "—"}</td>
+          <td>${m.supports_tools ? "✓" : "—"}</td>
+        </tr>`).join("")}</tbody></table></div>
+    </div></section>` : ""}
+  `;
+}
+
 function renderP4Page(el) {
   const base = p4Base();
   if (!base) { el.innerHTML = errorBox(new Error("未选择项目")); return; }
@@ -2911,6 +3041,7 @@ function renderProjectContent() {
     case "executions": renderExecutionsPage(el); break;
     case "deliveries": renderDeliveriesPage(el); break;
     case "p4": renderP4Page(el); break;
+    case "registry": renderRegistryPage(el); break;
     case "docs": renderDocsPage(el); break;
     case "settings": renderSettingsPage(el); break;
     default: renderOverviewPage(el);
