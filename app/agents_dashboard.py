@@ -3000,10 +3000,17 @@ def main() -> int:
         elif detected not in bind_hosts:
             bind_hosts.append(detected)
 
+    # listen backlog 默认只有 5：并发稍高（实测 10 并发）就会 Connection reset。
+    # 平台是多线程服务，backlog 应该跟线程数一个量级。128 足够本机/局域网使用。
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True      # 主进程退出时不等待 worker 线程
+        request_queue_size = 128   # 默认 5 太小，并发请求会被内核直接拒绝
+        allow_reuse_address = True
+
     servers = []
     for host in bind_hosts:
         try:
-            servers.append(ThreadingHTTPServer((host, args.port), Handler))
+            servers.append(_Server((host, args.port), Handler))
         except OSError as exc:
             print(f"[agents-dashboard] 绑定 {host}:{args.port} 失败：{exc}", file=sys.stderr)
 
