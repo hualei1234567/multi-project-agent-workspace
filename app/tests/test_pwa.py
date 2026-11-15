@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -211,3 +213,40 @@ def test_page_links_manifest_and_stays_functional():
     assert 'navigator.serviceWorker.register("/sw.js")' in html
     assert ".catch(() => {" in html
     assert "alert(" not in html.split("initPWA")[1][:1500]
+
+
+# ---------------------------------------------------------------------------
+# SW 语法（真跑 JS 解析器）
+# ---------------------------------------------------------------------------
+def test_service_worker_passes_javascript_syntax_check(tmp_path):
+    """生成的 sw.js 必须是合法 JS。
+
+    模板里混着 Python 字符串转义，一个引号写错就会让 SW 变成语法错误——
+    浏览器只会静默「不注册」，页面看起来完全正常，所以必须在测试里解析一次。
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("未安装 node，无法做 JS 语法解析")
+    script = tmp_path / "sw.js"
+    script.write_bytes(pwa.service_worker())
+    result = subprocess.run(
+        [node, "--check", str(script)], check=False, capture_output=True,
+        text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_service_worker_does_not_masquerade_server_errors_as_offline():
+    """服务端的 404/500 必须原样返回，不能替换成离线页。
+
+    离线页只回答「没网」；把「地址不存在」显示成「你没网」是在谎报状态，
+    排查时会被带偏（这条在实现期间真实出现过）。
+    """
+    text = pwa.service_worker().decode("utf-8")
+    non_shell = text.split("if (!isShell) {", 1)[1].split("const cachedShell", 1)[0]
+    assert "if (fresh) {" in non_shell
+    assert "if (fresh.ok)" in non_shell
+    # 只有网络层抛错（catch 分支）才允许降级到离线页
+    assert "catch {" in non_shell
+    offline_branch = non_shell.split("if (fresh) {", 1)[1]
+    assert "OFFLINE_URL" in offline_branch

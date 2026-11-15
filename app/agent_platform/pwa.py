@@ -359,8 +359,8 @@ async function navigate(request) {
     }
     const fallback = await cache.match(OFFLINE_URL, { ignoreSearch: true });
     return fallback || new Response(
-      "<!doctype html><meta charset=\"utf-8\"><title>离线</title>"
-        + "<p style=\"font:16px/1.6 system-ui;padding:24px\">当前离线。</p>",
+      '<!doctype html><meta charset="utf-8"><title>离线</title>'
+        + '<p style="font:16px/1.6 system-ui;padding:24px">当前离线。</p>',
       { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } }
     );
   }

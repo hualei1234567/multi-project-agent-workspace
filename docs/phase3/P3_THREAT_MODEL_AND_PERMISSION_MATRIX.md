@@ -68,9 +68,11 @@
 | 项 | 内容 |
 |---|---|
 | 威胁 | 设备凭据泄漏后可无限执行；重放旧命令 |
-| 面 | 尚无 Gateway |
-| 控制（设计） | 短期凭据 + 设备撤销 + 命令幂等 + 过期 |
-| 状态 | ⏳ **未建**（P3-M4） |
+| 面 | 平台侧 `gateway.py`（P3-M4 落地）。**Gateway 进程本体未实现**，故仍无对外端口 |
+| 控制（已实现） | 凭据只存 SHA-256 摘要（`gateway_devices.credential_hash`）；设备撤销同时写 `gateway_devices.status` 与 `registry_runtimes.status`（失败关闭）；命令幂等靠条件更新（`UPDATE … WHERE status='dispatched'`），并发下只有一个认领成功；命令过期（`expires_at` / created_at+TTL）即 EXPIRED，迟到的旧桥接回报会被 `windows.command_result` 拒绝（`command_closed`） |
+| 控制（未实现） | 凭据轮换/短期化、Gateway 进程侧凭据落盘保护、出站长轮询鉴权握手 |
+| 验证 | `app/tests/test_gateway.py`（54 项，含 4 线程并发认领只有一次成功） |
+| 状态 | 🟡 **平台侧已建**（P3-M4）；Gateway 进程 ⏳ 未建 |
 
 ### T5 · Context Package 泄漏
 
