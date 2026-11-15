@@ -649,6 +649,8 @@ tbody tr:last-child td { border-bottom: none; }
   .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-grid > .sc-info { grid-column: 1 / -1; grid-row: auto; }
   .settings-grid > .sc-life, .settings-grid > .sc-tpl { grid-column: auto; grid-row: auto; }
+  /* 2 列时第 4 张卡会独占一列留白，让它跨满一行 */
+  .settings-grid > .sc-write { grid-column: 1 / -1; }
 }
 @media (max-width: 767px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -1428,6 +1430,45 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 
   /* grid 子项同样需要 min-width:0 */
   #view > section, #view > *, .sec-head, .ws-toolbar, .ws-filterbar { min-width: 0; }
+
+  /* KPI 两列：5 张卡排单列要滑 5 屏，两列既紧凑又不挤 */
+  .kpis, .kpis.six, .kpis.five, .kpis.platform-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+  }
+  .kpi { padding: 12px 14px; }
+  .kpi .value { font-size: 22px; }
+  .kpi .label { font-size: 11px; }
+  .kpi .hint { font-size: 10.5px; }
+  /* KPI 为奇数个时最后一个占满整行，避免右侧留空 */
+  .kpis > .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+  /* ---- 表格改卡片式 ----
+     横向滚动虽然不溢出，但列会被压到 "mon..." 这种程度，读不了。
+     手机上每行变成一张卡，列名用 data-label 前置。 */
+  .table-wrap:has(table) table,
+  .panel-body table {
+    display: block; width: 100%; min-width: 0 !important;
+  }
+  .panel-body table thead { display: none; }
+  .panel-body table tbody { display: block; }
+  .panel-body table tbody tr {
+    display: block; padding: 10px 12px; margin-bottom: 8px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2);
+  }
+  .panel-body table tbody tr:last-child { margin-bottom: 0; }
+  .panel-body table tbody td {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 3px 0; border: 0; font-size: 12px;
+  }
+  .panel-body table tbody td[data-label]::before {
+    content: attr(data-label); color: var(--muted); font-size: 11px;
+    flex: none; max-width: 40%;
+  }
+  .panel-body table tbody td > * { min-width: 0; overflow-wrap: anywhere; }
+  /* 平台总览 7 张卡：前 6 张三列、最后一张占满 */
+  @media (min-width: 380px) {
+    .kpis.platform-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
 
   /* 标题行右侧的动作按钮组换行，不与标题抢宽度 */
   .sec-head { gap: 6px; }
@@ -2926,11 +2967,11 @@ async function renderCostPage(el) {
 
   const budgetRows = list.length ? list.map(b => `
     <tr>
-      <td>${esc(b.window)}</td>
-      <td class="mono">$${Number(b.limit_usd).toFixed(2)}</td>
-      <td class="mono">$${Number(b.spent_usd || 0).toFixed(4)}</td>
-      <td>${(Number(b.usage_ratio || 0) * 100).toFixed(1)}%</td>
-      <td>${badge(b.status)}</td>
+      <td data-label="窗口">${esc(b.window)}</td>
+      <td data-label="限额" class="mono">$${Number(b.limit_usd).toFixed(2)}</td>
+      <td data-label="已用" class="mono">$${Number(b.spent_usd || 0).toFixed(4)}</td>
+      <td data-label="占比">${(Number(b.usage_ratio || 0) * 100).toFixed(1)}%</td>
+      <td data-label="状态">${badge(b.status)}</td>
     </tr>`).join("") : "";
 
   el.innerHTML = `
@@ -3115,12 +3156,12 @@ async function renderRegistryPage(el) {
           ${roleRows.length ? `<table id="reg-roles">
             <thead><tr><th>角色</th><th>执行模式</th><th>状态</th><th>能力</th><th>技能</th><th>来源</th></tr></thead>
             <tbody>${roleRows.map(r => `<tr>
-              <td><b>${esc(r.role_key)}</b></td>
-              <td>${modeChip(r.execution_mode)}</td>
-              <td>${statusChip(r.status)}</td>
-              <td>—</td>
-              <td>—</td>
-              <td><span class="muted">${esc(r.source || "—")}</span></td>
+              <td data-label="角色"><b>${esc(r.role_key)}</b></td>
+              <td data-label="执行模式">${modeChip(r.execution_mode)}</td>
+              <td data-label="状态">${statusChip(r.status)}</td>
+              <td data-label="能力">—</td>
+              <td data-label="技能">—</td>
+              <td data-label="来源"><span class="muted">${esc(r.source || "—")}</span></td>
             </tr>`).join("")}</tbody>
           </table>` : emptyBox("暂无角色定义", "角色会在迁移时从已有 Agent 实例回填，也可通过 API 创建")}
         </div>
@@ -3136,12 +3177,12 @@ async function renderRegistryPage(el) {
           ${skillRows.length ? `<table>
             <thead><tr><th>技能</th><th>版本</th><th>扫描</th><th>状态</th></tr></thead>
             <tbody>${skillRows.map(s => `<tr>
-              <td><b>${esc(s.skill_key)}</b></td>
-              <td class="muted">${esc(s.version)}</td>
-              <td>${s.scan_status === "passed" ? '<span class="chip ok">已通过</span>'
+              <td data-label="技能"><b>${esc(s.skill_key)}</b></td>
+              <td data-label="版本" class="muted">${esc(s.version)}</td>
+              <td data-label="扫描">${s.scan_status === "passed" ? '<span class="chip ok">已通过</span>'
                    : s.scan_status === "failed" ? '<span class="chip bad">未通过</span>'
                    : '<span class="chip warn">未扫描</span>'}</td>
-              <td>${statusChip(s.status)}</td>
+              <td data-label="状态">${statusChip(s.status)}</td>
             </tr>`).join("")}</tbody></table>`
           : emptyBox("暂无技能", "通过 API 创建后需要记录扫描结果才能用于自动派发")}
         </div>
@@ -3154,12 +3195,12 @@ async function renderRegistryPage(el) {
           ${rtRows.length ? `<table>
             <thead><tr><th>运行时</th><th>状态</th><th>并发</th></tr></thead>
             <tbody>${rtRows.map(r => `<tr>
-              <td><b>${esc(r.runtime_key)}</b></td>
-              <td>${(r.effective_status === "healthy") ? '<span class="chip ok">健康</span>'
+              <td data-label="运行时"><b>${esc(r.runtime_key)}</b></td>
+              <td data-label="状态">${(r.effective_status === "healthy") ? '<span class="chip ok">健康</span>'
                    : (r.effective_status === "offline") ? '<span class="chip bad">离线</span>'
                    : (r.effective_status === "revoked") ? '<span class="chip bad">已撤销</span>'
                    : '<span class="chip">未知</span>'}</td>
-              <td class="muted">${r.active_slots ?? 0} / ${r.max_concurrency ?? 1}</td>
+              <td data-label="并发" class="muted">${r.active_slots ?? 0} / ${r.max_concurrency ?? 1}</td>
             </tr>`).join("")}</tbody></table>`
           : emptyBox("暂无运行时", "登记设备后由心跳驱动状态")}
         </div>
@@ -3172,11 +3213,11 @@ async function renderRegistryPage(el) {
       <div class="panel-body flush"><table>
         <thead><tr><th>模型</th><th>提供方</th><th>协议</th><th>上下文</th><th>工具</th></tr></thead>
         <tbody>${modelRows.map(m => `<tr>
-          <td><b>${esc(m.model_key)}</b></td>
-          <td class="muted">${esc(m.provider)}</td>
-          <td class="muted">${esc(m.protocol)}</td>
-          <td class="muted">${m.context_window ? fmtNum(m.context_window) : "—"}</td>
-          <td>${m.supports_tools ? "✓" : "—"}</td>
+          <td data-label="模型"><b>${esc(m.model_key)}</b></td>
+          <td data-label="提供方" class="muted">${esc(m.provider)}</td>
+          <td data-label="协议" class="muted">${esc(m.protocol)}</td>
+          <td data-label="上下文" class="muted">${m.context_window ? fmtNum(m.context_window) : "—"}</td>
+          <td data-label="工具">${m.supports_tools ? "✓" : "—"}</td>
         </tr>`).join("")}</tbody></table></div>
     </div></section>` : ""}
   `;
@@ -6291,7 +6332,7 @@ function settingsCards(withProject) {
       </div>
       <div class="hint">默认 5 分钟，可改 10 分钟或更短。会话与执行流按自身节奏刷新，页面隐藏时自动暂停。</div>
     </div>
-    <div class="set-card">
+    <div class="set-card sc-write">
       <h3>写操作范围</h3>
       <div class="kvline"><span class="k">写入平台库</span><span class="v">项目信息、归档/恢复、团队模板、任务、交付验收</span></div>
       <div class="kvline"><span class="k">仅本机</span><span class="v">外观、刷新间隔（localStorage）</span></div>
