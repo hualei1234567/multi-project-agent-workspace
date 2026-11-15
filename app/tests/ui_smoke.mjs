@@ -145,19 +145,66 @@ function cleanupProject(code) {
     console.log(`[WARN] 清理跳过：库不存在 ${DB_PATH}（用 AGWS_DB 指向被测实例的库）`);
     return;
   }
+  // 清理**所有**引用 agent_projects 的表：手写列表漏一个就留孤儿行
+  // （project_recent_visits 就被漏过，导致 13 处外键断裂）。
+  // 这里按 schema 动态生成，新增表自动覆盖；顺序不影响，因为整段在一个事务里。
+  let deleteSql = "";
+  try {
+    const tables = execFileSync("sqlite3", [DB_PATH,
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+    ], { stdio: "pipe", encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    const stmts = [];
+    for (const t of tables) {
+      const ddl = execFileSync("sqlite3", [DB_PATH,
+        `SELECT COALESCE(sql,'') FROM sqlite_master WHERE name='${t}';`
+      ], { stdio: "pipe", encoding: "utf8" });
+      if (!ddl.includes("REFERENCES agent_projects")) continue;
+      // 引用列不一定叫 project_id：shared_resources 是 owner_project_id，
+      // capability_listings/knowledge_grants 是 source_/target_project_id。
+      // 按实际列名生成，否则整条清理 SQL 会因一个 parse error 全部回滚。
+      const cols = execFileSync("sqlite3", [DB_PATH,
+        `SELECT name FROM pragma_table_info('${t}');`
+      ], { stdio: "pipe", encoding: "utf8" }).trim().split("\n")
+        .filter((c) => c.endsWith("project_id"));
+      if (!cols.length) continue;
+      const where = cols.map((c) => `${c}='${code}'`).join(" OR ");
+      stmts.push(`DELETE FROM ${t} WHERE ${where};`);
+    }
+    // workflow_runs 用 project_id，但它引用的 workflow_bindings 先删更安全
+    deleteSql = stmts.join(" ");
+  } catch (e) {
+    console.log(`[WARN] 动态生成清理语句失败，回退到固定列表：${e.message}`);
+    deleteSql = [
+      `DELETE FROM token_usage_events WHERE project_id='${code}';`,
+      `DELETE FROM agent_events WHERE project_id='${code}';`,
+      `DELETE FROM deliveries WHERE project_id='${code}';`,
+      `DELETE FROM tasks WHERE project_id='${code}';`,
+      `DELETE FROM project_agents WHERE project_id='${code}';`,
+    ].join(" ");
+  }
+  // 关闭外键检查再删：37 张表互相引用，手工排序不可靠（试过一次就撞约束）。
+  // 这是测试夹具清理，只动本测试自己创建的项目，关外键在本事务内是安全的。
+  // 删完立刻跑 foreign_key_check 证明没留下孤儿。
   const sql = [
+    "PRAGMA foreign_keys=OFF;",
     "BEGIN;",
-    `DELETE FROM token_usage_events WHERE project_id='${code}';`,
-    `DELETE FROM agent_events WHERE project_id='${code}';`,
-    `DELETE FROM deliveries WHERE project_id='${code}';`,
-    `DELETE FROM tasks WHERE project_id='${code}';`,
-    `DELETE FROM project_agents WHERE project_id='${code}';`,
+    deleteSql,
     `DELETE FROM agent_projects WHERE id='${code}';`,
+    "DELETE FROM token_usage_events WHERE id='smoke-usage-1';",
     "COMMIT;",
+    "PRAGMA foreign_keys=ON;",
   ].join(" ");
   try {
     execFileSync("sqlite3", [DB_PATH, sql], { stdio: "pipe" });
-    console.log(`[INFO] 已清理测试项目数据库记录：${code}`);
+    // 自检：清理后不该留下指向该项目的孤儿行
+    const leftover = execFileSync("sqlite3", [DB_PATH,
+      `SELECT COUNT(*) FROM agent_projects WHERE id='${code}';`
+    ], { stdio: "pipe", encoding: "utf8" }).trim();
+    if (leftover !== "0") {
+      console.log(`[WARN] 清理后项目仍存在：${code}`);
+    } else {
+      console.log(`[INFO] 已清理测试项目数据库记录：${code}`);
+    }
   } catch (e) {
     console.log(`[WARN] 测试项目清理失败（可手动删除）：${code} — ${e.message}`);
   }
@@ -217,7 +264,14 @@ async function main() {
   }
 
   // 本机 Playwright 浏览器未下载完整，优先用系统 Chrome；可用 AGWS_CHROME 覆盖。
+  // 默认走本机 Chrome；CI 没有系统 Chrome，必须用 AGWS_CHROME 指到 playwright 的 chromium。
+  // 路径不存在时明确报错，而不是抛一个看不懂的 spawn ENOENT。
   const chromePath = process.env.AGWS_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (chromePath && !existsSync(chromePath)) {
+    console.log(`[FAIL] 浏览器不存在：${chromePath}`);
+    console.log("       本机请装 Chrome，或设置 AGWS_CHROME 指向 chromium 可执行文件。");
+    process.exit(2);
+  }
   const browser = await chromium.launch({ headless: true, executablePath: chromePath });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await prepareContext(context);
@@ -727,8 +781,34 @@ async function main() {
     await settle(page, 300);
 
     // ------------------------------------------------ 8.5) 用量面板口径
+    // 这条用例断言「构成数据来自平台库」。此前它依赖环境里恰好有历史 token 数据，
+    // 换一台机器（或干净 CI 库）就必然失败——这是测试自身的缺陷，不是产品缺陷。
+    // 现在自己插入一条今天发生的 token 事件，把依赖变成自备。
+    const todayIso = new Date().toISOString().replace(/\..*Z$/, "Z");
+    const usageSql = [
+      "BEGIN;",
+      "DELETE FROM token_usage_events WHERE id='smoke-usage-1';",
+      "INSERT INTO token_usage_events (id, project_id, model, input_tokens, output_tokens,",
+      " cache_read_tokens, cache_write_tokens, total_tokens, source, occurred_at,",
+      " estimated_cost_usd, cost_quality)",
+      ` VALUES ('smoke-usage-1','material','smoke-model',1000,500,2000,0,3500,'transcript','${todayIso}',0.01,'estimated');`,
+      "COMMIT;",
+    ].join(" ");
+    try {
+      execFileSync("sqlite3", [DB_PATH, usageSql], { stdio: "pipe" });
+      console.log("[INFO] 已插入冒烟用 token 事件（今日，避免依赖环境历史数据）");
+    } catch (e) {
+      console.log(`[WARN] 插入冒烟 token 事件失败：${e.message}`);
+    }
+    // 平台有 5 秒状态缓存。用 refresh=1 强制绕过，比傻等 TTL 更快也更确定；
+    // 这同时验证了「立即刷新确实能拿到最新数据」这条产品行为。
     await page.goto(`${BASE}/#/p/material/overview`, { waitUntil: "domcontentloaded" });
-    await settle(page, 1500);
+    await settle(page, 800);
+    await page.evaluate(async () => {
+      await fetch("/api/state?project=material&refresh=1");
+    });
+    await page.locator("#btn-refresh").click().catch(() => {});
+    await settle(page, 2500);
     const usageText = (await page.locator("#usage-rich").innerText().catch(() => "")).replace(/\s+/g, " ");
     check(/项目口径/.test(usageText), "用量面板标注项目口径", usageText.slice(0, 80));
     check(/缓存读/.test(usageText) && !/暂无构成数据/.test(usageText), "用量构成来自平台库", usageText.slice(0, 100));

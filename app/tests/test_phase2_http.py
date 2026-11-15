@@ -219,3 +219,18 @@ def test_team_template_preview_and_apply_over_http(http_server):
     assert len(agents) == 10  # 标准 7 个旧实例全部保留 + 3 个新增
     code, logs = _request(http_server, "/api/audit-logs?project=default&action=template.apply")
     assert code == 200 and logs["total"] == 1
+
+
+def test_state_refresh_param_bypasses_cache(http_server):
+    """「立即刷新」必须绕过服务端缓存（R4 实测缺陷）。
+
+    此前前端 force 只跳过自己的节流，请求里没有 refresh=1，
+    用户点了刷新看到的还是 TTL 内的旧快照——「点了刷新数字没变」。
+    """
+    # 第一次请求建立缓存
+    code, _ = _request(http_server, "/api/state?project=default")
+    assert code == 200
+    # 带上 refresh=1：服务端必须重新构建，而不是回旧快照
+    code, data = _request(http_server, "/api/state?project=default&refresh=1")
+    assert code == 200
+    assert data.get("stale") in (False, None)

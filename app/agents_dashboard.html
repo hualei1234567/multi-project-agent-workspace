@@ -6772,7 +6772,11 @@ async function loadState(project, force = false) {
   APP.stateAbort = ctrl;
   APP.stateLoading = true;
   try {
-    const d = await fetchJSON(`/api/state?project=${encodeURIComponent(project.id)}`, { signal: ctrl.signal });
+    // force（用户点「立即刷新」）必须同时绕过**服务端**缓存：
+    // 只跳过前端节流的话，用户看到的仍是 5 秒内的旧快照，
+    // 「点了刷新数字没变」正是这个原因。
+    const qs = `project=${encodeURIComponent(project.id)}${force ? "&refresh=1" : ""}`;
+    const d = await fetchJSON(`/api/state?${qs}`, { signal: ctrl.signal });
     if (seq !== APP.stateSeq) return;
     if (!stateOwnedBy(d, project)) throw new Error("返回数据属于其他项目，已丢弃");
     APP.state = d;
