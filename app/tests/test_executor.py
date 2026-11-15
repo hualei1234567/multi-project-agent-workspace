@@ -304,11 +304,14 @@ def test_bootstrapped_agents_start_idle_and_counted(env):
 # ---------------------------------------------------------------------------
 # R2 / D-2：执行粒度成本
 # ---------------------------------------------------------------------------
-def _fake_claude(tmp_path, payload):
+def _fake_claude(tmp_path, payload, exit_code=0):
     """造一个假的 claude 可执行文件，输出给定的 stream-json 结果。
 
     真正起 claude 会消耗额度且不可复现，这里验证的是**平台如何消费 CLI 输出**，
     所以用一个只说固定话的替身，比接真实 LLM 更严格也更确定。
+
+    ``exit_code`` 用来模拟失败路径：CLI 失败时是不为零的退出码，
+    只输出 is_error 字段但 exit 0 并不构成失败。
     """
     script = tmp_path / "claude"
     script.write_text(
@@ -316,7 +319,7 @@ def _fake_claude(tmp_path, payload):
         "cat <<'EOF'\n"
         f"{payload}\n"
         "EOF\n"
-        "exit 0\n",
+        f"exit {exit_code}\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -370,5 +373,86 @@ def test_execution_without_cost_is_unknown_not_zero(env, tmp_path, monkeypatch):
         assert row is not None
         assert row["actual_cost_usd"] is None
         assert row["cost_quality"] == "unknown"
+    finally:
+        conn.close()
+
+
+def test_retry_after_failure_recovers_task_to_review(env, tmp_path, monkeypatch):
+    """R3 实测缺陷：第一次失败 → 任务 blocked；重试成功后必须能回到 review。
+
+    状态机 blocked 只能回 in_progress，所以同步时要补齐中间态，
+    否则「执行成功了任务却永远显示阻塞」。
+    """
+    item = _item(env, key="EX-RETRY")
+    _enable_project(env)
+    fail = _fake_claude(tmp_path, '{"type":"result","subtype":"error","is_error":true}',
+                        exit_code=1)
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(fail))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        status = conn.execute("SELECT status FROM tasks WHERE id = ?",
+                              (item["task_id"],)).fetchone()["status"]
+        assert status == "blocked"
+    finally:
+        conn.close()
+
+    # 重置调度项模拟重试
+    conn = _conn(env)
+    try:
+        conn.execute(
+            "UPDATE dispatch_items SET status='queued', lease_owner=NULL,"
+            " lease_expires_at=NULL WHERE id = ?", (item["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    ok = _fake_claude(tmp_path, '{"type":"result","subtype":"success",'
+                                '"total_cost_usd":0.01}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(ok))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        status = conn.execute("SELECT status FROM tasks WHERE id = ?",
+                              (item["task_id"],)).fetchone()["status"]
+        assert status == "review", f"重试成功后任务应为 review，实际 {status}"
+    finally:
+        conn.close()
+
+
+def test_retry_updates_execution_to_latest_result(env, tmp_path, monkeypatch):
+    """R3 实测缺陷：重跑不能因为 INSERT OR IGNORE 保留第一次的失败结果。"""
+    item = _item(env, key="EX-RERUN")
+    _enable_project(env)
+    fail = _fake_claude(tmp_path, '{"type":"result","subtype":"error","is_error":true}',
+                        exit_code=1)
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(fail))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        conn.execute(
+            "UPDATE dispatch_items SET status='queued', lease_owner=NULL,"
+            " lease_expires_at=NULL WHERE id = ?", (item["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    ok = _fake_claude(tmp_path, '{"type":"result","subtype":"success",'
+                                '"total_cost_usd":0.02}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(ok))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        rows = conn.execute(
+            "SELECT status, actual_cost_usd FROM executions WHERE source='dispatcher'"
+        ).fetchall()
+        # 同一调度项只应有一条执行记录，且反映最近一次结果
+        assert len(rows) == 1, f"重跑产生了 {len(rows)} 条执行记录"
+        assert rows[0]["status"] == "succeeded"
+        assert rows[0]["actual_cost_usd"] == 0.02
     finally:
         conn.close()

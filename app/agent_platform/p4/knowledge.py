@@ -282,23 +282,39 @@ def _fts_query(text: str) -> str:
 
 def search(conn: sqlite3.Connection, project_id: str, query: str, *,
            limit: int = 10, principal_id: str | None = None,
-           correlation_id: str | None = None) -> dict[str, Any]:
-    """项目内检索。SQL 自带 project_id 过滤，不存在"先全局召回"。"""
+           correlation_id: str | None = None,
+           include_granted: bool = True) -> dict[str, Any]:
+    """检索。本项目的知识 + **当前有效授权**给本项目的其他项目知识。
+
+    授权校验在 SQL 里做（JOIN knowledge_grants 并检查 approved / 未撤销 /
+    未过期），因此不存在「先召回再过滤」的窗口——未授权的内容根本不会出现在结果里。
+    每条命中都带 ``grant_id``，让读者知道这条为什么能被看到。
+    """
     match = _fts_query(query)
     if not match:
         raise KnowledgeError("invalid_payload", 422, "query 不能为空")
     limit = max(1, min(50, int(limit)))
+    now = store.now_iso()
 
     rows = conn.execute(
         "SELECT f.chunk_id, f.version_id, f.content,"
-        "       v.item_id, v.version, v.classification, i.title"
+        "       v.item_id, v.version, v.classification, i.title, i.project_id,"
+        "       g.id AS grant_id"
         " FROM knowledge_fts f"
         " JOIN knowledge_versions v ON v.id = f.version_id"
         " JOIN knowledge_items i ON i.id = v.item_id"
-        " WHERE knowledge_fts MATCH ? AND f.project_id = ?"
+        " LEFT JOIN knowledge_grants g ON g.item_id = i.id"
+        "   AND g.target_project_id = ?"
+        "   AND g.status = 'approved'"
+        "   AND g.revoked_at IS NULL"
+        "   AND (g.expires_at IS NULL OR g.expires_at >= ?)"
+        "   AND (g.version_id IS NULL OR g.version_id = v.id)"
+        " WHERE knowledge_fts MATCH ?"
         "   AND v.status = 'published'"
+        "   AND (f.project_id = ? OR (? AND g.id IS NOT NULL))"
+        " GROUP BY f.chunk_id"
         " ORDER BY rank LIMIT ?",
-        (match, project_id, limit),
+        (project_id, now, match, project_id, 1 if include_granted else 0, limit),
     ).fetchall()
 
     hits = [
@@ -310,6 +326,9 @@ def search(conn: sqlite3.Connection, project_id: str, query: str, *,
             "title": row["title"],
             "classification": row["classification"],
             "snippet": row["content"][:300],
+            "source_project_id": row["project_id"],
+            "grant_id": row["grant_id"],
+            "via_grant": row["project_id"] != project_id,
         }
         for row in rows
     ]
@@ -321,4 +340,140 @@ def search(conn: sqlite3.Connection, project_id: str, query: str, *,
             (trace_id, project_id, principal_id, query, store.dumps_json(hits),
              correlation_id, store.now_iso()),
         )
-    return {"query": query, "trace_id": trace_id, "hits": hits, "total": len(hits)}
+    return {
+        "query": query, "trace_id": trace_id, "hits": hits, "total": len(hits),
+        "granted_hits": sum(1 for h in hits if h["via_grant"]),
+    }
+
+# --------------------------------------------------------------------------
+# 跨项目授权（R3 / M2）
+# --------------------------------------------------------------------------
+#: 授权状态机。
+GRANT_STATUSES = ("pending", "approved", "rejected", "revoked", "expired")
+
+
+def request_grant(conn: sqlite3.Connection, item_id: str, *,
+                  target_project_id: str, granted_by: str,
+                  purpose: str = "", version_id: str | None = None,
+                  expires_at: str | None = None) -> dict[str, Any]:
+    """申请把某条知识授权给另一个项目。申请本身不生效，要审批。"""
+    item = get_item(conn, item_id)
+    source_project = item["project_id"]
+    if source_project == target_project_id:
+        raise KnowledgeError("invalid_payload", 422, "不能给同项目授权")
+    target = conn.execute(
+        "SELECT id FROM agent_projects WHERE id = ?", (target_project_id,)
+    ).fetchone()
+    if target is None:
+        raise KnowledgeError("not_found", 404, "接收方项目不存在")
+    if version_id:
+        row = conn.execute(
+            "SELECT v.*, i.project_id FROM knowledge_versions v"
+            " JOIN knowledge_items i ON i.id = v.item_id WHERE v.id = ?", (version_id,)
+        ).fetchone()
+        if row is None or row["item_id"] != item_id:
+            raise KnowledgeError("not_found", 404, "版本不存在或不属于该条目")
+
+    grant_id = _new_id("kgr")
+    now = store.now_iso()
+    with store.write_tx(conn):
+        conn.execute(
+            "INSERT INTO knowledge_grants (id, item_id, version_id, source_project_id,"
+            " target_project_id, purpose, granted_by, status, expires_at, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (grant_id, item_id, version_id, source_project, target_project_id,
+             purpose, granted_by, expires_at, now, now),
+        )
+        events.emit(conn, "knowledge.grant.requested", project_id=source_project,
+                    resource_type="knowledge_grant", resource_id=grant_id,
+                    payload={"target_project_id": target_project_id,
+                             "purpose": purpose})
+    return get_grant(conn, grant_id)
+
+
+def get_grant(conn: sqlite3.Connection, grant_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM knowledge_grants WHERE id = ?", (grant_id,)
+    ).fetchone()
+    if row is None:
+        raise KnowledgeError("not_found", 404, "授权不存在")
+    item = dict(row)
+    item["effective"] = grant_is_effective(item)
+    return item
+
+
+def grant_is_effective(grant: dict[str, Any]) -> bool:
+    """授权此刻是否真的能用：状态 approved + 未撤销 + 未过期。"""
+    if grant.get("status") != "approved":
+        return False
+    if grant.get("revoked_at"):
+        return False
+    expires = store.iso_utc(grant.get("expires_at")) if grant.get("expires_at") else None
+    return not (expires and expires < store.now_iso())
+
+
+def approve_grant(conn: sqlite3.Connection, grant_id: str, *, approved_by: str,
+                  approve: bool = True) -> dict[str, Any]:
+    """审批授权。批准人与申请人都必须留下身份，供审计追溯。"""
+    if not str(approved_by or "").strip():
+        raise KnowledgeError("invalid_payload", 422, "审批人必填")
+    grant = get_grant(conn, grant_id)
+    if grant["status"] not in ("pending",):
+        raise KnowledgeError("invalid_state", 409, f"当前状态 {grant['status']} 不可审批")
+    now = store.now_iso()
+    status = "approved" if approve else "rejected"
+    with store.write_tx(conn):
+        conn.execute(
+            "UPDATE knowledge_grants SET status = ?, approved_by = ?, approved_at = ?,"
+            " updated_at = ? WHERE id = ?", (status, approved_by, now, now, grant_id),
+        )
+        events.emit(conn, f"knowledge.grant.{status}", project_id=grant["source_project_id"],
+                    resource_type="knowledge_grant", resource_id=grant_id,
+                    payload={"approved_by": approved_by})
+    return get_grant(conn, grant_id)
+
+
+def revoke_grant(conn: sqlite3.Connection, grant_id: str, *, reason: str,
+                 revoked_by: str) -> dict[str, Any]:
+    """撤销授权。撤销**立即生效**：下一次检索就拿不到了。"""
+    grant = get_grant(conn, grant_id)
+    if grant["revoked_at"]:
+        return grant
+    now = store.now_iso()
+    with store.write_tx(conn):
+        conn.execute(
+            "UPDATE knowledge_grants SET status = 'revoked', revoked_at = ?,"
+            " revoke_reason = ?, updated_at = ? WHERE id = ?",
+            (now, reason, now, grant_id),
+        )
+        events.emit(conn, "knowledge.grant.revoked", project_id=grant["source_project_id"],
+                    resource_type="knowledge_grant", resource_id=grant_id,
+                    payload={"reason": reason, "revoked_by": revoked_by})
+    return get_grant(conn, grant_id)
+
+
+def expire_grants(conn: sqlite3.Connection) -> int:
+    """把已过期的授权标成 expired。检索时也会实时判断，这里只是让列表状态准确。"""
+    now = store.now_iso()
+    cur = conn.execute(
+        "UPDATE knowledge_grants SET status = 'expired', updated_at = ?"
+        " WHERE status = 'approved' AND expires_at IS NOT NULL AND expires_at < ?"
+        " AND revoked_at IS NULL", (now, now),
+    )
+    return max(cur.rowcount, 0)
+
+
+def list_grants(conn: sqlite3.Connection, project_id: str, *,
+                direction: str = "outgoing") -> dict[str, Any]:
+    """``outgoing`` = 本项目授权给别人的；``incoming`` = 别人授权给本项目的。"""
+    column = "source_project_id" if direction == "outgoing" else "target_project_id"
+    rows = conn.execute(
+        f"SELECT * FROM knowledge_grants WHERE {column} = ? ORDER BY created_at DESC",
+        (project_id,),
+    ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["effective"] = grant_is_effective(item)
+        items.append(item)
+    return {"items": items, "total": len(items), "direction": direction}

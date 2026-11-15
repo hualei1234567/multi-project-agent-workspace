@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
@@ -296,13 +297,68 @@ def score_case(rules: dict[str, Any], output: str, expected: dict[str, Any]) -> 
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
+def _output_digest(outputs: dict[str, Any]) -> str:
+    """候选输出的内容摘要：同样输入应得到同样评估，便于复现与比对。"""
+    import hashlib
+
+    canonical = json.dumps(
+        {str(k): str(v) for k, v in sorted(outputs.items())},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_runtime_outputs(conn: sqlite3.Connection, project_id: str,
+                          execution_id: str) -> dict[str, str]:
+    """从真实 execution 取候选输出（R3 / M1）。
+
+    输出写在 executions 关联的证据里。拿不到就报错——**不允许**在这种情况下
+    回落到调用方塞的 candidate_outputs 冒充「运行时产出」，那正是审计指出的问题。
+    """
+    row = conn.execute(
+        "SELECT * FROM executions WHERE id = ? AND project_id = ?",
+        (execution_id, project_id),
+    ).fetchone()
+    if row is None:
+        raise EvaluationError("not_found", 404, "执行记录不存在或不属于该项目")
+    if row["status"] != "succeeded":
+        raise EvaluationError(
+            "invalid_state", 409,
+            f"执行状态为 {row['status']}，只有 succeeded 的执行才能作为评估输入",
+        )
+    # sqlite3.Row 没有 .get()，先转 dict 再取可选列。
+    raw = dict(row).get("summary")
+    payload = store.loads_json(raw, None)
+    if isinstance(payload, dict) and isinstance(payload.get("outputs"), dict):
+        return {str(k): str(v) for k, v in payload["outputs"].items()}
+    raise EvaluationError(
+        "missing_outputs", 422,
+        "该执行没有可用的 outputs 证据；评估必须读取真实运行时产出，"
+        "不能回落到调用方传入的候选输出",
+    )
+
+
 def run_evaluation(conn: sqlite3.Connection, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """执行一次评估。candidate_outputs 是 {case_key: 产出文本}。"""
+    """执行一次评估。
+
+    两种候选输出来源，**必须显式指定**且来源会被记录：
+
+    * ``runtime_execution_id``：从真实 execution 读产出（推荐，M1 验收路径）；
+    * ``candidate_outputs``：调用方直接传入（骨架期做法，会标 ``caller_supplied``，
+      报表里能看出这次评估并没有真的跑过 runtime）。
+    """
     version_id = str(payload.get("dataset_version_id") or "").strip()
     evaluator_version_id = str(payload.get("evaluator_version_id") or "").strip()
-    outputs = payload.get("candidate_outputs") or {}
     if not version_id or not evaluator_version_id:
         raise EvaluationError("invalid_payload", 422, "dataset_version_id 与 evaluator_version_id 必填")
+
+    runtime_execution_id = str(payload.get("runtime_execution_id") or "").strip()
+    if runtime_execution_id:
+        outputs = _load_runtime_outputs(conn, project_id, runtime_execution_id)
+        output_source = "runtime"
+    else:
+        outputs = payload.get("candidate_outputs") or {}
+        output_source = "caller_supplied"
     if not isinstance(outputs, dict):
         raise EvaluationError("invalid_payload", 422, "candidate_outputs 必须是对象")
 
@@ -376,11 +432,14 @@ def run_evaluation(conn: sqlite3.Connection, project_id: str, payload: dict[str,
             "INSERT INTO eval_runs (id, project_id, suite_id, dataset_version_id,"
             " evaluator_version_id, release_ref, status, decision, total_cases,"
             " executed_cases, passed_cases, failed_cases, skipped_cases, safety_violations,"
-            " score, correlation_id, started_at, finished_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " score, correlation_id, started_at, finished_at, created_at,"
+            " output_source, runtime_execution_id, output_digest)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, project_id, dataset["suite_id"], version_id, evaluator_version_id,
              payload.get("release_ref"), status, decision, total, executed, passed,
-             failed, skipped, safety_hits, score, correlation_id, now, now, now),
+             failed, skipped, safety_hits, score, correlation_id, now, now, now,
+             output_source, runtime_execution_id or None,
+             _output_digest(outputs)),
         )
         for row in rows:
             conn.execute(

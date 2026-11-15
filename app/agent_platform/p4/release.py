@@ -231,19 +231,52 @@ def approve(conn: sqlite3.Connection, approval_id: str, *,
     return {"approval_id": approval_id, "status": "approved", "release_id": release["id"]}
 
 
+#: 发布模式（R3 / M4）。没有真实流量入口时只能是 SIMULATED。
+RELEASE_MODES = ("SIMULATED", "LIVE")
+
+
 @audited("agent.release.publish", "agent_release", id_arg="release_id")
-def publish(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
+def publish(conn: sqlite3.Connection, release_id: str, *,
+            release_mode: str = "SIMULATED",
+            traffic_entry: str | None = None) -> dict[str, Any]:
+    """发布。默认 SIMULATED——没有流量入口时不许说自己在生产分流。
+
+    ``release_mode='LIVE'`` 必须同时提供 ``traffic_entry``（真实路由的标识）。
+    这个检查故意做得很硬：以前 ``publish()`` 只是把 status 改成 published，
+    没有任何东西阻止一个根本没接流量的发布被当成「已上线」。
+    """
     release = get_release(conn, release_id)
     if release["status"] != "approved":
         raise ReleaseError("invalid_state", 409, f"当前状态 {release['status']} 不能发布")
     if not release["digest_intact"]:
         raise ReleaseError("manifest_tampered", 409, "Manifest 已变更，需重新审批")
+    if release_mode not in RELEASE_MODES:
+        raise ReleaseError("invalid_payload", 422,
+                           f"release_mode 必须是 {RELEASE_MODES}")
+    entry = (traffic_entry or "").strip() or None
+    if release_mode == "LIVE" and not entry:
+        raise ReleaseError(
+            "invalid_payload", 422,
+            "声明 LIVE 必须提供 traffic_entry：没有流量入口证据就不能说是真实发布",
+        )
+    if release_mode == "SIMULATED" and entry:
+        # 有入口却标仿真：说明调用方自己也没搞清楚，拒绝而不是替它猜。
+        raise ReleaseError(
+            "invalid_payload", 422,
+            "声明 SIMULATED 时不能带 traffic_entry；如需真实发布请用 LIVE",
+        )
     with store.write_tx(conn):
         conn.execute(
-            "UPDATE agent_releases SET status = 'published', updated_at = ? WHERE id = ?",
-            (store.now_iso(), release_id),
+            "UPDATE agent_releases SET status = 'published', release_mode = ?,"
+            " traffic_entry = ?, updated_at = ? WHERE id = ?",
+            (release_mode, entry, store.now_iso(), release_id),
         )
-    return {"release_id": release_id, "status": "published"}
+        events.emit(conn, "agent.release.published", project_id=release["project_id"],
+                    resource_type="agent_release", resource_id=release_id,
+                    payload={"release_mode": release_mode, "traffic_entry": entry})
+    return {"release_id": release_id, "status": "published",
+            "release_mode": release_mode, "traffic_entry": entry,
+            "has_live_traffic": release_mode == "LIVE"}
 
 
 # --------------------------------------------------------------------------
@@ -253,9 +286,22 @@ def publish(conn: sqlite3.Connection, release_id: str) -> dict[str, Any]:
 def start_canary(conn: sqlite3.Connection, release_id: str, *,
                  traffic_pct: int = 5, stop_threshold: dict[str, Any] | None = None,
                  created_by: str = "local") -> dict[str, Any]:
+    """开一个 Canary。**只有 LIVE 发布才有资格叫 Canary**。
+
+    SIMULATED 发布跑 Canary 没有意义：没有真实流量，观测指标全是空的，
+    却能显示「canary 部署中」——这正是审计指出的误导。所以直接拒绝，
+    并提示用仿真演练接口（``simulate_canary``）代替。
+    """
     release = get_release(conn, release_id)
     if release["status"] not in {"published", "approved"}:
         raise ReleaseError("invalid_state", 409, "只有已批准/已发布的 Release 能做 Canary")
+    mode = release.get("release_mode") or "SIMULATED"
+    if mode != "LIVE" or not (release.get("traffic_entry") or "").strip():
+        raise ReleaseError(
+            "simulated_release", 409,
+            "该 Release 是 SIMULATED（无真实流量入口），不能做真实 Canary；"
+            "无流量条件下请用 simulate_canary 做演练",
+        )
     deployment_id = _new_id("canary")
     now = store.now_iso()
     with store.write_tx(conn):
@@ -269,7 +315,36 @@ def start_canary(conn: sqlite3.Connection, release_id: str, *,
         )
         events.emit(conn, "agent.release.canary.started", project_id=release["project_id"],
                     resource_type="canary_deployment", resource_id=deployment_id,
-                    payload={"traffic_pct": traffic_pct})
+                    payload={"traffic_pct": traffic_pct, "release_mode": mode,
+                             "traffic_entry": release.get("traffic_entry")})
+    return get_canary(conn, deployment_id)
+
+
+@audited("agent.release.canary.simulate", "canary_deployment", id_arg="release_id")
+def simulate_canary(conn: sqlite3.Connection, release_id: str, *,
+                    stop_threshold: dict[str, Any] | None = None,
+                    created_by: str = "local") -> dict[str, Any]:
+    """无流量条件下的 Canary 演练：只建记录并明确标 ``simulated``。
+
+    照实记录、不冒充真实部署——演练的价值在于验证停止阈值这类逻辑，
+    而不是产出一个看起来像生产部署的行。
+    """
+    release = get_release(conn, release_id)
+    if release["status"] not in {"published", "approved"}:
+        raise ReleaseError("invalid_state", 409, "只有已批准/已发布的 Release 能做演练")
+    deployment_id = _new_id("canary")
+    now = store.now_iso()
+    with store.write_tx(conn):
+        conn.execute(
+            "INSERT INTO canary_deployments (id, release_id, project_id, status,"
+            " traffic_pct, stop_threshold_json, started_at, created_at)"
+            " VALUES (?, ?, ?, 'simulated', 0, ?, ?, ?)",
+            (deployment_id, release_id, release["project_id"],
+             store.dumps_json(stop_threshold or {}), now, now),
+        )
+        events.emit(conn, "agent.release.canary.simulated", project_id=release["project_id"],
+                    resource_type="canary_deployment", resource_id=deployment_id,
+                    payload={"note": "演练，无真实流量"})
     return get_canary(conn, deployment_id)
 
 

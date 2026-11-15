@@ -423,7 +423,13 @@ def _sync_task_status(conn, project_id: str, task_id: str, ok: bool) -> None:
 
         if ok:
             row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-            if row is not None and row["status"] == "todo":
+            current = row["status"] if row is not None else None
+            # 状态机是 todo → in_progress → review，blocked 只能回到 in_progress。
+            # 重试成功时必须把中间态补齐，否则任务会永久卡在 blocked：
+            # 「执行其实成功了，任务却显示阻塞」比不更新更误导人。
+            if current == "blocked":
+                _advance("in_progress", None)
+            elif current == "todo":
                 _advance("in_progress")
             _advance("review")
         else:
@@ -514,12 +520,26 @@ def _record_execution(conn, item_id: str, row, status: str, exit_code: int | Non
                 )
             except ValueError:
                 duration_ms = None
+        # 不能用 INSERT OR IGNORE：同一调度项重跑时旧记录会挡住新结果，
+        # 于是「第一次失败、第二次成功」在库里永远显示失败。
+        # 按 id 做 upsert，让执行记录反映**最近一次**的真实结果。
         conn.execute(
-            "INSERT OR IGNORE INTO executions (id, project_id, agent_id, task_id,"
+            "INSERT INTO executions (id, project_id, agent_id, task_id,"
             " session_id, status, started_at, finished_at, duration_ms, summary,"
             " total_tokens, source, correlation_id,"
             " actual_cost_usd, cost_quality, link_quality, first_seen_source)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'dispatcher', ?, ?, ?, ?, 'dispatcher')",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'dispatcher', ?, ?, ?, ?, 'dispatcher')"
+            " ON CONFLICT(id) DO UPDATE SET"
+            "   status = excluded.status,"
+            "   started_at = excluded.started_at,"
+            "   finished_at = excluded.finished_at,"
+            "   duration_ms = excluded.duration_ms,"
+            "   summary = excluded.summary,"
+            "   correlation_id = excluded.correlation_id,"
+            "   actual_cost_usd = COALESCE(excluded.actual_cost_usd, executions.actual_cost_usd),"
+            "   cost_quality = excluded.cost_quality,"
+            "   link_quality = excluded.link_quality,"
+            "   task_id = COALESCE(excluded.task_id, executions.task_id)",
             (
                 store.stable_id("dispatch", item_id), item["project_id"], item["role_key"],
                 item["task_id"], session_id,

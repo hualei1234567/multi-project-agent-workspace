@@ -140,6 +140,33 @@ V18_TABLES = ("device_traces",)
 #: v19（R2）：执行追溯质量 + 成本口径分离。
 V19_TABLES = ("model_price_versions",)
 
+#: v20（R3）：P4 八大域真实链路。
+V20_TABLES = (
+    "workflow_runs",
+    "workflow_node_runs",
+    "workflow_approvals",
+    "knowledge_grants",
+)
+
+V20_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    # M4：区分「有真实流量」与「纯状态流转」
+    ("agent_releases", (
+        ("release_mode", "TEXT NOT NULL DEFAULT 'SIMULATED'"),
+        ("traffic_entry", "TEXT"),
+    )),
+    # M1：候选输出必须标明来源（真实执行 / 调用方塞入）
+    ("eval_runs", (
+        ("output_source", "TEXT NOT NULL DEFAULT 'caller_supplied'"),
+        ("runtime_execution_id", "TEXT"),
+        ("output_digest", "TEXT"),
+    )),
+    # M8：上架时对 ref 的解析结果
+    ("capability_listings", (
+        ("ref_resolved", "INTEGER NOT NULL DEFAULT 0"),
+        ("ref_checked_at", "TEXT"),
+    )),
+)
+
 #: v19 新增列：不重命名 cost_usd（三期已写入，改名会破坏兼容），
 #: 而是加两列分别承载真实与估算，cost_usd 降级为「账面值」保留。
 V19_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
@@ -383,6 +410,34 @@ def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
+    """R3 数据修正：把已有 P4 记录的"是不是真的跑过"标清楚。
+
+    M4：此前所有 release 都没有 mode 概念，`publish()` 只是改状态。
+    没有任何一条 release 存在真实流量路由的证据，因此历史记录一律
+    ``SIMULATED``。这不是贬低，而是事实：NL 里没有 traffic_entry。
+    有真实流量入口的应当在发布时显式提供并留下证据。
+
+    M1：历史 eval_run 的 candidate_outputs 全部由调用方传入（代码里就是这么写的），
+    一律标 ``caller_supplied``，不得冒充运行时产出。
+
+    M8：历史 listing 的 ref 从未被解析过，标 ``ref_resolved=0``，
+    由后续校验逐个补，而不是假装都有效。
+    """
+    conn.execute(
+        "UPDATE agent_releases SET release_mode = 'SIMULATED'"
+        " WHERE release_mode IS NULL"
+    )
+    conn.execute(
+        "UPDATE eval_runs SET output_source = 'caller_supplied'"
+        " WHERE output_source IS NULL"
+    )
+    conn.execute(
+        "UPDATE capability_listings SET ref_resolved = 0"
+        " WHERE ref_resolved IS NULL"
+    )
+
+
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """v3 数据修正。
 
@@ -565,6 +620,13 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         columns=V19_COLUMN_UPGRADES,
         backfill=_migrate_v18_to_v19,
         description="R2：执行追溯质量 + 成本口径分离（真实/估算/未知）+ 价格版本表",
+    ),
+    MigrationStep(
+        20,
+        tables=V20_TABLES,
+        columns=V20_COLUMN_UPGRADES,
+        backfill=_migrate_v19_to_v20,
+        description="R3：P4 八大域真实链路（workflow 运行时/human gate 阻断/发布模式/评估来源）",
     ),
 )
 

@@ -155,3 +155,130 @@ def current_level(conn: sqlite3.Connection, project_id: str, task_type: str,
 
 def level_satisfies(current: str, required: str) -> bool:
     return LEVEL_ORDER.get(current, 0) >= LEVEL_ORDER.get(required, 0)
+
+# --------------------------------------------------------------------------
+# 自动降级（R3 / M7）
+# --------------------------------------------------------------------------
+#: 触发降级的硬条件。每一条都是「客观事实」，不是模型自评：
+#: 这些信号来自执行记录与 kill switch，可核对、可回放。
+DOWNGRADE_TRIGGERS = {
+    "consecutive_failures": "连续执行失败",
+    "quality_regression": "评估质量下降",
+    "permission_anomaly": "权限异常（kill switch 被触发）",
+    "budget_exhausted": "预算耗尽",
+    "runtime_unhealthy": "运行时不可用",
+}
+
+#: 连续失败多少次触发降级。
+CONSECUTIVE_FAILURE_LIMIT = 3
+
+
+def _recent_failures(conn: sqlite3.Connection, project_id: str,
+                     task_type: str) -> int:
+    """最近连续失败次数（按时间倒序数到第一个成功为止）。"""
+    rows = conn.execute(
+        "SELECT status FROM executions WHERE project_id = ?"
+        " ORDER BY COALESCE(started_at, finished_at) DESC LIMIT 20",
+        (project_id,),
+    ).fetchall()
+    streak = 0
+    for row in rows:
+        status = str(row["status"] or "")
+        if status == "succeeded":
+            break
+        if status == "failed":
+            streak += 1
+    return streak
+
+
+def evaluate_downgrade(conn: sqlite3.Connection, project_id: str, *,
+                       task_type: str = "default", environment: str = "dev",
+                       quality_regressed: bool = False,
+                       budget_exhausted: bool = False,
+                       runtime_unhealthy: bool = False) -> dict[str, Any]:
+    """检查是否需要降级，需要就**执行**降级（只降不升）。
+
+    设计原则：自动动作只能收紧权限，不能放宽。
+    所以这里没有任何「提升等级」的分支——升等级永远要人审批。
+    """
+    record = conn.execute(
+        "SELECT * FROM autonomy_eligibilities WHERE project_id = ? AND task_type = ?"
+        " AND environment = ? ORDER BY updated_at DESC LIMIT 1",
+        (project_id, task_type, environment),
+    ).fetchone()
+    if record is None or record["status"] != "active":
+        return {"downgraded": False, "reason": "无生效中的资格"}
+
+    triggers: list[str] = []
+    failures = _recent_failures(conn, project_id, task_type)
+    if failures >= CONSECUTIVE_FAILURE_LIMIT:
+        triggers.append("consecutive_failures")
+    if quality_regressed:
+        triggers.append("quality_regression")
+    if budget_exhausted:
+        triggers.append("budget_exhausted")
+    if runtime_unhealthy:
+        triggers.append("runtime_unhealthy")
+
+    from . import killswitch
+
+    blocked, why = killswitch.is_blocked(conn, project_id=project_id)
+    if blocked:
+        triggers.append("permission_anomaly")
+
+    if not triggers:
+        return {"downgraded": False, "triggers": [], "current_level": record["level"],
+                "failures": failures}
+
+    target = _downgrade_target(record["level"])
+    now = store.now_iso()
+    detail = {
+        "from": record["level"], "to": target, "triggers": triggers,
+        "failures": failures,
+        "kill_switch_reason": why if blocked else None,
+    }
+    with store.write_tx(conn):
+        conn.execute(
+            "UPDATE autonomy_eligibilities SET level = ?, updated_at = ? WHERE id = ?",
+            (target, now, record["id"]),
+        )
+        conn.execute(
+            "INSERT INTO autonomy_changes (id, eligibility_id, from_level, to_level,"
+            " reason, requested_by, approved_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, 'system:auto_downgrade', NULL, ?)",
+            (_new_id("autc"), record["id"], record["level"], target,
+             "自动降级：" + "、".join(DOWNGRADE_TRIGGERS.get(t, t) for t in triggers),
+             now),
+        )
+        events.emit(conn, "autonomy.auto_downgraded", project_id=project_id,
+                    resource_type="autonomy_eligibility", resource_id=record["id"],
+                    payload=detail)
+        # 自动降级是高风险状态变更，必须留审计（R2 / S-3 同一标准）。
+        service_audit = _audit_fn()
+        if service_audit is not None:
+            service_audit(
+                conn, project_id, "autonomy.level.auto_downgrade",
+                "autonomy_eligibility", record["id"],
+                actor="system:auto_downgrade", detail=detail,
+            )
+    return {
+        "downgraded": True, "from_level": record["level"], "to_level": target,
+        "triggers": triggers, "failures": failures,
+        "note": "自动动作只降不升；恢复等级需要重新提交证据并人工审批",
+    }
+
+
+def _audit_fn():
+    """拿 service.audit；导入失败返回 None（审计不可用不该让降级失败）。"""
+    try:
+        from .. import service
+
+        return service.audit
+    except Exception:  # noqa: BLE001 - 审计依赖不可用时不阻断安全动作
+        return None
+
+
+def _downgrade_target(level: str) -> str:
+    """降一级；已经在 A0 就停在 A0。"""
+    index = LEVEL_ORDER.get(level, 0)
+    return LEVELS[max(index - 1, 0)]

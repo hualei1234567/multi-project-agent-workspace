@@ -635,7 +635,12 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   correlation_id         TEXT,
   started_at             TEXT,
   finished_at            TEXT,
-  created_at             TEXT NOT NULL
+  created_at             TEXT NOT NULL,
+  -- R3 / M1：候选输出的来源。runtime = 由真实 Execution 产生；
+  -- caller_supplied = 调用方直接塞进来的（骨架期做法，现在必须显式标出）。
+  output_source          TEXT NOT NULL DEFAULT 'caller_supplied',
+  runtime_execution_id   TEXT,
+  output_digest          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_eval_runs_project
@@ -795,6 +800,12 @@ CREATE TABLE IF NOT EXISTS agent_releases (
   created_by      TEXT NOT NULL DEFAULT 'local',
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
+  -- R3 / M4：这个发布到底有没有真实流量。
+  -- SIMULATED = 只有状态流转，没有任何真实路由；没有流量入口时只能标这个，
+  -- 不允许用「canary」这种词让人误以为已经在生产分流。
+  release_mode    TEXT NOT NULL DEFAULT 'SIMULATED',
+  -- 流量入口证据：真实路由存在时记录入口标识，SIMULATED 时必须为空。
+  traffic_entry   TEXT,
   UNIQUE(project_id, release_key)
 );
 
@@ -982,6 +993,10 @@ CREATE TABLE IF NOT EXISTS capability_listings (
   owner           TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
+  -- R3 / M8：上架时对 ref 的解析结果。悬空引用不允许上架，
+  -- 但历史上已存在的要能看出是不是悬空，所以记录解析状态而不是靠 JOIN 现算。
+  ref_resolved    INTEGER NOT NULL DEFAULT 0,
+  ref_checked_at  TEXT,
   UNIQUE(source_project_id, capability_type, ref_id, ref_version)
 );
 
@@ -1115,3 +1130,106 @@ CREATE TABLE IF NOT EXISTS model_price_versions (
 
 CREATE INDEX IF NOT EXISTS idx_price_versions_lookup
   ON model_price_versions(model_pattern, effective_from);
+
+-- ============================================================
+-- schema v20（R3）：P4 八大域真实链路
+--
+-- 审计事实（2026-11-15）：P4 相关 33 张表全部 0 行。代码骨架存在、单测通过，
+-- 但没有任何一条真实受控链路跑过。v20 补齐让链路能真实跑起来的缺件：
+--
+--   M1 Evaluation  —— 输出必须来自真实 Execution，不能由调用方塞 candidate_outputs
+--   M3 Workflow    —— human_gate 必须是真阻断，不是标签
+--   M4 Release     —— 必须能区分「有真实流量」与「仿真」
+--   M8 Catalog     —— ref 必须指向真实资源，不允许悬空引用
+-- ============================================================
+
+-- Workflow 运行实例：一次绑定的实际执行状态机。
+-- 节点级状态单独存，因为 human_gate 的等待是「节点级」事实，
+-- 用绑定表的 status 表达不了「流程卡在第 3 个节点的人是审」。
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES agent_projects(id),
+  binding_id     TEXT NOT NULL REFERENCES workflow_bindings(id),
+  version_id     TEXT NOT NULL REFERENCES workflow_versions(id),
+  status         TEXT NOT NULL DEFAULT 'running',
+                 -- running / waiting_approval / completed / failed / cancelled
+  current_node   TEXT,
+  input_digest   TEXT NOT NULL DEFAULT '',   -- 审批必须绑定输入内容
+  correlation_id TEXT,
+  started_at     TEXT,
+  finished_at    TEXT,
+  error_summary  TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_project
+  ON workflow_runs(project_id, created_at DESC);
+
+-- Workflow 节点执行状态。human_gate 到达这里变成 waiting_approval，
+-- 没有有效审批记录就不能推进——这是 M3 的验收核心。
+CREATE TABLE IF NOT EXISTS workflow_node_runs (
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL REFERENCES workflow_runs(id),
+  node_key      TEXT NOT NULL,
+  node_type     TEXT NOT NULL,             -- task / agent / human_gate / quality_gate
+  status        TEXT NOT NULL DEFAULT 'pending',
+                -- pending / running / waiting_approval / approved / rejected
+                -- / completed / failed / skipped
+  task_id       TEXT,
+  approver      TEXT,                      -- 审批人 principal（可信来源）
+  approved_at   TEXT,
+  input_digest  TEXT NOT NULL DEFAULT '',  -- 审批绑定当时的输入摘要
+  decided_at    TEXT,
+  error_summary TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE(run_id, node_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_runs_run ON workflow_node_runs(run_id);
+
+-- 人工审批记录：审批必须绑定 run + node + input_digest。
+-- 输入一变（digest 不同）审批即失效，需要重新审批。
+CREATE TABLE IF NOT EXISTS workflow_approvals (
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT NOT NULL REFERENCES workflow_runs(id),
+  node_key      TEXT NOT NULL,
+  input_digest  TEXT NOT NULL,
+  decision      TEXT NOT NULL,             -- approved / rejected
+  approver      TEXT NOT NULL,
+  reason        TEXT,
+  expires_at    TEXT,
+  revoked_at    TEXT,
+  created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_approvals_lookup
+  ON workflow_approvals(run_id, node_key, input_digest);
+
+-- 知识跨项目授权（R3 / M2）。
+-- 默认检索是项目内封闭的；跨项目必须有一条**显式、有期限、可撤销**的授权。
+-- 把授权建成独立表而不是给 items 加个 shared 标志，是因为授权有接收方、用途、
+-- 有效期和审批人——这些是授权本身的属性，不是知识条目的属性。
+CREATE TABLE IF NOT EXISTS knowledge_grants (
+  id                 TEXT PRIMARY KEY,
+  item_id            TEXT NOT NULL REFERENCES knowledge_items(id),
+  version_id         TEXT,
+  source_project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  target_project_id  TEXT NOT NULL REFERENCES agent_projects(id),
+  purpose            TEXT,
+  granted_by         TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending',
+                     -- pending / approved / rejected / revoked / expired
+  approved_by        TEXT,
+  approved_at        TEXT,
+  expires_at         TEXT,
+  revoked_at         TEXT,
+  revoke_reason      TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  CHECK (source_project_id <> target_project_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_grants_target
+  ON knowledge_grants(target_project_id, status);

@@ -28,9 +28,41 @@ def conn(tmp_path, monkeypatch):
     conn.close()
 
 
+def _make_workflow(conn, project="p1"):
+    """造一个真实存在的 workflow 版本，让 ref 能解析（R3 / M8 要求）。"""
+    from agent_platform.p4 import workflow
+
+    # 重复上架的场景会调两次：复用已有定义，避免 key 冲突干扰被测行为。
+    row = conn.execute(
+        "SELECT * FROM workflow_definitions WHERE project_id = ? AND def_key = 'wf-main'",
+        (project,),
+    ).fetchone()
+    if row is not None:
+        definition = dict(row)
+    else:
+        definition = workflow.create_definition(conn, project, {
+            "key": "wf-main", "name": "标准上线流程",
+        })
+    # 同上：已有版本就复用，保证重复上架货的是同一个 ref，才能测到唯一约束。
+    existing = conn.execute(
+        "SELECT * FROM workflow_versions WHERE definition_id = ? ORDER BY version DESC LIMIT 1",
+        (definition["id"],),
+    ).fetchone()
+    if existing is not None:
+        return dict(existing)
+    return workflow.create_version(conn, definition["id"], {
+        "dsl": {"nodes": [
+            {"key": "dev", "type": "task", "title": "开发"},
+            {"key": "review", "type": "human_gate", "title": "人审", "depends_on": ["dev"]},
+        ]},
+    })
+
+
 def _listing(conn, project="p1"):
+    version = _make_workflow(conn, project)
     return catalog.publish_listing(conn, project, {
-        "capability_type": "workflow", "ref_id": "wf-1", "ref_version": "2",
+        "capability_type": "workflow", "ref_id": version["id"],
+        "ref_version": str(version["version"]),
         "name": "标准上线流程", "summary": "含人工闸门",
     })
 

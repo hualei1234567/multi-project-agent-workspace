@@ -145,7 +145,10 @@ def test_canary_stops_on_threshold_breach(conn):
     release.attach_evaluation(conn, created["id"], run["id"])
     approval = release.request_approval(conn, created["id"], requested_by="alice")
     release.approve(conn, approval["approval_id"], approved_by="bob")
-    release.publish(conn, created["id"])
+    # R3 / M4：Canary 只对「有真实流量入口」的发布开放。
+    # 本用例测的是停止阈值逻辑，所以声明 LIVE 并给出入口证据。
+    release.publish(conn, created["id"], release_mode="LIVE",
+                    traffic_entry="ingress://canary-test")
 
     canary = release.start_canary(
         conn, created["id"], traffic_pct=10, stop_threshold={"error_rate": 0.05}
@@ -165,7 +168,8 @@ def test_rollback_keeps_history(conn):
     release.attach_evaluation(conn, created["id"], run["id"])
     approval = release.request_approval(conn, created["id"], requested_by="alice")
     release.approve(conn, approval["approval_id"], approved_by="bob")
-    release.publish(conn, created["id"])
+    release.publish(conn, created["id"], release_mode="LIVE",
+                    traffic_entry="ingress://canary-test")
     canary = release.start_canary(conn, created["id"], traffic_pct=5)
 
     result = release.rollback(conn, created["id"], reason="线上指标劣化",

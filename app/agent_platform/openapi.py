@@ -52,6 +52,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/publish"),
     ("POST", "/api/projects/{project_id}/workflow-versions/{version_id}/bind"),
     ("GET", "/api/projects/{project_id}/workflow-bindings"),
+    ("GET", "/api/projects/{project_id}/workflow-runs"),
+    ("POST", "/api/projects/{project_id}/workflow-runs"),
+    ("GET", "/api/projects/{project_id}/workflow-runs/{run_id}"),
+    ("POST", "/api/projects/{project_id}/workflow-runs/{run_id}/approve"),
+    ("POST", "/api/projects/{project_id}/workflow-approvals/{approval_id}/revoke"),
     ("POST", "/api/projects/{project_id}/releases"),
     ("GET", "/api/projects/{project_id}/releases"),
     ("GET", "/api/projects/{project_id}/releases/{release_id}"),
@@ -504,6 +509,26 @@ def _paths() -> dict[str, Any]:
         },
         "/api/projects/{project_id}/workflow-bindings": {
             "get": project_op("get", "项目 Workflow 绑定列表（P4-M3）")[2],
+        },
+        "/api/projects/{project_id}/workflow-runs": {
+            "get": project_op("get", "Workflow 运行实例列表（R3 / M3）")[2],
+            "post": project_op("post", "启动一次运行（会推进到闸门并停下）",
+                               body={"type": "object"}, errors=(403, 404, 409, 422))[2],
+        },
+        "/api/projects/{project_id}/workflow-runs/{run_id}": {
+            "get": project_op("get", "运行详情：节点状态 + 审批记录 + 等待项",
+                              params=[_param("run_id", where="path", required=True)],
+                              errors=(404,))[2],
+        },
+        "/api/projects/{project_id}/workflow-runs/{run_id}/approve": {
+            "post": project_op("post", "审批闸门节点（审批人取自可信 Principal）",
+                               params=[_param("run_id", where="path", required=True)],
+                               body={"type": "object"}, errors=(403, 404, 409, 422))[2],
+        },
+        "/api/projects/{project_id}/workflow-approvals/{approval_id}/revoke": {
+            "post": project_op("post", "撤销审批并重新阻断闸门",
+                               params=[_param("approval_id", where="path", required=True)],
+                               body={"type": "object"}, errors=(404,))[2],
         },
         "/api/projects/{project_id}/releases": {
             "post": project_op("post", "创建 Release 与 Manifest（P4-M4）", body={"type": "object"})[2],

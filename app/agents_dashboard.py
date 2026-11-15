@@ -1988,7 +1988,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_workflow(self, project_id: str, rest: list[str], method: str) -> bool:
         """Workflow 域路由。已处理返回 True。"""
-        if not rest or rest[0] not in {"workflows", "workflow-versions", "workflow-bindings"}:
+        if not rest or rest[0] not in {
+            "workflows", "workflow-versions", "workflow-bindings", "workflow-runs",
+            "workflow-approvals",
+        }:
             return False
         body = self._body() if method == "POST" else {}
 
@@ -2031,6 +2034,46 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if method == "GET" and rest == ["workflow-bindings"]:
             self._workflow_platform(workflow_service.list_bindings, project_id)
+            return True
+
+        # ---- 运行实例与 Human Gate（R3 / M3） ----
+        if method == "GET" and rest == ["workflow-runs"]:
+            self._workflow_platform(workflow_service.list_runs, project_id)
+            return True
+        if method == "POST" and rest == ["workflow-runs"]:
+            if not self._policy_guard(project_id, "workflow_run", "start", risk="R3"):
+                return True
+            self._workflow_platform(
+                workflow_service.start_run, project_id,
+                str(body.get("binding_id") or ""),
+                inputs=body.get("inputs") or {},
+                correlation_id=body.get("correlation_id"),
+            )
+            return True
+        if method == "GET" and len(rest) == 2 and rest[0] == "workflow-runs":
+            self._workflow_platform(workflow_service.get_run, rest[1])
+            return True
+        if (method == "POST" and len(rest) == 3 and rest[0] == "workflow-runs"
+                and rest[2] == "approve"):
+            # 审批人必须来自可信 Principal（R1 / S-2 的同一规则），不接受自报。
+            actor = self._actor_id()
+            self._workflow_platform(
+                workflow_service.approve_node, rest[1],
+                str(body.get("node_key") or ""),
+                approver=actor,
+                reason=str(body.get("reason") or ""),
+                decision=str(body.get("decision") or "approved"),
+                expires_at=body.get("expires_at"),
+            )
+            return True
+        if (method == "POST" and len(rest) == 3 and rest[0] == "workflow-approvals"
+                and rest[2] == "revoke"):
+            actor = self._actor_id()
+            self._workflow_platform(
+                workflow_service.revoke_approval, rest[1],
+                reason=str(body.get("reason") or "未说明"),
+                revoked_by=actor,
+            )
             return True
         return False
 

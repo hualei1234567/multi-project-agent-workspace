@@ -199,16 +199,57 @@ def get_proposal(conn: sqlite3.Connection, proposal_id: str) -> dict[str, Any]:
 
 
 def run_sandbox(conn: sqlite3.Connection, proposal_id: str,
-                eval_run_id: str) -> dict[str, Any]:
-    """在隔离版本上跑评估。评估不通过 → 提案 rejected，不能进入审批。"""
+                eval_run_id: str, *,
+                baseline_eval_run_id: str | None = None) -> dict[str, Any]:
+    """在隔离版本上跑评估。评估不通过 → 提案 rejected，不能进入审批。
+
+    R3 / M5：改进必须能在**同一口径**下比较。``baseline_eval_run_id`` 给出改进前的
+    评估，两者必须用同一数据集版本和同一评估器版本——否则「改进了」无从谈起，
+    只是把两份不同量尺的分数放在一起看。
+    """
     proposal = get_proposal(conn, proposal_id)
     run = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (eval_run_id,)).fetchone()
     if run is None:
         raise ImprovementError("not_found", 404, "评估运行不存在")
     if run["project_id"] != proposal["project_id"]:
         raise ImprovementError("forbidden", 403, "评估运行不属于该项目")
+    if run["status"] not in ("completed", "partial"):
+        raise ImprovementError(
+            "invalid_state", 409,
+            f"评估运行状态为 {run['status']}，不能作为改进依据",
+        )
+
+    baseline = None
+    if baseline_eval_run_id:
+        baseline = conn.execute(
+            "SELECT * FROM eval_runs WHERE id = ?", (baseline_eval_run_id,)
+        ).fetchone()
+        if baseline is None:
+            raise ImprovementError("not_found", 404, "基线评估运行不存在")
+        if baseline["project_id"] != proposal["project_id"]:
+            raise ImprovementError("forbidden", 403, "基线评估不属于该项目")
+        # 口径必须一致：数据集版本 + 评估器版本都相同，否则不可比。
+        if (baseline["dataset_version_id"] != run["dataset_version_id"]
+                or baseline["evaluator_version_id"] != run["evaluator_version_id"]):
+            raise ImprovementError(
+                "incomparable", 422,
+                "基线与候选评估必须使用同一数据集版本和评估器版本，否则分数不可比",
+            )
 
     passed = run["decision"] == "pass"
+    comparison = None
+    if baseline is not None:
+        new_score = run["score"]
+        old_score = baseline["score"]
+        comparison = {
+            "baseline_run_id": baseline["id"],
+            "baseline_score": old_score,
+            "candidate_score": new_score,
+            # 提升为 None 表示「无法判断」——缺分数不等于提升 0。
+            "delta": (round(float(new_score) - float(old_score), 4)
+                      if new_score is not None and old_score is not None else None),
+            "comparable": True,
+        }
     sandbox_id = _new_id("sbx")
     with store.write_tx(conn):
         conn.execute(
@@ -218,7 +259,8 @@ def run_sandbox(conn: sqlite3.Connection, proposal_id: str,
              "passed" if passed else "failed",
              store.dumps_json({"decision": run["decision"],
                                "score": run["score"],
-                               "safety_violations": run["safety_violations"]}),
+                               "safety_violations": run["safety_violations"],
+                               "comparison": comparison}),
              store.now_iso()),
         )
         conn.execute(
@@ -226,7 +268,7 @@ def run_sandbox(conn: sqlite3.Connection, proposal_id: str,
             ("evaluated" if passed else "rejected", store.now_iso(), proposal_id),
         )
     return {"sandbox_id": sandbox_id, "proposal_id": proposal_id,
-            "status": "passed" if passed else "failed"}
+            "status": "passed" if passed else "failed", "comparison": comparison}
 
 
 def request_approval(conn: sqlite3.Connection, proposal_id: str, *,
