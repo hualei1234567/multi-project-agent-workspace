@@ -102,15 +102,12 @@ jobs:
         # 冒烟脚本用本机 Chrome（channel 或 executablePath）。CI 里装 chromium
         # 并显式指向它，避免「本机绿 CI 红」。
         #
-        # lock 文件里的 resolved 指向 npmmirror 镜像（作者本机配置）。
-        # 镜像在 CI 网络下可能不可达，所以 npm ci 失败时回退到官方 registry
-        # 重装 —— 只换源，不改版本，lock 仍是唯一版本真相。
+        # .npmrc 已从仓库移除（本机配置，见 .npmrc.example）。
+        # 这里仍显式指定 registry：lock 文件里的 resolved 指向作者本机的
+        # npmmirror 镜像，CI 网络下未必可达。只换源不改版本，lock 仍是版本真相。
         run: |
-          npm ci || {
-            echo "::warning::npm ci 失败（可能是镜像不可达），回退到官方 registry"
-            rm -rf node_modules
-            npm ci --registry=https://registry.npmjs.org
-          }
+          npm config set registry https://registry.npmjs.org
+          npm ci
           npx playwright install --with-deps chromium
 
       - name: 启动隔离实例

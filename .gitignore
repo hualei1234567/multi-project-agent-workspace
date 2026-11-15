@@ -26,3 +26,6 @@ node_modules/
 # 访问令牌（远端鉴权用）：绝不能入库
 data/token
 data/token.bak-*
+
+# 本机 npm 配置（含代理，不能入库）；示例见 .npmrc.example
+.npmrc
