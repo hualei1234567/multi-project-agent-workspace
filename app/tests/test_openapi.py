@@ -12,6 +12,7 @@ if str(SCRIPTS) not in sys.path:
 
 import agents_dashboard as dash
 from agent_platform import openapi
+from agent_platform import store as platform_store
 from conftest import local_urlopen
 
 
@@ -78,7 +79,16 @@ def test_core_paths_present():
         assert path in paths
 
 
-def test_served_over_http():
+def test_served_over_http(tmp_path, monkeypatch):
+    # 必须先把库建起来：S-5 的 fail-closed 治理闸门在空库上会正确返回 503，
+    # 直接起 Handler 而不初始化库，测的就不是 OpenAPI 而是治理闸门了。
+    # 本地因为 data/platform.db 已存在，这个问题在本地永远不会显形。
+    monkeypatch.setenv("AGWS_PLATFORM_DB", str(tmp_path / "platform.db"))
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+    finally:
+        conn.close()
     server = dash.ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
