@@ -171,6 +171,11 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/runtime/actions/{action_key}/preflight"),
     ("POST", "/api/runtime/actions/{action_key}/run"),
     ("GET", "/api/agent-platform/cross-project"),
+    ("GET", "/api/agent-platform/budgets"),
+    ("GET", "/api/projects/{project_id}/budgets"),
+    ("POST", "/api/projects/{project_id}/budgets"),
+    ("GET", "/api/projects/{project_id}/budget-status"),
+    ("GET", "/api/projects/{project_id}/efficiency"),
     ("GET", "/api/agent-platform/events/dlq"),
     ("GET", "/api/agent-platform/events/catalog"),
     ("GET", "/api/agent-platform/registry"),
@@ -697,6 +702,21 @@ def _paths() -> dict[str, Any]:
                                params=[_param("action_key", where="path", required=True)],
                                body={"type": "object"}, ok_schema={"type": "object"},
                                errors=(404, 412)),
+        },
+        "/api/agent-platform/budgets": {
+            "get": _operation("全平台预算总览（P3-M7）", tags=["platform"],
+                             ok_schema={"type": "object"}),
+        },
+        "/api/projects/{project_id}/budgets": {
+            "get": project_op("get", "项目预算列表（P3-M7）")[2],
+            "post": project_op("post", "设置项目预算（同作用域+窗口覆盖）",
+                               body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/budget-status": {
+            "get": project_op("get", "有效预算状态（取最严格的一层）")[2],
+        },
+        "/api/projects/{project_id}/efficiency": {
+            "get": project_op("get", "效能指标（样本不足显示 UNKNOWN）")[2],
         },
         "/api/agent-platform/events/dlq": {
             "get": _operation("死信队列（用完重试的事件，P3-M1）", tags=["platform"],

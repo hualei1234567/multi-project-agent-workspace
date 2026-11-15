@@ -148,6 +148,9 @@ V20_TABLES = (
     "knowledge_grants",
 )
 
+#: v25（P3-M7）：预算与预算事件。Full Auto 的刹车。
+V25_TABLES = ("budgets", "budget_events")
+
 #: v24（P3-M3）：三模式候选表 + 计划模式列。
 V24_TABLES = ("dispatch_plan_candidates",)
 
@@ -759,6 +762,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V24_TABLES,
         columns=V24_COLUMN_UPGRADES,
         description="P3-M3：三模式（SHADOW/RECOMMEND 只写候选不建 item）",
+    ),
+    MigrationStep(
+        25,
+        tables=V25_TABLES,
+        description="P3-M7：预算与预算事件（超支暂停新任务，不强杀运行中）",
     ),
 )
 

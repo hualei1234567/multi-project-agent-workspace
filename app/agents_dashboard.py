@@ -56,6 +56,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时走包路径
     from agent_platform import approvals as approval_service
     from agent_platform import auth as auth_service
+    from agent_platform import budget as budget_service
     from agent_platform import config as platform_config
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
@@ -86,6 +87,7 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
 except ImportError:  # pragma: no cover
     from app.agent_platform import approvals as approval_service
     from app.agent_platform import auth as auth_service
+    from app.agent_platform import budget as budget_service
     from app.agent_platform import config as platform_config
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
@@ -1402,6 +1404,36 @@ def _team_status(project_id: str) -> dict[str, Any]:
         conn.close()
 
 
+def _project_budgets(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        items = [b for b in budget_service.list_budgets(conn)
+                 if b["scope"] == "project" and b["scope_id"] == project_id]
+        evaluated = [budget_service.evaluate(conn, b["id"]) for b in items]
+    finally:
+        conn.close()
+    return {"items": evaluated, "total": len(evaluated)}
+
+
+def _budget_status(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return budget_service.status_for(conn, project_id=project_id)
+    finally:
+        conn.close()
+
+
+def _set_project_budget(project_id: str, **kwargs) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return budget_service.set_budget(conn, **kwargs)
+    finally:
+        conn.close()
+
+
 def _team_owner(project_id: str) -> dict[str, Any]:
     return team_service.owner_session_info(_project_dict(project_id))
 
@@ -1777,6 +1809,34 @@ class Handler(BaseHTTPRequestHandler):
                              "detail": {"code": "internal_error", "message": "内部错误"}})
         finally:
             conn.close()
+
+    # ---- 预算（P3-M7） -------------------------------------------------
+    def _budgets_summary(self) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            data = budget_service.summary(conn)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "budgets_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, **data})
+
+    def _budget_call(self, fn, *args, **kwargs) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            result = fn(conn, *args, **kwargs)
+        except budget_service.BudgetError as exc:
+            self._fail(exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "budget_error", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "data": result})
 
     # ---- 事件平面（P3-M1） ---------------------------------------------
     def _events_dlq(self, query: dict) -> None:
@@ -2862,6 +2922,20 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
             return
+        # 预算设置（P3-M7）
+        if rest == ["budgets"]:
+            body = self._body()
+            self._platform(
+                _set_project_budget, project_id,
+                scope=str(body.get("scope") or "project"),
+                scope_id=str(body.get("scope_id") or project_id),
+                window=str(body.get("window") or "monthly"),
+                limit_usd=float(body.get("limit_usd") or 0),
+                warning_ratio=float(body.get("warning_ratio") or 0.8),
+                note=body.get("note"),
+                created_by=self._principal_id(),
+            )
+            return
         # 资源注册中心（P3-M2）
         if rest and rest[0] == "registry" and len(rest) >= 2:
             self._handle_registry(project_id, rest[1:], "POST", {})
@@ -3106,6 +3180,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._platform(resource_service.get_resource, rid)
             else:
                 self._not_found_route()
+        elif path == "/api/agent-platform/budgets":
+            self._budgets_summary()
+            return
         elif path == "/api/agent-platform/events/dlq":
             self._events_dlq(query)
             return
@@ -3224,6 +3301,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["dispatch", "executor"]:
                 self._json(200, _executor_status())
+                return
+            # 预算与效能（P3-M7）
+            if rest == ["budgets"]:
+                self._platform(_project_budgets, project_id)
+                return
+            if rest == ["efficiency"]:
+                self._platform(
+                    budget_service.efficiency, project_id,
+                    days=int((query.get("days") or ["30"])[0]),
+                )
+                return
+            if rest == ["budget-status"]:
+                self._platform(
+                    _budget_status, project_id,
+                )
                 return
             # 资源注册中心（P3-M2）。Registry 本身是平台级的，
             # 但挂在项目路径下便于按项目视角查看"本项目能用什么"。

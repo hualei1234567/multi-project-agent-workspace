@@ -1441,3 +1441,39 @@ CREATE TABLE IF NOT EXISTS dispatch_plan_candidates (
 
 CREATE INDEX IF NOT EXISTS idx_dispatch_candidates_plan
   ON dispatch_plan_candidates(plan_id, rank);
+
+
+-- schema v25（P3-M7）：预算与效能
+--
+-- 为什么 Full Auto 需要这个：无人值守时最怕没有刹车。
+-- 超支只暂停**新任务**，不强杀运行中的——V4.0 明文要求，
+-- 杀正在跑的会留下半成品工作树和不确定状态，代价比多花点钱大。
+CREATE TABLE IF NOT EXISTS budgets (
+  id            TEXT PRIMARY KEY,
+  scope         TEXT NOT NULL,           -- platform / project / task
+  scope_id      TEXT,                    -- project_id 或 task_id；platform 为 NULL
+  window        TEXT NOT NULL,           -- daily / monthly / total
+  limit_usd     REAL NOT NULL,
+  warning_ratio REAL NOT NULL DEFAULT 0.8,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  note          TEXT,
+  created_by    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE(scope, scope_id, window)
+);
+
+-- 只在状态跃迁时写（ok→warning、warning→exceeded、exceeded→ok），
+-- 不是每次都写——否则一天几千条。
+CREATE TABLE IF NOT EXISTS budget_events (
+  id          TEXT PRIMARY KEY,
+  budget_id   TEXT NOT NULL REFERENCES budgets(id),
+  event_type  TEXT NOT NULL,             -- warning / exceeded / recovered
+  spent_usd   REAL NOT NULL,
+  limit_usd   REAL NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_events_budget
+  ON budget_events(budget_id, created_at);

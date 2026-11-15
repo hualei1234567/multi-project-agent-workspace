@@ -148,13 +148,14 @@ def schedulable(
     active = _active_task_ids(conn, project_id)
     agents = _agent_modes(conn, project_id)
     registry_blocked = _registry_blocked_roles(conn)
+    budget_blocked = _budget_block_reason(conn, project_id)
     memo: dict[str, int] = {}
 
     ready: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for task in tasks.values():
         reason = _skip_reason(task, tasks, dep_tasks, deps, active, agents,
-                              registry_blocked)
+                              registry_blocked, budget_blocked)
         if reason:
             skipped.append({
                 "task_id": task["id"],
@@ -177,6 +178,22 @@ def schedulable(
         t["task_key"],
     ))
     return ready, skipped
+
+
+def _budget_block_reason(conn: sqlite3.Connection, project_id: str) -> str | None:
+    """预算超支 → 返回拒绝原因；否则 None。
+
+    只暂停**新任务**，不强杀运行中的（V4.0 明文要求）。
+    表不存在时（老库未迁移）返回 None——不能因为预算没建就停摆。
+    """
+    try:
+        from . import budget as budget_service
+        status = budget_service.status_for(conn, project_id=project_id)
+    except sqlite3.DatabaseError:
+        return None
+    if status["status"] == budget_service.STATUS_EXCEEDED:
+        return "预算已用尽，暂停新任务：" + "；".join(status["blockers"])
+    return None
 
 
 def _registry_blocked_roles(conn: sqlite3.Connection) -> dict[str, str]:
@@ -208,6 +225,7 @@ def _skip_reason(
     active: set[str],
     agents: dict[str, dict[str, Any]],
     registry_blocked: dict[str, str] | None = None,
+    budget_blocked: str | None = None,
 ) -> str | None:
     if task["status"] not in SCHEDULABLE_STATUSES:
         return f"状态 {task['status']} 不可调度"
@@ -220,6 +238,10 @@ def _skip_reason(
         return "指派的角色不属于本项目"
     if agent["execution_mode"] not in EXECUTABLE_MODES:
         return f"角色执行模式 {agent['execution_mode']} 不允许自动执行"
+    # P3-M7 预算硬过滤：超支项目暂停新任务（不强杀运行中的，契约 CF-5 §3）。
+    # 与 Registry 过滤同一层——硬约束先于评分。
+    if budget_blocked:
+        return budget_blocked
     # P3-M2 Registry 硬过滤：角色被撤销/废弃的不进候选。
     # 这是"注册中心真的影响调度"的接线点——建了不用的 Registry 等于没建。
     if registry_blocked and agent["role_key"] in registry_blocked:
