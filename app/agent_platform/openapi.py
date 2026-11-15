@@ -171,6 +171,8 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/runtime/actions/{action_key}/preflight"),
     ("POST", "/api/runtime/actions/{action_key}/run"),
     ("GET", "/api/agent-platform/cross-project"),
+    ("GET", "/api/agent-platform/events/dlq"),
+    ("GET", "/api/agent-platform/events/catalog"),
     ("GET", "/api/agent-platform/registry"),
     ("GET", "/api/projects/{project_id}/registry/summary"),
     ("GET", "/api/projects/{project_id}/registry/roles"),
@@ -695,6 +697,14 @@ def _paths() -> dict[str, Any]:
                                params=[_param("action_key", where="path", required=True)],
                                body={"type": "object"}, ok_schema={"type": "object"},
                                errors=(404, 412)),
+        },
+        "/api/agent-platform/events/dlq": {
+            "get": _operation("死信队列（用完重试的事件，P3-M1）", tags=["platform"],
+                             ok_schema={"type": "object"}),
+        },
+        "/api/agent-platform/events/catalog": {
+            "get": _operation("事件类型目录（P3-M1）", tags=["platform"],
+                             ok_schema={"type": "object"}),
         },
         "/api/agent-platform/registry": {
             "get": _operation("资源注册中心总览（P3-M2）", tags=["platform"],

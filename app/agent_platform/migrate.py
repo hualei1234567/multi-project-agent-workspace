@@ -148,6 +148,16 @@ V20_TABLES = (
     "knowledge_grants",
 )
 
+#: v23（P3-M1）：事件平面扩展。退避时间列 + 事件目录表。
+V23_TABLES = ("event_catalog",)
+
+V23_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("event_outbox", (
+        # 退避重试：只让失败的那条等，不阻塞整批。NULL 表示立即可投。
+        ("next_attempt_at", "TEXT"),
+    )),
+)
+
 #: v22（P3-M2）：资源注册中心。建表语句在 schema.sql，这里只登记回滚清单。
 V22_TABLES = (
     "registry_agent_roles",
@@ -490,6 +500,41 @@ def _migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
+    """P3-M1 回填：登记已知事件类型到目录。
+
+    目录的作用是**可发现性**，不是闸门——未登记的类型仍可 emit
+    （不能因为目录没更新就丢事件），只在投递时记 warning。
+    """
+    known = (
+        ("task.created", "task", "任务创建"),
+        ("task.updated", "task", "任务更新"),
+        ("task.completed", "task", "任务完成"),
+        ("execution.started", "execution", "执行开始"),
+        ("execution.finished", "execution", "执行结束"),
+        ("delivery.created", "delivery", "交付创建"),
+        ("delivery.reviewed", "delivery", "交付验收"),
+        ("agent.started", "agent", "Agent 启动"),
+        ("agent.stopped", "agent", "Agent 停止"),
+        ("dispatch.plan_created", "dispatch", "调度计划生成"),
+        ("dispatch.item_run", "dispatch", "调度项执行"),
+        ("approval.requested", "approval", "审批申请"),
+        ("approval.decided", "approval", "审批决定"),
+        ("registry.changed", "registry", "注册中心变更"),
+        ("runtime.action", "runtime", "运行时操作"),
+        ("release.published", "release", "发布"),
+        ("canary.stopped", "release", "Canary 越阈停止"),
+    )
+    now = store.now_iso()
+    for event_type, domain, desc in known:
+        conn.execute(
+            "INSERT INTO event_catalog (event_type, domain, description,"
+            " schema_version, created_at) VALUES (?, ?, ?, 1, ?)"
+            " ON CONFLICT(event_type) DO NOTHING",
+            (event_type, domain, desc, now),
+        )
+
+
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """v3 数据修正。
 
@@ -690,6 +735,13 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         tables=V22_TABLES,
         backfill=_migrate_v21_to_v22,
         description="P3-M2：资源注册中心（角色/能力/技能/模型/运行时/兼容矩阵）",
+    ),
+    MigrationStep(
+        23,
+        tables=V23_TABLES,
+        columns=V23_COLUMN_UPGRADES,
+        backfill=_migrate_v22_to_v23,
+        description="P3-M1：事件平面扩展（退避重试 + 事件目录）",
     ),
 )
 

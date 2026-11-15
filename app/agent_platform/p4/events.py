@@ -22,6 +22,15 @@ from .. import store
 
 SCHEMA_VERSION = 1
 
+#: 退避基数（秒）。第 n 次失败后等 base * 2^(n-1)：2, 4, 8, 16, 32。
+#: 用 outbox 行的 next_attempt_at 记录，不让投递线程 sleep——
+#: sleep 会让整批事件一起等，只有该等的那条应该等。
+BACKOFF_BASE_S = 2
+
+#: 数据新鲜度阈值（秒）。
+FRESH_WITHIN_S = 300        # 5 分钟内 = FRESH
+STALE_WITHIN_S = 3600       # 1 小时内 = STALE，再久 = UNKNOWN
+
 
 def new_event_id() -> str:
     return f"evt_{uuid.uuid4().hex[:20]}"
@@ -55,9 +64,16 @@ def emit(
 
 
 def pending(conn: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
+    """待投递事件。跳过还在退避期内的。
+
+    ``next_attempt_at`` 为空表示立即可投；有值且在未来表示还在等。
+    """
+    now = store.now_iso()
     rows = conn.execute(
-        "SELECT * FROM event_outbox WHERE status = 'pending' ORDER BY occurred_at, id LIMIT ?",
-        (limit,),
+        "SELECT * FROM event_outbox WHERE status = 'pending'"
+        "  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
+        " ORDER BY occurred_at, id LIMIT ?",
+        (now, limit),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -119,19 +135,34 @@ def dispatch_pending(
         except Exception as exc:  # noqa: BLE001 - 单条事件失败不应中断整批
             attempts = row["attempts"] + 1
             status = "failed" if attempts >= max_attempts else "pending"
-            _mark(conn, row["id"], status, str(exc)[:500], attempts=attempts)
+            # 退避：还在重试期内就排到未来；到上限进 DLQ 不再排期。
+            next_at = (_backoff_at(attempts)
+                       if status == "pending" else None)
+            _mark(conn, row["id"], status, str(exc)[:500], attempts=attempts,
+                  next_attempt_at=next_at)
             stats["failed"] += 1
     return stats
 
 
+def _backoff_at(attempts: int) -> str:
+    """第 attempts 次失败后的下次尝试时间。指数退避。"""
+    delay = BACKOFF_BASE_S * (2 ** max(0, attempts - 1))
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(seconds=delay)
+            ).isoformat(timespec="seconds")
+
+
 def _mark(conn: sqlite3.Connection, outbox_id: str, status: str,
-          error: str | None, *, attempts: int) -> None:
+          error: str | None, *, attempts: int,
+          next_attempt_at: str | None = None) -> None:
     with store.write_tx(conn):
         conn.execute(
             "UPDATE event_outbox SET status = ?, attempts = ?, last_error = ?,"
+            " next_attempt_at = ?,"
             " dispatched_at = CASE WHEN ? = 'dispatched' THEN ? ELSE dispatched_at END"
             " WHERE id = ?",
-            (status, attempts, error, status, store.now_iso(), outbox_id),
+            (status, attempts, error, next_attempt_at, status,
+             store.now_iso(), outbox_id),
         )
 
 
@@ -148,3 +179,89 @@ def replay(conn: sqlite3.Connection, event_id: str, *, consumer: str) -> bool:
             (event_id,),
         )
     return max(cur.rowcount, 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# DLQ / 目录 / 新鲜度（P3-M1）
+# ---------------------------------------------------------------------------
+def dead_letters(conn: sqlite3.Connection, *, project_id: str | None = None,
+                 event_type: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """DLQ：用完重试次数的事件。
+
+    以前只有 ``status='failed'`` 这个状态，没有任何查询入口——
+    失败事件等于掉进黑洞。这里给它们一个能被看到的地方。
+    """
+    sql = ("SELECT * FROM event_outbox WHERE status = 'failed'")
+    args: list[Any] = []
+    if project_id:
+        sql += " AND project_id = ?"
+        args.append(project_id)
+    if event_type:
+        sql += " AND event_type = ?"
+        args.append(event_type)
+    sql += " ORDER BY occurred_at DESC LIMIT ?"
+    args.append(limit)
+    return [dict(r) for r in conn.execute(sql, args)]
+
+
+def dlq_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    """DLQ 汇总：按 event_type 分组计数 + 最近一条时间。"""
+    rows = conn.execute(
+        "SELECT event_type, COUNT(*) AS n, MAX(occurred_at) AS latest"
+        " FROM event_outbox WHERE status = 'failed' GROUP BY event_type"
+    ).fetchall()
+    by_type = {r["event_type"]: {"count": r["n"], "latest": r["latest"]} for r in rows}
+    total = sum(v["count"] for v in by_type.values())
+    return {"total": total, "by_type": by_type}
+
+
+def catalog(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """事件目录。可发现性用，不是强制闸门——未登记的类型仍可 emit。"""
+    rows = conn.execute(
+        "SELECT * FROM event_catalog ORDER BY domain, event_type"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def is_catalogued(conn: sqlite3.Connection, event_type: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM event_catalog WHERE event_type = ?", (event_type,)
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - 老库无目录表时视为未登记
+        return False
+    return row is not None
+
+
+def freshness(conn: sqlite3.Connection, *, project_id: str | None = None) -> dict[str, Any]:
+    """数据新鲜度。三态：FRESH / STALE / UNKNOWN。
+
+    V4.0 硬要求：无真实数据时显示 UNKNOWN，**不用 0 或 Mock 伪装**。
+    """
+    sql = "SELECT MAX(occurred_at) AS latest FROM event_outbox"
+    args: list[Any] = []
+    if project_id:
+        sql += " WHERE project_id = ?"
+        args.append(project_id)
+    row = conn.execute(sql, args).fetchone()
+    latest = row["latest"] if row else None
+    if not latest:
+        return {"state": "UNKNOWN", "latest_event_at": None,
+                "age_seconds": None, "reason": "no_events"}
+
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(latest)
+    except ValueError:
+        return {"state": "UNKNOWN", "latest_event_at": latest,
+                "age_seconds": None, "reason": "unparsable_timestamp"}
+
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age <= FRESH_WITHIN_S:
+        state = "FRESH"
+    elif age <= STALE_WITHIN_S:
+        state = "STALE"
+    else:
+        state = "UNKNOWN"
+    return {"state": state, "latest_event_at": latest,
+            "age_seconds": round(age, 1), "reason": ""}

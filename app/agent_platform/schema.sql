@@ -534,7 +534,9 @@ CREATE TABLE IF NOT EXISTS event_outbox (
   status         TEXT NOT NULL DEFAULT 'pending',     -- pending / dispatched / failed
   attempts       INTEGER NOT NULL DEFAULT 0,
   last_error     TEXT,
-  dispatched_at  TEXT
+  dispatched_at  TEXT,
+  -- v23（P3-M1）：退避重试。只让失败的那条等，不阻塞整批。
+  next_attempt_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_outbox_pending
@@ -1396,3 +1398,19 @@ CREATE TABLE IF NOT EXISTS registry_changes (
 
 CREATE INDEX IF NOT EXISTS idx_registry_changes_entity
   ON registry_changes(entity_type, entity_id, created_at);
+
+-- schema v23（P3-M1）：事件平面扩展
+--
+-- 在既有 event_outbox 上扩展，不新建第二条总线（ADR-P3-001）。
+-- 补四件事：退避重试、事件目录、DLQ 可见性。
+--
+-- 退避用 next_attempt_at 列而不是让投递线程 sleep：
+--   sleep 会让整批事件一起等，next_attempt_at 只让失败的那条等。
+
+CREATE TABLE IF NOT EXISTS event_catalog (
+  event_type     TEXT PRIMARY KEY,
+  domain         TEXT NOT NULL,
+  description    TEXT,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL
+);

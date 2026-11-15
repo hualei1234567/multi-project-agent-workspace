@@ -878,6 +878,20 @@ def list_projects(
             conn.close()
 
 
+def _freshness(conn: sqlite3.Connection) -> dict[str, Any]:
+    """全局数据新鲜度。三态 FRESH / STALE / UNKNOWN。
+
+    判据来自 event_outbox 的最近事件——事件停了就说明数据不再更新，
+    这比"接口还能返回 200"更诚实。
+    """
+    try:
+        from .p4 import events as p4_events
+        return p4_events.freshness(conn)
+    except Exception:  # noqa: BLE001 - 事件表不存在时视为未知
+        return {"state": "UNKNOWN", "latest_event_at": None,
+                "age_seconds": None, "reason": "events_unavailable"}
+
+
 def overview(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     conn = conn or store.connect()
@@ -971,6 +985,8 @@ def overview(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
             "cost_24h": cost_24h,
             "projects": projects,
             "recent_events": [dict(row) for row in events],
+            # P3-M1：数据新鲜度。没有数据就是 UNKNOWN，不用 0 伪装。
+            "freshness": _freshness(conn),
             "generated_at": store.now_iso(),
         }
     finally:

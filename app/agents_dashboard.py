@@ -1755,6 +1755,38 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ---- 事件平面（P3-M1） ---------------------------------------------
+    def _events_dlq(self, query: dict) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            items = p4_events.dead_letters(
+                conn,
+                project_id=(query.get("project_id") or [None])[0],
+                event_type=(query.get("event_type") or [None])[0],
+                limit=int((query.get("limit") or ["100"])[0]),
+            )
+            stats = p4_events.dlq_stats(conn)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "dlq_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "items": items, "total": len(items),
+                         "stats": stats})
+
+    def _events_catalog(self) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            items = p4_events.catalog(conn)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "catalog_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "items": items, "total": len(items)})
+
     # ---- 资源注册中心（P3-M2） -----------------------------------------
     def _registry_summary(self) -> None:
         conn = platform_store.connect()
@@ -3046,6 +3078,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._platform(resource_service.get_resource, rid)
             else:
                 self._not_found_route()
+        elif path == "/api/agent-platform/events/dlq":
+            self._events_dlq(query)
+            return
+        elif path == "/api/agent-platform/events/catalog":
+            self._events_catalog()
+            return
         elif path == "/api/agent-platform/registry":
             self._registry_summary()
             return
