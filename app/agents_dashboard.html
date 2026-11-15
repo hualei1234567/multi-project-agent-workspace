@@ -507,7 +507,13 @@ tbody tr:last-child td { border-bottom: none; }
 .acard .desc { margin-top: 6px; font-size: 12.5px; color: var(--text-2);
   white-space: normal; overflow-wrap: anywhere; word-break: break-word; line-height: 1.5; }
 .acard .foot:last-of-type { margin-top: auto; padding-top: 8px; }
-.acard .foot { margin-top: 8px; font-size: 11px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+.acard .foot { margin-top: 8px; font-size: 11px; color: var(--muted);
+  display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+/* 执行摘要可能很长（中文 70 字 ≈ 490px），必须能收缩并截断，
+   否则会把卡片撑出容器。iPad 竖屏实测溢出 97px。 */
+.acard .foot > span { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.acard { min-width: 0; overflow: hidden; }
 .tool-tag { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; color: var(--text-2); }
 .steps { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display: none; }
@@ -622,10 +628,32 @@ tbody tr:last-child td { border-bottom: none; }
 .file-row { cursor: pointer; }
 .file-row:hover td { color: var(--primary); }
 
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
-.set-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 16px 18px; display: grid; gap: 12px; align-content: start; }
-.set-card h3 { margin: 0; font-size: 14px; font-weight: 680; }
-.set-card .hint { font-size: 11.5px; color: var(--muted); }
+/* 设置页：统一三列栅格。卡片等宽、同行等高、内边距与标题样式一致 */
+.settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px; align-items: stretch; align-content: start; }
+/* 项目页：项目信息占 2 列 2 行（表单最高），生命周期/团队模板叠在右侧列 */
+.settings-grid > .sc-info { grid-column: 1 / span 2; grid-row: 1 / span 2; }
+.settings-grid > .sc-life { grid-column: 3; grid-row: 1; }
+.settings-grid > .sc-tpl  { grid-column: 3; grid-row: 2; }
+.settings-grid > .sc-src  { grid-column: 1 / -1; }
+.set-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.set-card > h3 { margin: 0; padding-bottom: 9px; border-bottom: 1px solid var(--line);
+  font-size: 13.5px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+.set-card .hint { font-size: 11.5px; line-height: 1.65; color: var(--muted); }
+.set-card > .form-grid { flex: 1; }
+.set-card .seg { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+.set-card .seg button { padding: 7px 10px; }
+.settings-src { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; }
+@media (max-width: 1180px) {
+  .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-grid > .sc-info { grid-column: 1 / -1; grid-row: auto; }
+  .settings-grid > .sc-life, .settings-grid > .sc-tpl { grid-column: auto; grid-row: auto; }
+}
+@media (max-width: 767px) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-src { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: var(--panel-2); color: var(--text-2); padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
@@ -1179,7 +1207,11 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 
 
 /* ---------- 主题化下拉 ---------- */
-.nsel { position: relative; display: inline-flex; vertical-align: middle; }
+.nsel { position: relative; display: inline-flex; vertical-align: middle;
+  min-width: 0; max-width: 100%; overflow: hidden; }
+/* 原生 select 作为无障碍兜底被隐藏在这里；不加约束会把父级撑破 */
+.nsel > select { position: absolute; width: 1px; height: 1px;
+  opacity: 0; pointer-events: none; left: 0; top: 0; }
 .nsel > select {
   position: absolute; inset: 0; width: 100%; height: 100%;
   opacity: 0; pointer-events: none; /* 原生只做数据源与无障碍语义 */
@@ -1207,7 +1239,9 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 }
 .nsel.open .nsel-arrow { transform: translateY(1px) rotate(-135deg); }
 .nsel-menu {
-  position: absolute; left: 0; top: calc(100% + 7px); min-width: max(100%, 132px); width: max-content; max-width: 280px;
+  /* 靠右触发点用 right:0 向左展开，否则菜单会飞出视口右边界。
+     由 JS 在打开时根据触发点位置二选一加 .nsel-left 类。 */
+  position: absolute; left: 0; top: calc(100% + 7px); min-width: max(100%, 132px); width: max-content; max-width: min(280px, calc(100vw - 24px));
   padding: 6px 6px 8px; border-radius: 14px; z-index: 900;
   background: linear-gradient(180deg, var(--panel), color-mix(in srgb, var(--panel) 94%, black 6%));
   -webkit-backdrop-filter: blur(16px) saturate(1.15); backdrop-filter: blur(16px) saturate(1.15);
@@ -1317,6 +1351,88 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   min-width: 48px; text-align: center; }
 .btn-sm { padding: 3px 10px; font-size: 11.5px; }
 .btn-sm:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 移动端项目头：手机上 hero 占半屏、标题被挤成两行。
+   压缩为紧凑形态：图标小一号、动作按钮换到下一行、仓库路径折行显示。 */
+/* iPad 竖屏（768）：#docs-table min-width:760px 加上 padding 就溢出，
+   同样需要容器内滚动。这条必须独立于 767 断点。 */
+@media (max-width: 1023px) {
+  .panel-body, .panel-body.flush, .table-wrap, .ws-panel, .p4-wrap {
+    overflow-x: auto; max-width: 100%;
+  }
+  .sec-head .inline-actions { flex-wrap: wrap; }
+  /* grid 子项默认 min-width:auto 会被内容撑破，导致整个 main 超宽。
+     这是 iPad 上 sec-head / ws-filterbar 溢出的根因。 */
+  #view > section, #view > *, .sec-head, .ws-toolbar, .ws-filterbar { min-width: 0; }
+  .ws-toolbar { flex-wrap: wrap; justify-content: flex-start; }
+  .ws-filterbar { flex-wrap: wrap; }
+  .ws-views { margin-left: 0; }
+}
+
+@media (max-width: 767px) {
+  .proj-hero { padding: 12px; gap: 10px; }
+  .proj-hero-icon { width: 40px; height: 40px; border-radius: 11px; font-size: 17px; }
+  .proj-hero-main h2 { font-size: 17px; }
+  .proj-hero-main { gap: 3px; }
+  /* 动作按钮整行下移，不跟标题抢宽度 */
+  .proj-hero-actions { margin-left: 0; width: 100%; margin-top: 4px; }
+  .proj-hero-actions .btn { flex: 1 1 auto; justify-content: center; }
+
+  /* Tab 横向滚动而不是换三行——换行会让首屏全是 Tab */
+  .tabs {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    margin: 0 -12px; padding: 0 12px; border-bottom: 1px solid var(--line);
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: none; padding: 9px 12px; white-space: nowrap; }
+
+  /* 仓库路径太长时折行，不要撑破卡片 */
+  .proj-meta { font-size: 11px; gap: 4px 10px; }
+  .proj-meta code { overflow-wrap: anywhere; word-break: break-all; }
+
+  /* 搜索框在 390 屏上被 min-width:240px 撑破容器，改为可自由收缩 */
+  .search.global-search { min-width: 0; flex: 1 1 auto; max-width: none; }
+  .topbar .toolbar { flex-wrap: nowrap; gap: 6px; min-width: 0; max-width: 100%; }
+  .topbar .toolbar .icon-btn { flex: none; }
+  /* 搜索占满剩余宽度，图标按钮保持 30px 不缩 */
+  .search.global-search { width: auto; }
+
+  /* ---- 宽内容一律容器内滚动，不要撑破页面 ----
+     有 min-width 的表格（#wt 520px、#docs-table 760px）在 390 屏上必然溢出，
+     父容器必须能滚。这是这轮巡检发现的 4 处溢出的共同根因。 */
+  .panel-body, .panel-body.flush, .table-wrap, .ws-panel, .p4-wrap {
+    overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%;
+  }
+  /* p4 的 tab 条也是横向滚动，不换行 */
+  .p4-tabs {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+    margin: 0 -12px; padding: 0 12px;
+  }
+  .p4-tabs::-webkit-scrollbar { display: none; }
+  .p4-tabs .tab { flex: none; white-space: nowrap; }
+
+  /* 筛选条里的 label 必须能收缩，否则内部 .nsel 会把整行撑破 */
+  .ws-filterbar label { min-width: 0; max-width: 100%; overflow: hidden; }
+
+  /* 任务筛选条：手机上堆叠而不是挤成一行 */
+  .ws-toolbar, .ws-filterbar {
+    display: flex; flex-wrap: wrap; justify-content: flex-start;
+    gap: 8px; align-items: center; min-width: 0;
+  }
+  .ws-filterbar label { flex: 0 1 auto; min-width: 0; }
+  .ws-filterbar select, .tf-q { max-width: 100%; min-width: 0; }
+
+  /* 自定义下拉菜单：absolute 定位，靠右时会飞出屏幕，限制最大宽度 */
+  .nsel-menu { max-width: calc(100vw - 32px); }
+
+  /* grid 子项同样需要 min-width:0 */
+  #view > section, #view > *, .sec-head, .ws-toolbar, .ws-filterbar { min-width: 0; }
+
+  /* 标题行右侧的动作按钮组换行，不与标题抢宽度 */
+  .sec-head { gap: 6px; }
+  .sec-head .inline-actions { width: 100%; margin-left: 0 !important; }
+}
 
 @media (max-width: 900px) {
   .sess-row { grid-template-columns: 8px 1fr auto; }
@@ -6072,14 +6188,14 @@ function projectSettingsCard() {
   const d = APP.projectDetail || p;
   const archived = isArchivedProject(d) || isArchivedProject(p);
   if (APP.projectDetailLoading && !APP.projectDetail) {
-    return `<div class="set-card"><h3>项目信息</h3>${skeletonBox(150)}</div>`;
+    return `<div class="set-card sc-info"><h3>项目信息</h3>${skeletonBox(150)}</div>`;
   }
   const errBanner = APP.projectDetailErr
     ? `<div class="banner warn" role="alert"><span class="grow">项目详情接口不可用：${esc(errText(APP.projectDetailErr))}；当前展示列表快照。</span>
         <button class="btn sm" id="ps-retry-detail">重试</button></div>` : "";
   const version = d.version != null ? String(d.version) : "";
   return `
-    <div class="set-card" data-testid="project-settings">
+    <div class="set-card sc-info" data-testid="project-settings">
       <h3>项目信息</h3>
       ${errBanner}
       ${APP.settingsErr ? `<div class="banner" role="alert" data-testid="settings-error"><span class="grow">${esc(APP.settingsErr)}</span></div>` : ""}
@@ -6115,12 +6231,12 @@ function lifecycleCard() {
   if (!p) return "";
   const archived = isArchivedProject(APP.projectDetail) || isArchivedProject(p);
   return `
-    <div class="set-card">
+    <div class="set-card sc-life">
       <h3>项目生命周期</h3>
       <div class="kvline"><span class="k">当前状态</span><span class="v">${statusBadge(archived ? "archived" : (p.status || "active"))}</span></div>
       ${archived ? `<div class="kvline"><span class="k">归档时间</span><span class="v">${esc(fmtDateTime((APP.projectDetail || p).archived_at))}</span></div>` : ""}
       <p class="hint" style="margin:0">归档后项目进入只读：任务创建/流转、交付验收、设置保存全部禁用；已采集数据保留，可随时恢复。</p>
-      <div class="inline-actions">
+      <div class="inline-actions push">
         ${archived
           ? `<button class="btn primary" id="ps-restore">恢复项目</button>`
           : `<button class="btn danger" id="ps-archive" data-testid="archive-project">归档项目</button>`}
@@ -6138,13 +6254,13 @@ function templateCard() {
   const name = tpl && String(tpl.template_key || tpl.key || "") === String(key) ? (tpl.name || "—") : "—";
   const archived = isArchivedProject(APP.projectDetail) || isArchivedProject(p);
   return `
-    <div class="set-card" data-testid="team-template">
+    <div class="set-card sc-tpl" data-testid="team-template">
       <h3>团队模板</h3>
       <div class="kvline"><span class="k">当前模板</span><span class="v mono">${esc(String(key))}${ver != null ? ` v${esc(String(ver))}` : ""}</span></div>
       <div class="kvline"><span class="k">模板名称</span><span class="v">${esc(name)}</span></div>
       ${APP.teamTemplateErr ? `<div class="hint">模板详情接口暂不可用，仅展示项目上的模板键。</div>` : ""}
       <p class="hint" style="margin:0">预览只计算差异、不落库；应用时保留现有角色实例，运行中的 Agent 不会被删除。</p>
-      <div class="inline-actions">
+      <div class="inline-actions push">
         <button class="btn" id="ps-template-preview" data-testid="template-preview" ${archived ? "disabled" : ""}
           title="${archived ? "项目已归档，写操作已禁用" : "预览应用模板"}">预览应用模板</button>
       </div>
@@ -6160,32 +6276,39 @@ function settingsCards(withProject) {
     ${projectCards}
     <div class="set-card">
       <h3>外观</h3>
-      <div class="seg" id="set-theme">
-        <button data-theme-btn="light" class="${theme !== "dark" ? "active" : ""}">浅色</button>
-        <button data-theme-btn="dark" class="${theme === "dark" ? "active" : ""}">深色</button>
+      <div class="field"><label>主题</label>
+        <div class="seg" id="set-theme">
+          <button data-theme-btn="light" class="${theme !== "dark" ? "active" : ""}">浅色</button>
+          <button data-theme-btn="dark" class="${theme === "dark" ? "active" : ""}">深色</button>
+        </div>
       </div>
-      <div class="hint">主题保存在本机 localStorage，不修改任何项目数据。</div>
+      <div class="hint">保存在本机 localStorage，不修改任何项目数据。</div>
     </div>
     <div class="set-card">
       <h3>刷新间隔</h3>
       <div class="field"><label for="set-interval">自动刷新间隔</label>
         <select id="set-interval">${REFRESH_CHOICES.map(v => `<option value="${v}" ${v === ms ? "selected" : ""}>${intervalLabel(v)}</option>`).join("")}</select>
       </div>
-      <div class="hint">默认 5 分钟；可改 10 分钟或更短。会话与执行流等局部区域仍按自身节奏刷新，页面隐藏时自动暂停。</div>
-    </div>
-    <div class="set-card">
-      <h3>数据源</h3>
-      <div class="kvline"><span class="k">项目</span><span class="v mono">GET/PATCH /api/projects/&lt;id&gt;</span></div>
-      <div class="kvline"><span class="k">生命周期</span><span class="v mono">POST /archive · /restore</span></div>
-      <div class="kvline"><span class="k">团队模板</span><span class="v mono">POST /team/preview · /team/apply</span></div>
-      <div class="kvline"><span class="k">任务</span><span class="v mono">/api/projects/&lt;id&gt;/tasks</span></div>
-      <div class="kvline"><span class="k">交付</span><span class="v mono">/api/projects/&lt;id&gt;/deliveries</span></div>
-      <div class="kvline"><span class="k">审计</span><span class="v mono">GET /api/audit-logs</span></div>
-      <div class="hint">数据由本机 Agent 运行时与项目仓库扫描提供；Token 为 transcript 估算值，缺失显示 —。</div>
+      <div class="hint">默认 5 分钟，可改 10 分钟或更短。会话与执行流按自身节奏刷新，页面隐藏时自动暂停。</div>
     </div>
     <div class="set-card">
       <h3>写操作范围</h3>
-      <p class="hint" style="margin:0">项目信息、归档/恢复、团队模板、任务、交付验收会写入平台 SQLite 并记录审计；外观与刷新间隔只写 localStorage。归档项目全部写入口禁用。</p>
+      <div class="kvline"><span class="k">写入平台库</span><span class="v">项目信息、归档/恢复、团队模板、任务、交付验收</span></div>
+      <div class="kvline"><span class="k">仅本机</span><span class="v">外观、刷新间隔（localStorage）</span></div>
+      <div class="kvline"><span class="k">归档后</span><span class="v">全部写入口禁用，数据保留可恢复</span></div>
+      <div class="hint">写入平台 SQLite 的操作都会记录审计日志。</div>
+    </div>
+    <div class="set-card sc-src">
+      <h3>数据源</h3>
+      <div class="settings-src">
+        <div class="kvline"><span class="k">项目</span><span class="v mono">GET/PATCH /api/projects/&lt;id&gt;</span></div>
+        <div class="kvline"><span class="k">生命周期</span><span class="v mono">POST /archive · /restore</span></div>
+        <div class="kvline"><span class="k">团队模板</span><span class="v mono">POST /team/preview · /team/apply</span></div>
+        <div class="kvline"><span class="k">任务</span><span class="v mono">/api/projects/&lt;id&gt;/tasks</span></div>
+        <div class="kvline"><span class="k">交付</span><span class="v mono">/api/projects/&lt;id&gt;/deliveries</span></div>
+        <div class="kvline"><span class="k">审计</span><span class="v mono">GET /api/audit-logs</span></div>
+      </div>
+      <div class="hint">数据由本机 Agent 运行时与项目仓库扫描提供；Token 为 transcript 估算值，缺失显示 —。</div>
     </div>`;
 }
 
@@ -7792,13 +7915,16 @@ function enhanceSelect(sel) {
   // 浮层用 fixed 定位：面板普遍是 overflow:hidden，absolute 会被裁掉底部（真实缺陷）。
   const positionMenu = (rect) => {
     const gap = 7, vh = window.innerHeight, vw = window.innerWidth;
-    const width = Math.max(rect.width, 168);
+    // 菜单宽度不能超过视口可用宽度——否则靠右的触发点会让菜单右边缘飞出屏幕
+    // （iPhone 390 屏实测溢出 33px）。minWidth 也必须跟着收，否则夹不住。
+    const avail = vw - 24;
+    const width = Math.min(Math.max(rect.width, 168), avail);
     const maxH = Math.max(180, Math.min(320, Math.round(vh * 0.55)));
     menu.style.position = "fixed";
     menu.style.maxHeight = `${maxH}px`;
     menu.style.overflowY = "auto";
     menu.style.minWidth = `${width}px`;
-    menu.style.maxWidth = `${Math.min(340, vw - 24)}px`;
+    menu.style.maxWidth = `${Math.min(340, avail)}px`;
     menu.style.left = `${Math.max(12, Math.min(rect.left, vw - width - 12))}px`;
     const below = vh - rect.bottom - gap;
     const above = rect.top - gap;
