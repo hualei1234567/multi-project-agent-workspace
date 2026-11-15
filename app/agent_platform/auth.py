@@ -31,7 +31,26 @@ TOKEN_HEADER = "Authorization"
 LOOPBACK_ONLY_PATHS = frozenset({"/api/open"})
 
 #: 免鉴权路径：健康探针与令牌换取页需要能在未登录时访问。
-PUBLIC_PATHS = frozenset({"/healthz", "/api/auth/token"})
+#:
+#: PWA 外壳资源也在其中（P3-M6）：Service Worker 的 `install` 预缓存由浏览器
+#: 发起，**不带 Authorization 头**（令牌存在 localStorage，不进 Cookie），
+#: 若这些路径要求令牌，远端 HTTPS 访问时预缓存会整批 401，离线能力形同虚设。
+#: 这些资源只有 manifest / 脚本 / 图标 / 离线页，不含任何业务数据。
+PUBLIC_PATHS = frozenset({
+    "/healthz",
+    "/api/auth/token",
+    "/manifest.webmanifest",
+    "/sw.js",
+    "/offline.html",
+})
+
+#: 免鉴权前缀：图标有多条路径，逐条登记容易漏。
+PUBLIC_PREFIXES = ("/icons/",)
+
+
+def is_public_path(path: str) -> bool:
+    """路径是否无需令牌（也跳过治理闸门，与既有 PUBLIC_PATHS 一致）。"""
+    return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
 
 
 def token_path() -> Path:
@@ -112,7 +131,7 @@ def check_request(
     auth_enabled: bool | None = None,
 ) -> tuple[bool, str]:
     """返回 (是否放行, 拒绝原因)。放行时原因为空。"""
-    if path in PUBLIC_PATHS:
+    if is_public_path(path):
         return True, ""
 
     enabled = auth_enabled

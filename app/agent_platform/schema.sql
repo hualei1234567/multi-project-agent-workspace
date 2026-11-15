@@ -1080,19 +1080,25 @@ CREATE TABLE IF NOT EXISTS device_sessions (
   UNIQUE(device_id, session_id)
 );
 
+-- v26 起本表多了 4 列（见文件末尾「schema v26」段）。CREATE TABLE 是权威 DDL，
+-- 老库的列由 migrate.COLUMN_UPGRADES 补齐；两处必须同时改，否则新库缺列。
 CREATE TABLE IF NOT EXISTS device_commands (
-  id          TEXT PRIMARY KEY,
-  device_id   TEXT NOT NULL,
-  project_id  TEXT,
-  session_id  TEXT,
-  instruction TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'pending',
-  created_at  TEXT NOT NULL,
-  started_at  TEXT,
-  finished_at TEXT,
-  result      TEXT,
-  error       TEXT,
-  actor       TEXT
+  id              TEXT PRIMARY KEY,
+  device_id       TEXT NOT NULL,
+  project_id      TEXT,
+  session_id      TEXT,
+  instruction     TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending',
+  created_at      TEXT NOT NULL,
+  started_at      TEXT,
+  finished_at     TEXT,
+  result          TEXT,
+  error           TEXT,
+  actor           TEXT,
+  expires_at      TEXT,             -- 绝对过期时刻；NULL 时按 created_at + TTL 判定
+  lease_expires_at TEXT,            -- 认领租约到期；只用于识别僵尸认领，不自动重派
+  attempt         INTEGER NOT NULL DEFAULT 0,   -- 被认领次数（幂等证据）
+  error_summary   TEXT              -- 失败/过期原因短摘要，result/error 保留完整输出
 );
 
 CREATE TABLE IF NOT EXISTS team_sessions (
@@ -1477,3 +1483,77 @@ CREATE TABLE IF NOT EXISTS budget_events (
 
 CREATE INDEX IF NOT EXISTS idx_budget_events_budget
   ON budget_events(budget_id, created_at);
+
+
+-- ===========================================================================
+-- schema v26（P3-M4）：Mac Gateway 设备命令队列
+--
+-- 设备认证 / 心跳 / 撤销已有落点：registry_runtimes（v22）。这里不重复造设备表，
+-- gateway_devices 只补「Gateway 进程自身的注册信息」——凭据摘要与出站拉取状态。
+--
+-- 为什么凭据只存摘要：Gateway 只做出站长轮询，平台侧必须能校验「这台设备是不是
+-- 它自称的那台」，但不需要能把凭据还原出来。存 SHA-256 摘要即可，泄漏了也用不了。
+CREATE TABLE IF NOT EXISTS gateway_devices (
+  id             TEXT PRIMARY KEY,          -- 与 device_id 一致
+  runtime_id     TEXT,                      -- 指向 registry_runtimes.id，可为空（仅内测）
+  credential_hash TEXT,                     -- sha256(credential)；NULL = 未登记凭据
+  credential_issued_at TEXT,
+  last_seen_at   TEXT,                      -- 最近一次出站拉取时间
+  last_seen_ip   TEXT,                      -- 只做运维排障，不参与鉴权
+  cli_version    TEXT,                      -- 设备上报的 claude --version，未知为 NULL
+  status         TEXT NOT NULL DEFAULT 'active',
+                 -- active / revoked；撤销时同步 registry_runtimes
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_gateway_devices_status
+  ON gateway_devices(status, last_seen_at DESC);
+
+-- 命令队列的拉取路径：按设备 + 状态扫描。没有这个索引时
+-- pull 会全表扫，设备多了就是 O(全部命令)。
+CREATE INDEX IF NOT EXISTS idx_device_commands_device_status
+  ON device_commands(device_id, status, created_at);
+
+-- 过期扫描：expire_stale 按状态 + 时间过滤，同理需要索引。
+CREATE INDEX IF NOT EXISTS idx_device_commands_status_created
+  ON device_commands(status, created_at);
+
+
+-- schema v27（P3-M5）：Global Task 统一任务视图
+--
+-- 为什么不能复用 tasks 表：tasks.project_id 是 NOT NULL，Global Task 天生跨项目。
+-- 放宽那个约束会破坏项目隔离语义（35 项隔离测试与全部既有查询都依赖它）。
+-- 所以独立建模 + link 表：Global Task 只有「标题/状态/负责人」，
+-- 每个项目里的工作仍然是普通 tasks 行，靠 global_task_links 挂上来。
+--
+-- 状态**不复制**：聚合状态由 rollup_status 现算（读 tasks 的实时状态），
+-- 避免出现两份状态互相打脸。没有 link 的任务如实算 open，不假装完成。
+CREATE TABLE IF NOT EXISTS global_tasks (
+  id                 TEXT PRIMARY KEY,
+  global_key         TEXT NOT NULL UNIQUE,
+  title              TEXT NOT NULL,
+  description        TEXT,
+  status             TEXT NOT NULL DEFAULT 'open',  -- open / in_progress / done / cancelled
+  priority           TEXT NOT NULL DEFAULT 'P2',
+  owner_principal_id TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  version            INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS global_task_links (
+  id             TEXT PRIMARY KEY,
+  global_task_id TEXT NOT NULL REFERENCES global_tasks(id),
+  project_id     TEXT NOT NULL REFERENCES agent_projects(id),
+  task_id        TEXT NOT NULL REFERENCES tasks(id),
+  link_role      TEXT NOT NULL DEFAULT 'implements',  -- implements / verifies / blocks
+  created_at     TEXT NOT NULL,
+  UNIQUE(global_task_id, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_global_task_links_task
+  ON global_task_links(task_id);
+
+CREATE INDEX IF NOT EXISTS idx_global_task_links_project
+  ON global_task_links(project_id, global_task_id);

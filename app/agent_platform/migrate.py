@@ -151,6 +151,29 @@ V20_TABLES = (
 #: v25（P3-M7）：预算与预算事件。Full Auto 的刹车。
 V25_TABLES = ("budgets", "budget_events")
 
+#: v26（P3-M4）：Mac Gateway。设备注册表（凭据摘要 + 出站拉取状态）。
+#: 设备身份/撤销的权威仍是 ``registry_runtimes``（v22），这张表只补 Gateway 进程自身。
+V26_TABLES = ("gateway_devices",)
+
+#: v27（P3-M5）：Global Task 统一任务视图。
+#: 独立建模，**不放宽 tasks.project_id**（那个 NOT NULL 是项目隔离的地基）。
+V27_TABLES = ("global_tasks", "global_task_links")
+
+#: v26 给 ``device_commands`` 补的列。
+#: 为什么是这几列：
+#: * ``expires_at``      —— 下发的命令不能无限期挂着；过期即 EXPIRED，不补执行。
+#: * ``lease_expires_at``—— 认领后租约到期，用于识别僵尸认领（不自动重派）。
+#: * ``attempt``         —— 被认领次数，是幂等的可核对证据（同一命令只能执行一次）。
+#: * ``error_summary``   —— 失败/过期原因短摘要；完整输出仍在 result / error。
+V26_COLUMN_UPGRADES: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("device_commands", (
+        ("expires_at", "TEXT"),
+        ("lease_expires_at", "TEXT"),
+        ("attempt", "INTEGER NOT NULL DEFAULT 0"),
+        ("error_summary", "TEXT"),
+    )),
+)
+
 #: v24（P3-M3）：三模式候选表 + 计划模式列。
 V24_TABLES = ("dispatch_plan_candidates",)
 
@@ -767,6 +790,17 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         25,
         tables=V25_TABLES,
         description="P3-M7：预算与预算事件（超支暂停新任务，不强杀运行中）",
+    ),
+    MigrationStep(
+        26,
+        tables=V26_TABLES,
+        columns=V26_COLUMN_UPGRADES,
+        description="P3-M4：Mac Gateway 设备注册 + 命令队列幂等/过期列",
+    ),
+    MigrationStep(
+        27,
+        tables=V27_TABLES,
+        description="P3-M5：Global Task 统一任务视图（独立建模 + link 表，不放宽 project_id）",
     ),
 )
 

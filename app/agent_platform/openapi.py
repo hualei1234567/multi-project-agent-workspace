@@ -172,6 +172,12 @@ API_PATHS: list[tuple[str, str]] = [
     ("POST", "/api/runtime/actions/{action_key}/run"),
     ("GET", "/api/agent-platform/cross-project"),
     ("GET", "/api/agent-platform/budgets"),
+    ("GET", "/api/agent-platform/full-auto"),
+    ("GET", "/api/projects/{project_id}/full-auto/preflight"),
+    ("GET", "/api/projects/{project_id}/full-auto/plan"),
+    ("POST", "/api/projects/{project_id}/full-auto/run"),
+    ("GET", "/api/projects/{project_id}/circuit"),
+    ("POST", "/api/projects/{project_id}/circuit/reset"),
     ("GET", "/api/projects/{project_id}/budgets"),
     ("POST", "/api/projects/{project_id}/budgets"),
     ("GET", "/api/projects/{project_id}/budget-status"),
@@ -179,6 +185,13 @@ API_PATHS: list[tuple[str, str]] = [
     ("GET", "/api/agent-platform/events/dlq"),
     ("GET", "/api/agent-platform/events/catalog"),
     ("GET", "/api/agent-platform/registry"),
+    ("GET", "/api/agent-platform/global-tasks"),
+    ("POST", "/api/agent-platform/global-tasks"),
+    ("GET", "/api/agent-platform/global-tasks/{global_task_id}"),
+    ("GET", "/api/agent-platform/global-tasks/{global_task_id}/rollup"),
+    ("POST", "/api/agent-platform/global-tasks/{global_task_id}/links"),
+    ("DELETE", "/api/agent-platform/global-tasks/{global_task_id}/links/{link_id}"),
+    ("GET", "/api/agent-platform/global-overview"),
     ("GET", "/api/projects/{project_id}/registry/summary"),
     ("GET", "/api/projects/{project_id}/registry/roles"),
     ("POST", "/api/projects/{project_id}/registry/roles"),
@@ -707,6 +720,27 @@ def _paths() -> dict[str, Any]:
             "get": _operation("全平台预算总览（P3-M7）", tags=["platform"],
                              ok_schema={"type": "object"}),
         },
+        "/api/agent-platform/full-auto": {
+            "get": _operation("Full Auto 总览（M9）", tags=["platform"],
+                             ok_schema={"type": "object"}),
+        },
+        "/api/projects/{project_id}/full-auto/preflight": {
+            "get": project_op("get", "Full Auto 五道前置检查（fail-closed）")[2],
+        },
+        "/api/projects/{project_id}/full-auto/plan": {
+            "get": project_op("get", "试算一轮会派发什么（不执行）")[2],
+        },
+        "/api/projects/{project_id}/full-auto/run": {
+            "post": project_op("post", "执行一轮（默认 dry_run，真跑需显式 false）",
+                               body={"type": "object"})[2],
+        },
+        "/api/projects/{project_id}/circuit": {
+            "get": project_op("get", "熔断状态（连续失败自动暂停）")[2],
+        },
+        "/api/projects/{project_id}/circuit/reset": {
+            "post": project_op("post", "人工恢复熔断（必须显式调用）",
+                               body={"type": "object"})[2],
+        },
         "/api/projects/{project_id}/budgets": {
             "get": project_op("get", "项目预算列表（P3-M7）")[2],
             "post": project_op("post", "设置项目预算（同作用域+窗口覆盖）",
@@ -729,6 +763,55 @@ def _paths() -> dict[str, Any]:
         "/api/agent-platform/registry": {
             "get": _operation("资源注册中心总览（P3-M2）", tags=["platform"],
                              ok_schema={"type": "object"}),
+        },
+        "/api/agent-platform/global-tasks": {
+            "get": _operation(
+                "Global Task 列表（含 link 数与聚合状态，P3-M5）", tags=["platform"],
+                params=[_param("status"), _param("priority"), _param("project"), _param("q")],
+                ok_schema={"type": "object"},
+            ),
+            "post": _operation(
+                "创建 Global Task（跨项目统一任务，独立于 tasks）", tags=["platform"],
+                body={"type": "object"}, ok_schema={"type": "object"},
+                errors=(409, 422),
+            ),
+        },
+        "/api/agent-platform/global-tasks/{global_task_id}": {
+            "get": _operation(
+                "Global Task 详情（含各项目关联任务）", tags=["platform"],
+                params=[_param("global_task_id", where="path", required=True)],
+                ok_schema={"type": "object"}, errors=(404,),
+            ),
+        },
+        "/api/agent-platform/global-tasks/{global_task_id}/rollup": {
+            "get": _operation(
+                "聚合状态（无 link 时返回 open 且 no_links=true，不假装完成）",
+                tags=["platform"],
+                params=[_param("global_task_id", where="path", required=True)],
+                ok_schema={"type": "object"}, errors=(404,),
+            ),
+        },
+        "/api/agent-platform/global-tasks/{global_task_id}/links": {
+            "post": _operation(
+                "挂接项目任务（校验 task 属于该项目）", tags=["platform"],
+                params=[_param("global_task_id", where="path", required=True)],
+                body={"type": "object"}, ok_schema={"type": "object"},
+                errors=(403, 404, 409, 422),
+            ),
+        },
+        "/api/agent-platform/global-tasks/{global_task_id}/links/{link_id}": {
+            "delete": _operation(
+                "解除项目任务关联（需 link 所属项目的写权限）", tags=["platform"],
+                params=[_param("global_task_id", where="path", required=True),
+                        _param("link_id", where="path", required=True)],
+                ok_schema={"type": "object"}, errors=(403, 404),
+            ),
+        },
+        "/api/agent-platform/global-overview": {
+            "get": _operation(
+                "跨项目统一视图：按项目分组 + 统计（P3-M5）", tags=["platform"],
+                ok_schema={"type": "object"},
+            ),
         },
         "/api/projects/{project_id}/registry/summary": {
             "get": project_op("get", "Registry 总览（P3-M2）")[2],

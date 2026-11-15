@@ -371,6 +371,14 @@ def command_result(
         ).fetchone()
         if row is None:
             raise WindowError("not_found", 404, "指令不存在")
+        # 已被 Gateway 判为过期（或显式取消）的命令不能再被回报成成功。
+        # V4.0：「离线或未送达命令不得显示成功」——过期后迟到上报的 done
+        # 会让已过期的事实被覆盖掉，等于伪造完成。
+        if str(row["status"] or "") in {"expired", "cancelled", "canceled"}:
+            raise WindowError(
+                "command_closed", 409,
+                f"指令已结束（{row['status']}），不能再回报结果",
+            )
         status = "done" if ok else "failed"
         conn.execute(
             "UPDATE device_commands SET status = ?, finished_at = ?, result = ?, error = ?,"

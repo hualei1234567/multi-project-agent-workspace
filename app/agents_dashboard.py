@@ -57,11 +57,15 @@ try:  # 以脚本方式运行时 app/ 已在 sys.path；以模块方式运行时
     from agent_platform import approvals as approval_service
     from agent_platform import auth as auth_service
     from agent_platform import budget as budget_service
+    from agent_platform import circuit as circuit_service
     from agent_platform import config as platform_config
     from agent_platform import executor as executor_service
     from agent_platform import executor_policy
     from agent_platform import facade as facade_service
+    from agent_platform import full_auto as full_auto_service
+    from agent_platform import global_task as global_task_service
     from agent_platform import openapi as openapi_service
+    from agent_platform import pwa as pwa_service
     from agent_platform import registry as registry_service
     from agent_platform import resources as resource_service
     from agent_platform import runtime as runtime_service
@@ -88,11 +92,15 @@ except ImportError:  # pragma: no cover
     from app.agent_platform import approvals as approval_service
     from app.agent_platform import auth as auth_service
     from app.agent_platform import budget as budget_service
+    from app.agent_platform import circuit as circuit_service
     from app.agent_platform import config as platform_config
     from app.agent_platform import executor as executor_service
     from app.agent_platform import executor_policy
     from app.agent_platform import facade as facade_service
+    from app.agent_platform import full_auto as full_auto_service
+    from app.agent_platform import global_task as global_task_service
     from app.agent_platform import openapi as openapi_service
+    from app.agent_platform import pwa as pwa_service
     from app.agent_platform import registry as registry_service
     from app.agent_platform import resources as resource_service
     from app.agent_platform import runtime as runtime_service
@@ -1404,6 +1412,53 @@ def _team_status(project_id: str) -> dict[str, Any]:
         conn.close()
 
 
+def _full_auto_preflight(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return full_auto_service.preflight(conn, project_id)
+    finally:
+        conn.close()
+
+
+def _full_auto_plan(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return full_auto_service.plan_round(conn, project_id)
+    finally:
+        conn.close()
+
+
+def _full_auto_run(project_id: str, *, dry_run: bool = True) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return full_auto_service.run_round(conn, project_id, dry_run=dry_run)
+    finally:
+        conn.close()
+
+
+def _circuit_status(project_id: str) -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return circuit_service.status(conn, project_id)
+    finally:
+        conn.close()
+
+
+def _circuit_reset(project_id: str, *, released_by: str = "local",
+                   note: str = "") -> dict[str, Any]:
+    conn = platform_store.connect()
+    try:
+        platform_store.init_db(conn)
+        return circuit_service.reset(conn, project_id,
+                                     released_by=released_by, note=note)
+    finally:
+        conn.close()
+
+
 def _project_budgets(project_id: str) -> dict[str, Any]:
     conn = platform_store.connect()
     try:
@@ -1583,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
 
         只读健康检查（``PUBLIC_PATHS``）不走本闸门，治理故障时仍能探活。
         """
-        if path in auth_service.PUBLIC_PATHS:
+        if auth_service.is_public_path(path):
             return True
 
         address = self.client_address[0] if self.client_address else None
@@ -1809,6 +1864,20 @@ class Handler(BaseHTTPRequestHandler):
                              "detail": {"code": "internal_error", "message": "内部错误"}})
         finally:
             conn.close()
+
+    # ---- Full Auto（M9） -----------------------------------------------
+    def _full_auto_status(self, query: dict) -> None:
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            project_id = (query.get("project_id") or [None])[0]
+            data = full_auto_service.status(conn, project_id)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "full_auto_unavailable", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, **data})
 
     # ---- 预算（P3-M7） -------------------------------------------------
     def _budgets_summary(self) -> None:
@@ -2082,6 +2151,104 @@ class Handler(BaseHTTPRequestHandler):
         sql += " ORDER BY created_at DESC LIMIT 200"
         rows = [dict(r) for r in conn.execute(sql, args)]
         return {"items": rows, "total": len(rows)}
+
+    # ---- Global Task 统一任务视图（P3-M5）--------------------------------
+    def _global_task_call(self, fn, *args, **kwargs) -> None:
+        """Global Task 统一出口：GlobalTaskError 映射成同形错误体。"""
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            result = fn(conn, *args, **kwargs)
+        except global_task_service.GlobalTaskError as exc:
+            self._fail(exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "global_task_error", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        self._json(200, {"ok": True, "data": result})
+
+    def _handle_global_task_get(self, rest: list[str], query: dict) -> bool:
+        """GET /api/agent-platform/global-tasks[/{id}] 与 /global-overview。"""
+        def q1(key):
+            return (query.get(key) or [None])[0]
+
+        if rest == ["global-overview"]:
+            self._global_task_call(global_task_service.global_overview)
+            return True
+        if not rest or rest[0] != "global-tasks":
+            return False
+        tail = rest[1:]
+        if not tail:
+            self._global_task_call(
+                global_task_service.list_global_tasks,
+                status=q1("status"),
+                priority=q1("priority"),
+                project_id=q1("project"),
+                q=q1("q"),
+            )
+            return True
+        if len(tail) == 1:
+            self._global_task_call(global_task_service.get_global_task, tail[0])
+            return True
+        if len(tail) == 2 and tail[1] == "rollup":
+            self._global_task_call(global_task_service.rollup_status, tail[0])
+            return True
+        return False
+
+    def _create_global_task(self) -> None:
+        body = self._body()
+        self._global_task_call(
+            global_task_service.create_global_task,
+            global_key=str(body.get("global_key") or ""),
+            title=str(body.get("title") or ""),
+            description=body.get("description"),
+            priority=str(body.get("priority") or "P2"),
+            owner_principal_id=body.get("owner_principal_id"),
+            created_by=self._actor_id(required=False) or "local",
+        )
+
+    def _link_global_task(self, global_task_id: str) -> None:
+        """挂接项目任务。**先过目标项目的写权限**，再做归属校验。
+
+        顺序不能反：先授权再干活，否则无权者也能靠错误码探测别的项目里有什么。
+        """
+        body = self._body()
+        project_id = str(body.get("project_id") or "").strip()
+        if not project_id:
+            self._fail(422, "invalid_payload", "project_id 必填")
+            return
+        if not self._gate_project(project_id, "update"):
+            return
+        self._global_task_call(
+            global_task_service.link_task,
+            global_task_id,
+            project_id,
+            str(body.get("task_id") or ""),
+            str(body.get("link_role") or "implements"),
+            linked_by=self._actor_id(required=False) or "local",
+        )
+
+    def _delete_global_task_link(self, global_task_id: str, link_id: str) -> None:
+        """解挂。link 所属项目必须过写权限——不能凭一个 link_id 动别的项目。"""
+        conn = platform_store.connect()
+        try:
+            platform_store.init_db(conn)
+            project_id = global_task_service.link_project(
+                conn, link_id, global_task_id=global_task_id)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(500, "global_task_error", str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        if project_id is not None and not self._gate_project(project_id, "update"):
+            return
+        self._global_task_call(
+            global_task_service.unlink_task, link_id,
+            global_task_id=global_task_id,
+            unlinked_by=self._actor_id(required=False) or "local",
+        )
 
     def _registry_call(self, fn, *args, **kwargs) -> None:
         """Registry 统一出口：把 RegistryError 映射成同形错误体。"""
@@ -2649,6 +2816,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_static(self, code: int, body: bytes, content_type: str, *,
+                     extra_headers: dict[str, str] | None = None) -> None:
+        """静态外壳资源：允许浏览器短缓存，但必须每次回源校验。
+
+        PWA 资源**不能**沿用 `_send` 的 `no-store`：SW 的 `install` 预缓存
+        走 `cache.add()`，拿到 `no-store` 的响应仍然能写进 Cache Storage，
+        但每次 activate 后的常规请求会失去条件请求能力，白白多传几十 KB。
+        用 `no-cache`（可缓存、必须校验）兼顾新鲜度与省流量。
+        注意：这是 HTTP 缓存头，和 SW 自己的 Cache Storage 语义无关，
+        `/api/*` 依然完全不缓存。
+        """
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def _json(self, code: int, payload: dict[str, Any]) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
@@ -2866,6 +3053,16 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self._body()
                 self._platform(platform_service.create_template, payload)
                 return
+            if path == "/api/agent-platform/global-tasks":
+                self._create_global_task()
+                return
+            if path.startswith("/api/agent-platform/global-tasks/"):
+                segments = self._segments(path)
+                # POST /api/agent-platform/global-tasks/{id}/links
+                if (len(segments) == 5 and segments[:3] == [
+                        "api", "agent-platform", "global-tasks"] and segments[4] == "links"):
+                    self._link_global_task(segments[3])
+                    return
             segments = self._segments(path)
             if (len(segments) == 4 and segments[:2] == ["api", "team-templates"]
                     and segments[3] == "clone"):
@@ -2921,6 +3118,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if rest == ["tasks"]:
             self._platform(platform_service.create_task, project_id, self._body())
+            return
+        # Full Auto 执行一轮。默认 dry_run，真跑需显式 false + 全局开关。
+        if rest == ["full-auto", "run"]:
+            body = self._body()
+            self._platform(
+                _full_auto_run, project_id,
+                dry_run=bool(body.get("dry_run", True)),
+            )
+            return
+        # 熔断恢复（P3-M9 前置）。必须显式调用——自动恢复等于没有熔断。
+        if rest == ["circuit", "reset"]:
+            body = self._body()
+            self._platform(
+                _circuit_reset, project_id,
+                released_by=self._principal_id(),
+                note=str(body.get("note") or ""),
+            )
             return
         # 预算设置（P3-M7）
         if rest == ["budgets"]:
@@ -3093,6 +3307,11 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 4 and segments[:2] == ["api", "projects"] and segments[3] == "favorite":
             self._platform(platform_service.set_favorite, segments[2], False)
             return
+        # DELETE /api/agent-platform/global-tasks/{id}/links/{link_id}
+        if (len(segments) == 6 and segments[:3] == ["api", "agent-platform", "global-tasks"]
+                and segments[4] == "links"):
+            self._delete_global_task_link(segments[3], segments[5])
+            return
         if len(segments) == 4 and segments[:2] == ["api", "workspace"] and segments[2] == "views":
             view_id = segments[3]
             principal_id = self._principal_id()
@@ -3180,6 +3399,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._platform(resource_service.get_resource, rid)
             else:
                 self._not_found_route()
+        elif path == "/api/agent-platform/full-auto":
+            self._full_auto_status(query)
+            return
         elif path == "/api/agent-platform/budgets":
             self._budgets_summary()
             return
@@ -3301,6 +3523,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if rest == ["dispatch", "executor"]:
                 self._json(200, _executor_status())
+                return
+            # Full Auto（M9）：预检与试算。真跑必须显式 POST + 全局开关。
+            if rest == ["full-auto", "preflight"]:
+                self._platform(_full_auto_preflight, project_id)
+                return
+            if rest == ["full-auto", "plan"]:
+                self._platform(_full_auto_plan, project_id)
+                return
+            # 熔断状态（P3-M9 前置）
+            if rest == ["circuit"]:
+                self._platform(_circuit_status, project_id)
                 return
             # 预算与效能（P3-M7）
             if rest == ["budgets"]:
@@ -3480,6 +3713,35 @@ class Handler(BaseHTTPRequestHandler):
             platform_service.record_file_open(project["id"], str(raw or ""))
         elif path in ("/", "/index.html"):
             self._send(200, load_page(), "text/html; charset=utf-8")
+        # --- Global Task 统一任务视图（P3-M5）---------------------------
+        elif path in ("/api/agent-platform/global-tasks",
+                      "/api/agent-platform/global-overview") \
+                or path.startswith("/api/agent-platform/global-tasks/"):
+            segments = self._segments(path)
+            if not self._handle_global_task_get(segments[2:] if len(segments) > 2 else [],
+                                                query):
+                self._not_found_route()
+        # --- PWA 外壳（P3-M6 / ADR-P3-005）-------------------------------
+        # 全部是静态资源，不含业务数据；由 agent_platform.pwa 生成，
+        # 图标是现场生成的真实 PNG，不存在「引用了不存在的文件」。
+        elif path == pwa_service.MANIFEST_PATH:
+            self._send_static(200, pwa_service.manifest(),
+                              "application/manifest+json; charset=utf-8")
+        elif path == pwa_service.SW_PATH:
+            # scope 默认等于脚本所在目录（/），无需额外 Service-Worker-Allowed。
+            self._send_static(200, pwa_service.service_worker(),
+                              "application/javascript; charset=utf-8",
+                              extra_headers={"Service-Worker-Allowed": "/"})
+        elif path == pwa_service.OFFLINE_PATH:
+            self._send_static(200, pwa_service.offline_page(),
+                              "text/html; charset=utf-8")
+        elif path.startswith("/icons/"):
+            icon = pwa_service.icon_for(path)
+            if icon is None:
+                self._not_found_route()
+                return
+            body, content_type = icon
+            self._send_static(200, body, content_type)
         else:
             self._not_found_route()
 

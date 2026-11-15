@@ -20,7 +20,7 @@ import os
 import sqlite3
 from typing import Any
 
-from . import scheduler, store
+from . import scheduler
 
 #: 环境开关。默认 off——这是整个平台最危险的开关，必须显式开。
 ENV_SWITCH = "AGWS_PLATFORM_FULL_AUTO"

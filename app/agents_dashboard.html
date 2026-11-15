@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0F172A" id="pwa-theme-color">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Agent Workspace</title>
 <style>
 :root {
@@ -1234,6 +1240,18 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
   .nsel-btn { min-height: 36px; }
 }
 
+
+/* Full Auto 前置检查列表（M9） */
+.fa-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.fa-checks li { display: grid; grid-template-columns: 16px auto 1fr; gap: 8px;
+  align-items: baseline; font-size: 12px; padding: 5px 8px; border-radius: 7px;
+  background: var(--panel-2); }
+.fa-checks li.ok .fa-mark { color: var(--run); }
+.fa-checks li.bad { background: var(--err-weak); }
+.fa-checks li.bad .fa-mark { color: var(--err); }
+.fa-mark { font-weight: 700; }
+.fa-label { color: var(--text); }
+.fa-detail { color: var(--muted); font-size: 11px; }
 
 /* 预算表单（P3-M7） */
 .budget-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
@@ -2732,10 +2750,12 @@ function p4Badge(status) {
 async function renderCostPage(el) {
   el.innerHTML = skeletonBox(180);
   const pid = encodeURIComponent(APP.currentProject.id);
-  const [status, eff, budgets] = await Promise.all([
+  const [status, eff, budgets, circuitData, faData] = await Promise.all([
     fetchJSON(`/api/projects/${pid}/budget-status`).catch(() => null),
     fetchJSON(`/api/projects/${pid}/efficiency?days=30`).catch(() => null),
     fetchJSON(`/api/projects/${pid}/budgets`).catch(() => null),
+    fetchJSON(`/api/projects/${pid}/circuit`).catch(() => null),
+    fetchJSON(`/api/projects/${pid}/full-auto/preflight`).catch(() => null),
   ]);
   const st = status || {};
   const e = eff || {};
@@ -2760,6 +2780,33 @@ async function renderCostPage(el) {
     if (typeof v === "number") return esc(v.toFixed(2) + suffix);
     return esc(String(v) + suffix);
   };
+
+  // 熔断：说清楚「现在能不能派发」
+  const circ = circuitData || {};
+  const circuitBox = circ.tripped
+    ? `<div class="banner warn"><b>已熔断</b>
+        <span class="grow">${esc(circ.record?.reason || "连续失败自动暂停")}</span>
+        <button class="btn small" id="circuit-reset">恢复派发</button></div>`
+    : `<div class="note">正常 · 连续失败 <b>${circ.failures ?? 0}</b> / ${circ.threshold ?? 3} 次</div>
+       <div class="note" style="margin-top:6px">连续失败到 ${circ.threshold ?? 3} 次会自动暂停派发</div>`;
+
+  // Full Auto：五道前置逐条显示，缺哪条一目了然
+  const fa = faData || {};
+  const checks = fa.checks || [];
+  const fullAutoBox = `
+    <div class="note" style="margin-bottom:8px">
+      状态：${fa.env_enabled ? '<span class="chip ok">已开启</span>' : '<span class="chip">已关闭（默认）</span>'}
+      · 每轮最多 ${fa.max_per_round ?? 1} 项 · 放行风险 ${esc(fa.max_auto_risk || "R2")}
+    </div>
+    <ul class="fa-checks">${checks.map(c => `
+      <li class="${c.ok ? "ok" : "bad"}">
+        <span class="fa-mark">${c.ok ? "✓" : "✗"}</span>
+        <span class="fa-label">${esc(c.label)}</span>
+        ${c.detail ? `<span class="fa-detail">${esc(c.detail)}</span>` : ""}
+      </li>`).join("")}</ul>
+    <div class="note" style="margin-top:8px">
+      ${fa.ready ? "五道前置就绪，可显式开启" : "前置未就绪时 Full Auto 会拒绝启动（fail-closed）"}
+    </div>`;
 
   const budgetRows = list.length ? list.map(b => `
     <tr>
@@ -2811,6 +2858,23 @@ async function renderCostPage(el) {
       </div>
     </section>
 
+    <section class="ov-grid">
+      <div class="panel">
+        <div class="panel-head"><h2>熔断</h2>
+          <span class="desc">连续失败自动暂停派发，需人工恢复</span></div>
+        <div class="panel-body">
+          <div id="circuit-box">${circuitBox}</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Full Auto</h2>
+          <span class="desc">无人值守自动派发 · 默认关闭</span></div>
+        <div class="panel-body">
+          <div id="fa-box">${fullAutoBox}</div>
+        </div>
+      </div>
+    </section>
+
     <section>
       <div class="panel">
         <div class="panel-head"><h2>新增预算</h2>
@@ -2832,6 +2896,20 @@ async function renderCostPage(el) {
         </div>
       </div>
     </section>`;
+
+  const crBtn = $("#circuit-reset");
+  if (crBtn) {
+    crBtn.onclick = async () => {
+      crBtn.disabled = true;
+      try {
+        await fetchJSON(`/api/projects/${pid}/circuit/reset`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: "手动恢复" }),
+        });
+        renderCostPage(el);
+      } catch (err) { crBtn.disabled = false; crBtn.textContent = `失败：${err.message}`; }
+    };
+  }
 
   const btn = $("#bd-save");
   if (btn) {
@@ -7820,6 +7898,33 @@ function enhanceSelects(root = document) {
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
+})();
+
+/* ---------- PWA（P3-M6）----------
+ * Service Worker 只在安全上下文注册（https 或 localhost/127.0.0.1）。
+ * 用局域网 IP 打开时 navigator.serviceWorker 直接不存在，或 register 抛错——
+ * 这是浏览器安全模型，不是故障。因此这里全程静默：任何异常都不冒泡，
+ * 页面功能与普通浏览器访问完全一致，只是少了离线能力。
+ */
+(function initPWA() {
+  // theme-color 跟随实际主题，避免安装后状态栏色与页面打架。
+  try {
+    const meta = document.getElementById("pwa-theme-color");
+    const sync = () => {
+      const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+      if (meta && bg) meta.setAttribute("content", bg);
+    };
+    sync();
+    new MutationObserver(sync).observe(document.documentElement,
+      { attributes: true, attributeFilter: ["data-theme"] });
+  } catch { /* 无关紧要的装饰，失败忽略 */ }
+
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // 注册失败（非安全上下文 / 浏览器策略 / 资源不可达）不影响使用
+    });
+  });
 })();
 
 (async function boot() {
