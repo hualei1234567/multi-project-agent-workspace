@@ -123,17 +123,25 @@ v26 只加表加列，回滚无数据副作用。
 
 ### ADR-P3-005 · PWA 静态资源与 Service Worker scope
 
-**状态**：**待实施**（P3-M6）
+**状态**：**已实施**（2026-11-15，P3-M6）
 
 **决策**：
-- `manifest.json` + `sw.js` 由 `agents_dashboard.py` 静态路由提供（当前 404）
+- `/manifest.webmanifest` + `/sw.js` + `/offline.html` 由 `agents_dashboard.py` 的
+  `do_GET` 分支提供，资源在 `app/agent_platform/pwa.py` 里生成（纯 stdlib，无构建步骤）
+- 图标不引用外部文件：`/icons/icon-{192,512}.png` 与 `maskable-512` 由
+  `pwa.py` 现场用 zlib+struct 生成真实 PNG，`theme_color` 直接读页面深色主题的 `--bg`
 - SW scope = `/`，缓存策略：静态资源 Cache-First，API 一律 Network-Only（不缓存业务数据）
-- 离线降级页 `offline.html`
+- 离线降级页 `offline.html`：只回答「没网」；服务端 404/500 原样返回，不冒充离线
+- PWA 外壳路径进 `auth.PUBLIC_PREFIXES/PUBLIC_PATHS` 白名单：SW 的 `install`
+  预缓存不带 `Authorization` 头，否则远端 HTTPS 下预缓存整批 401
 
 **理由**：API 缓存会导致「离线看到陈旧数据」，比白屏更危险。
 V4.0 要求「离线或未送达命令不得显示成功」——Network-Only 是最直接的保证。
 
 **回滚**：删 SW 注册即可，无数据副作用。
+
+**已知限制**：远端开启 `AGWS_PLATFORM_AUTH=on` 时令牌存在 localStorage，
+SW 读不到，`/` 的外壳预缓存会 401；离线时仍能显示 offline.html。
 
 ---
 
