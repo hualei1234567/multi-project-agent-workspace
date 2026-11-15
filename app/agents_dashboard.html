@@ -1235,6 +1235,14 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 }
 
 
+/* 预算表单（P3-M7） */
+.budget-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.budget-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); }
+.budget-form input, .budget-form select { padding: 6px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  font: inherit; font-size: 12.5px; min-width: 120px; }
+.budget-form input:focus, .budget-form select:focus { outline: none; border-color: var(--primary); }
+
 /* 调度模式选择（P3-M3） */
 .dp-mode-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .dp-mode-pick select { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line);
@@ -1524,8 +1532,8 @@ const fmtIdle = (sec) => {
 const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
-const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "registry", "docs", "settings"];
-const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", registry: "资源注册", docs: "文档配置", settings: "项目设置" };
+const TAB_KEYS = ["overview", "agents", "tasks", "dispatch", "executions", "deliveries", "p4", "registry", "cost", "docs", "settings"];
+const TAB_LABEL = { overview: "概览", agents: "Agent 看板", tasks: "任务看板", dispatch: "调度", executions: "执行记录", deliveries: "交付记录", p4: "智能层", registry: "资源注册", cost: "成本与预算", docs: "文档配置", settings: "项目设置" };
 const PLATFORM_KINDS = ["platform", "search", "work", "portfolio", "inbox", "projects", "favorites", "recent"];
 const FAV_KEY = "agws-favorites";
 const RECENT_KEY = "agws-recent";
@@ -2720,6 +2728,136 @@ function p4Badge(status) {
   return `<span class="chip" data-status="${esc(status || "")}">${esc(status || "-")}</span>`;
 }
 
+/* ---------- 成本与预算（P3-M7） ---------- */
+async function renderCostPage(el) {
+  el.innerHTML = skeletonBox(180);
+  const pid = encodeURIComponent(APP.currentProject.id);
+  const [status, eff, budgets] = await Promise.all([
+    fetchJSON(`/api/projects/${pid}/budget-status`).catch(() => null),
+    fetchJSON(`/api/projects/${pid}/efficiency?days=30`).catch(() => null),
+    fetchJSON(`/api/projects/${pid}/budgets`).catch(() => null),
+  ]);
+  const st = status || {};
+  const e = eff || {};
+  // _project_budgets 已经返回 {items, total}，_platform 再包一层 ok 字段；
+  // budgets.data.items 或 budgets.items 两种形态都兼容。
+  const list = budgets?.data?.items || budgets?.items
+    || (Array.isArray(budgets?.data) ? budgets.data : []) || [];
+  const worst = st.status || "ok";
+
+  const STATUS_MAP = {
+    ok: { cls: "ok", label: "正常" },
+    warning: { cls: "warn", label: "接近上限" },
+    exceeded: { cls: "bad", label: "已超支" },
+  };
+  const badge = (k) => {
+    const m = STATUS_MAP[k] || { cls: "", label: k || "—" };
+    return `<span class="chip ${m.cls}">${esc(m.label)}</span>`;
+  };
+  // UNKNOWN 显示成「数据不足」，不是 0——样本为 0 时算比例没有意义
+  const metric = (v, suffix = "") => {
+    if (v === "UNKNOWN" || v == null) return `<span class="muted">数据不足</span>`;
+    if (typeof v === "number") return esc(v.toFixed(2) + suffix);
+    return esc(String(v) + suffix);
+  };
+
+  const budgetRows = list.length ? list.map(b => `
+    <tr>
+      <td>${esc(b.window)}</td>
+      <td class="mono">$${Number(b.limit_usd).toFixed(2)}</td>
+      <td class="mono">$${Number(b.spent_usd || 0).toFixed(4)}</td>
+      <td>${(Number(b.usage_ratio || 0) * 100).toFixed(1)}%</td>
+      <td>${badge(b.status)}</td>
+    </tr>`).join("") : "";
+
+  el.innerHTML = `
+    <section>
+      <div class="sec-head"><h2>成本与预算</h2>
+        <span class="desc">预算超支会暂停新任务，但不会强杀正在运行的</span></div>
+      ${worst === "exceeded" ? `<div class="banner warn"><b>预算已用尽</b>
+        <span class="grow">${esc((st.blockers || []).join("；") || "新任务已被暂停")}</span></div>` : ""}
+      <div class="kpis five">
+        <div class="kpi ${worst === "exceeded" ? "err" : worst === "warning" ? "stall" : "run"}">
+          <div class="label">预算状态</div>
+          <div class="value">${esc(STATUS_MAP[worst]?.label || worst)}</div>
+          <div class="hint">${list.length} 条预算规则</div></div>
+        <div class="kpi"><div class="label">一次通过率</div>
+          <div class="value">${metric(e.first_pass_rate != null ? Number(e.first_pass_rate) * 100 : "UNKNOWN", "%")}</div>
+          <div class="hint">样本 ${e.dispatch_items_sample ?? 0} 项</div></div>
+        <div class="kpi"><div class="label">重试率</div>
+          <div class="value">${metric(e.retry_rate != null ? Number(e.retry_rate) * 100 : "UNKNOWN", "%")}</div>
+          <div class="hint">${e.dispatch_items_sample ?? 0} 项中</div></div>
+        <div class="kpi"><div class="label">人工介入率</div>
+          <div class="value">${metric(e.human_intervention_rate != null ? Number(e.human_intervention_rate) * 100 : "UNKNOWN", "%")}</div>
+          <div class="hint">审批 ${e.approvals_sample ?? 0} 次</div></div>
+        <div class="kpi"><div class="label">平均 Lead Time</div>
+          <div class="value">${e.lead_time_seconds === "UNKNOWN" || e.lead_time_seconds == null
+            ? "—" : fmtDur(e.lead_time_seconds)}</div>
+          <div class="hint">样本 ${e.lead_time_sample ?? 0} 个任务</div></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="panel-head"><h2>预算规则</h2>
+          <span class="desc">同作用域+窗口的规则会被覆盖，不叠加</span>
+          <span class="count">${list.length}</span></div>
+        <div class="panel-body flush">
+          ${list.length ? `<table>
+            <thead><tr><th>窗口</th><th>限额</th><th>已用</th><th>占比</th><th>状态</th></tr></thead>
+            <tbody>${budgetRows}</tbody></table>`
+          : emptyBox("还没有设置预算", "没有预算规则意味着不限额。要启用 Full Auto 建议先设一条")}
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="panel-head"><h2>新增预算</h2>
+          <span class="desc">限 USD 金额，warning 默认 80%</span></div>
+        <div class="panel-body">
+          <div class="budget-form">
+            <label>窗口
+              <select id="bd-window">
+                <option value="daily">每日</option>
+                <option value="monthly" selected>每月</option>
+                <option value="total">累计上限</option>
+              </select>
+            </label>
+            <label>限额（USD）<input id="bd-limit" type="number" min="0" step="0.01" placeholder="10.00"></label>
+            <label>预警比例<input id="bd-warn" type="number" min="0.1" max="1" step="0.05" value="0.8"></label>
+            <button class="btn primary" id="bd-save">保存</button>
+          </div>
+          <div class="note" id="bd-msg"></div>
+        </div>
+      </div>
+    </section>`;
+
+  const btn = $("#bd-save");
+  if (btn) {
+    btn.onclick = async () => {
+      const limit = Number($("#bd-limit")?.value || 0);
+      if (!(limit > 0)) { $("#bd-msg").textContent = "限额必须大于 0"; return; }
+      btn.disabled = true;
+      try {
+        await fetchJSON(`/api/projects/${pid}/budgets`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scope: "project", scope_id: APP.currentProject.id,
+            window: $("#bd-window").value,
+            limit_usd: limit,
+            warning_ratio: Number($("#bd-warn").value || 0.8),
+          }),
+        });
+        renderCostPage(el);
+      } catch (err) {
+        $("#bd-msg").textContent = `保存失败：${err.message}`;
+        btn.disabled = false;
+      }
+    };
+  }
+}
+
 /* ---------- 资源注册中心（P3-M2） ---------- */
 async function fetchRegistrySummary() {
   try {
@@ -3084,6 +3222,7 @@ function renderProjectContent() {
     case "deliveries": renderDeliveriesPage(el); break;
     case "p4": renderP4Page(el); break;
     case "registry": renderRegistryPage(el); break;
+    case "cost": renderCostPage(el); break;
     case "docs": renderDocsPage(el); break;
     case "settings": renderSettingsPage(el); break;
     default: renderOverviewPage(el);
