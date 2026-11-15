@@ -29,3 +29,6 @@ data/token.bak-*
 
 # 本机 npm 配置（含代理，不能入库）；示例见 .npmrc.example
 .npmrc
+
+# 本机纳管清单（含本机路径与项目名）；示例见 config/projects.example.json
+config/projects.json

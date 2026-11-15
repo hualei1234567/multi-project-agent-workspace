@@ -5,7 +5,7 @@
 # 用法：scripts/deploy-when-idle.sh [最多等待分钟数]
 set -u
 
-HOST="${DEPLOY_HOST:-<ssh-alias>}"
+HOST="${DEPLOY_HOST:?请设置 DEPLOY_HOST（目标机的 ssh 别名或主机名）}"
 TARGET="${DEPLOY_PATH:-/opt/agent-platform}"
 MAX_MIN="${1:-180}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
