@@ -1237,8 +1237,8 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 
 /* ---------- 实时会话 ---------- */
 .sess-list { display: flex; flex-direction: column; gap: 6px; }
-.sess-row { display: grid; grid-template-columns: 8px 120px 76px 84px 1fr auto auto; gap: 10px; align-items: center;
-  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+.sess-row { display: grid; grid-template-columns: 8px minmax(90px,130px) 62px 70px minmax(0,1fr) auto auto; gap: 10px; align-items: center;
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
   color: var(--fg); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
   transition: border-color .16s ease, background .16s ease, transform .12s ease; }
 .sess-row:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
@@ -1247,14 +1247,28 @@ footer { color: var(--muted); font-size: 11.5px; text-align: center; padding: 6p
 .sess-kind { color: var(--muted); font-size: 11.5px; }
 .sess-id { color: var(--muted); font-size: 11px; }
 .sess-step { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sess-meta { color: var(--muted); font-size: 11.5px; }
-.sess-state { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.sess-meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; flex: none; }
+.sess-step { min-width: 0; }
+.sess-state { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap; flex: none; justify-self: end; }
 .sess-state.running { color: var(--accent); border-color: currentColor; }
 .sess-state.stalled { color: var(--warn, #d29922); border-color: currentColor; }
 .sess-state.done { color: var(--ok, #3fb950); border-color: currentColor; }
+/* 分页：会话可能有几十条，全铺开会把页面拉得很长。 */
+.sess-pager { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.sess-pager-info { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sess-pager-btns { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.sess-pager-num { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+  min-width: 48px; text-align: center; }
+.btn-sm { padding: 3px 10px; font-size: 11.5px; }
+.btn-sm:disabled { opacity: .45; cursor: not-allowed; }
+
 @media (max-width: 900px) {
   .sess-row { grid-template-columns: 8px 1fr auto; }
   .sess-kind, .sess-id, .sess-step, .sess-meta { display: none; }
+  .sess-pager { justify-content: center; }
+  .sess-pager-btns { margin-left: 0; }
 }
 
 
@@ -3438,7 +3452,7 @@ async function loadTraceability() {
 
 /* ---------- Agent 页 ---------- */
 const AGENT_ACT = { data: null, projectId: null, at: 0, busy: false, error: null };
-const SESS = { data: null, projectId: null, at: 0, busy: false, error: null };
+const SESS = { data: null, projectId: null, at: 0, busy: false, error: null, page: 1, pageSize: 8 };
 const TEAM = { data: null, projectId: null, at: 0, busy: false, error: null, notice: null };
 
 async function loadTeam(force = false) {
@@ -3745,19 +3759,44 @@ function paintSessions() {
     box.innerHTML = emptyBox("没有可查看的会话", "该项目名下还没有 Claude 会话记录（检查 session_slugs 是否指向真实会话目录）");
     return;
   }
-  box.innerHTML = (d.items || []).map(it => `
+  const all = d.items || [];
+  const size = SESS.pageSize;
+  const pages = Math.max(1, Math.ceil(all.length / size));
+  // 数据刷新后总页数可能变少（会话结束被清理），把页码夹回合法范围
+  if (SESS.page > pages) SESS.page = pages;
+  const start = (SESS.page - 1) * size;
+  const rows = all.slice(start, start + size);
+
+  const pager = pages > 1 ? `<div class="sess-pager">
+    <span class="sess-pager-info">第 ${start + 1}–${Math.min(start + size, all.length)} 条，共 ${all.length} 条</span>
+    <div class="sess-pager-btns">
+      <button type="button" class="btn btn-sm" data-page="prev" ${SESS.page === 1 ? "disabled" : ""}>上一页</button>
+      <span class="sess-pager-num">${SESS.page} / ${pages}</span>
+      <button type="button" class="btn btn-sm" data-page="next" ${SESS.page === pages ? "disabled" : ""}>下一页</button>
+    </div>
+  </div>` : "";
+
+  box.innerHTML = rows.map(it => `
     <button type="button" class="sess-row" data-session="${esc(it.session_id)}" data-testid="session-row"
       title="点开看这个会话正在跑什么">
       ${sessionStatusDot(it.status)}
       <span class="sess-agent">${esc(it.agent_name || "未归属")}</span>
       <span class="sess-kind">${it.kind === "main" ? "主会话" : (it.kind === "window" ? "窗口" : "Subagent")}</span>
       <span class="sess-id mono">${esc(String(it.session_id).slice(0, 8))}</span>
-      <span class="sess-step">${it.last_step ? `最后一步 ${esc(it.last_step)}` : "暂无步骤"}${it.last_detail ? ` · ${esc(String(it.last_detail).slice(0, 60))}` : ""}</span>
+      <span class="sess-step" title="${esc(`${it.last_step || ""}${it.last_detail ? " · " + it.last_detail : ""}`)}">${it.last_step ? `最后一步 ${esc(it.last_step)}` : "暂无步骤"}${it.last_detail ? ` · ${esc(String(it.last_detail).slice(0, 42))}` : ""}</span>
       <span class="sess-meta">事件 ${it.events_total ?? 0} · ${esc(fmtIdle(it.idle_seconds))}${it.worktree ? ` · ${esc(it.worktree)}` : ""}</span>
       <span class="sess-state ${esc(it.status)}">${esc(it.status_text)}</span>
-    </button>`).join("");
+    </button>`).join("") + pager;
+
   $$("#sessions-list .sess-row").forEach(row => {
     row.onclick = () => openSessionTrace(row.dataset.session);
+  });
+  $$("#sessions-list [data-page]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      SESS.page = btn.dataset.page === "prev" ? SESS.page - 1 : SESS.page + 1;
+      paintSessions();
+    };
   });
 }
 
