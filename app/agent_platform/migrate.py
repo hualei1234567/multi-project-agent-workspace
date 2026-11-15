@@ -628,6 +628,11 @@ MIGRATIONS: tuple[MigrationStep, ...] = (
         backfill=_migrate_v19_to_v20,
         description="R3：P4 八大域真实链路（workflow 运行时/human gate 阻断/发布模式/评估来源）",
     ),
+    MigrationStep(
+        21,
+        columns=(("dispatch_logs", (("attempt", "INTEGER NOT NULL DEFAULT 0"),)),),
+        description="R6：调度日志按 attempt 隔离（重跑不再与旧日志混在一起）",
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version

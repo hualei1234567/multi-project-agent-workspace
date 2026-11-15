@@ -37,16 +37,28 @@ from agent_platform.p4 import (
 )
 
 DATASET = "nvidia/PhysicalAI-Human-1M-100K"
-SAMPLE = "samples/lerobot/stereo_flower_wrist"
+#: 三个完整样本，覆盖三种任务类型（整理桌面 / 花束捆扎 / 摩托车维修）。
+#: 用多个样本而非一个：单个样本只够验证链路，不足以让统计有意义。
+SAMPLES = ("stereo_flower_wrist", "stereo_desk_wrist", "stereo_repair")
 
 
 # ---------------------------------------------------------------- 读真实数据
-def load_sample(root: Path) -> dict:
+def load_sample(root: Path, sample: str = SAMPLES[0]) -> dict:
     """从真实文件读出全部内容；缺失就报错，不降级成假数据。"""
     info = json.loads((root / "meta/info.json").read_text(encoding="utf-8"))
     notes = json.loads((root / "SAMPLE_NOTES.json").read_text(encoding="utf-8"))
     tasks = pq.read_table(root / "meta/tasks.parquet").to_pylist()
-    subtasks = pq.read_table(root / "meta/subtasks.parquet").to_pylist()
+
+    def _optional(rel: str) -> list:
+        """可选元数据：文件不存在就返回空列表，**不编造内容**。
+
+        实测三个样本里只有 stereo_flower_wrist 带 subtasks.parquet，
+        另两个没有。缺就缺，不要用任务描述伪造子任务。
+        """
+        path = root / rel
+        return pq.read_table(path).to_pylist() if path.is_file() else []
+
+    subtasks = _optional("meta/subtasks.parquet")
     episodes = pq.read_table(root / "meta/episodes/chunk-000/file-000.parquet").to_pylist()
     frames = pq.read_table(root / "data/chunk-000/file-000.parquet")
     environments = pq.read_table(root / "meta/environments.parquet").to_pylist()
@@ -80,6 +92,7 @@ def load_sample(root: Path) -> dict:
                 masks[col] = round(sum(1 for v in vals if v) / len(vals), 6)
 
     return {
+        "sample": sample,
         "info": info, "notes": notes, "tasks": tasks, "subtasks": subtasks,
         "episode": ep, "n_frames": n_frames, "fps": fps, "duration_s": duration,
         "confidence": conf, "hand_presence": masks,
@@ -94,7 +107,7 @@ def build_summary(d: dict) -> str:
     lines = [
         f"# 数据集样本：{DATASET}",
         "",
-        f"路径：`{SAMPLE}`",
+        f"路径：`samples/lerobot/{d['sample']}`",
         f"episode_id：`{ep['episode_id']}`",
         f"vendor_id：`{ep['vendor_id']}`",
         "",
@@ -139,9 +152,10 @@ def _exists(conn, sql: str, params: tuple) -> str | None:
 
 def fill_knowledge(conn, project: str, d: dict, summary: str) -> dict:
     """幂等：已有同名来源就复用，不重复建。"""
+    item_title = f"Human-1M 样本：{d['sample']}（真实数据）"
     existing = _exists(conn,
-        "SELECT id FROM knowledge_items WHERE project_id=? AND title LIKE 'Human-1M 样本%'",
-        (project,))
+        "SELECT id FROM knowledge_items WHERE project_id=? AND title=?",
+        (project, item_title))
     if existing:
         item = knowledge.get_item(conn, existing)
         vid = item.get("current_version_id") or item["versions"][0]["id"]
@@ -149,7 +163,7 @@ def fill_knowledge(conn, project: str, d: dict, summary: str) -> dict:
         return {"source": src_id, "item": existing, "version": vid, "reused": True}
 
     src = knowledge.create_source(conn, project, {
-        "title": f"NVIDIA PhysicalAI-Human-1M 样本（{SAMPLE}）",
+        "title": f"NVIDIA PhysicalAI-Human-1M 样本（{d['sample']}）",
         "kind": "file",
         "uri": f"https://huggingface.co/datasets/{DATASET}",
         "classification": "Internal",
@@ -157,7 +171,7 @@ def fill_knowledge(conn, project: str, d: dict, summary: str) -> dict:
     })
     item = knowledge.create_item(conn, project, {
         "source_id": src["id"],
-        "title": "Human-1M 样本：花束捆扎任务（真实数据）",
+        "title": item_title,
         "content": summary,
         "classification": "Internal",
     })
@@ -168,65 +182,108 @@ def fill_knowledge(conn, project: str, d: dict, summary: str) -> dict:
 
 def fill_evaluation(conn, project: str, d: dict, summary: str) -> dict:
     task_text = d["tasks"][0]["task"] if d["tasks"] else ""
+    ds_name = f"样本 {d['sample']}"
     existing = _exists(conn,
-        "SELECT id FROM eval_suites WHERE project_id=? AND name='Human-1M 样本质量套件'",
-        (project,))
+        "SELECT id FROM eval_datasets WHERE project_id=? AND name=?", (project, ds_name,))
     if existing:
         run = conn.execute(
-            "SELECT id, decision FROM eval_runs WHERE project_id=? AND suite_id=?"
+            "SELECT id, decision FROM eval_runs WHERE project_id=?"
+            " AND dataset_version_id IN"
+            " (SELECT id FROM eval_dataset_versions WHERE dataset_id=?)"
             " ORDER BY created_at DESC LIMIT 1", (project, existing)).fetchone()
-        return {"suite": existing, "reused": True,
-                "run": run[0] if run else None,
-                "decision": run[1] if run else None}
-    suite = evaluation.create_suite(conn, project, {
-        "key": "human1m-sample", "name": "Human-1M 样本质量套件",
-    })
-    dataset = evaluation.create_dataset(conn, project, {
-        "suite_id": suite["id"], "key": "flower-bundle", "name": "花束捆扎样本",
-    })
-    # 用例的期望值全部来自真实任务/子任务文本
+        # 数据集已存在但没有评估运行（上次中途失败）：继续往下跑，
+        # 不要因为「数据集在」就当作全做完了。
+        if run:
+            return {"dataset": existing, "reused": True,
+                    "run": run[0], "decision": run[1]}
+
+    suite_id = _exists(conn,
+        "SELECT id FROM eval_suites WHERE project_id=? AND name='Human-1M 样本质量套件'",
+        (project,))
+    if not suite_id:
+        suite_id = evaluation.create_suite(conn, project, {
+            "key": "human1m-sample", "name": "Human-1M 样本质量套件",
+        })["id"]
+    # 用例期望值全部来自真实任务/子任务文本
     cases = [
         {"case_key": "task-text", "input": {"q": "任务描述"},
          "expected": {"want": task_text}},
         {"case_key": "subtask-count", "input": {"q": "子任务数量"},
          "expected": {"want": str(sum(1 for s in d["subtasks"]
-                                      if s["subtask"] != "No Subtask"))}},
+                                      if s.get("subtask") != "No Subtask"))}},
     ]
-    version = evaluation.freeze_version(conn, dataset["id"], {"cases": cases})
-    ev = evaluation.create_evaluator(conn, project, {
-        "name": "任务文本包含性检查",
-        "rules": {"min_score": 0.5,
-                  "checks": [{"type": "contains", "field": "want"}]},
-    })
+    if existing:
+        dataset = {"id": existing}
+        ver_row = conn.execute(
+            "SELECT id FROM eval_dataset_versions WHERE dataset_id=?"
+            " ORDER BY version DESC LIMIT 1", (existing,)).fetchone()
+        version = ({"id": ver_row[0]} if ver_row
+                   else evaluation.freeze_version(conn, existing, {"cases": cases}))
+    else:
+        dataset = evaluation.create_dataset(conn, project, {
+            "suite_id": suite_id, "key": f"sample-{d['sample']}", "name": ds_name,
+        })
+        version = evaluation.freeze_version(conn, dataset["id"], {"cases": cases})
+    # 评估器在项目内唯一，三个样本共用一个（评估口径本来就该一致）。
+    ev_row = conn.execute(
+        "SELECT e.id, (SELECT MAX(version) FROM eval_evaluator_versions v"
+        "   WHERE v.evaluator_id = e.id) AS v"
+        " FROM eval_evaluators e WHERE e.project_id=? AND e.name=?",
+        (project, "任务文本包含性检查")).fetchone()
+    if ev_row:
+        ev_version_id = conn.execute(
+            "SELECT id FROM eval_evaluator_versions WHERE evaluator_id=?"
+            " ORDER BY version DESC LIMIT 1", (ev_row["id"],)).fetchone()[0]
+    else:
+        created = evaluation.create_evaluator(conn, project, {
+            "name": "任务文本包含性检查",
+            "rules": {"min_score": 0.5,
+                      "checks": [{"type": "contains", "field": "want"}]},
+        })
+        ev_version_id = created["version_id"]
     # 候选输出用真实摘要跑一次（caller_supplied，如实标来源）
     run = evaluation.run_evaluation(conn, project, {
         "dataset_version_id": version["id"],
-        "evaluator_version_id": ev["version_id"],
+        "evaluator_version_id": ev_version_id,
         "candidate_outputs": {"task-text": summary, "subtask-count": summary},
     })
-    return {"suite": suite["id"], "dataset": dataset["id"], "version": version["id"],
-            "evaluator": ev["version_id"], "run": run["id"], "decision": run["decision"]}
+    return {"suite": suite_id, "dataset": dataset["id"], "version": version["id"],
+            "evaluator": ev_version_id, "run": run["id"], "decision": run["decision"]}
 
 
 def fill_workflow(conn, project: str, d: dict) -> dict:
-    """用真实子任务序列构造 workflow 节点。"""
-    real = [s for s in d["subtasks"] if s["subtask"] != "No Subtask"]
-    if not real:
-        raise RuntimeError("数据集没有可用的子任务，无法构造 workflow")
-    nodes = []
+    """用真实子任务序列构造 workflow；没有子任务时降级到任务描述节点。
+
+    三个样本里只有 flower_wrist 带 subtasks.parquet。缺子任务时**不编造**，
+    用该样本真实的 tasks.parquet 第一条任务描述构造单节点流程。
+    """
+    def_key = f"sample-{d['sample']}"[:60]
+    real = [x for x in d["subtasks"] if x.get("subtask") != "No Subtask"]
+
+    nodes: list[dict] = []
     prev = None
-    for s in real[:4]:
-        key = f"sub{s['subtask_index']}"
-        node = {"key": key, "type": "task", "title": s["subtask"][:60]}
-        if prev:
-            node["depends_on"] = [prev]
-        nodes.append(node)
-        prev = key
+    if real:
+        for item in real[:4]:
+            key = f"sub{item['subtask_index']}"
+            node = {"key": key, "type": "task", "title": item["subtask"][:60]}
+            if prev:
+                node["depends_on"] = [prev]
+            nodes.append(node)
+            prev = key
+    else:
+        task_text = d["tasks"][0]["task"] if d["tasks"] else ""
+        if not task_text:
+            return {"skipped": "该样本既无子任务也无任务描述"}
+        nodes.append({"key": "task", "type": "task", "title": task_text[:60]})
+        prev = "task"
+
     nodes.append({"key": "review", "type": "human_gate",
-                  "title": "人工审核：花束捆扎结果", "depends_on": [prev]})
+                  "title": f"人工审核：{d['sample']}",
+                  "depends_on": [prev] if prev else []})
+
     existing = _exists(conn,
-        "SELECT id FROM workflow_definitions WHERE project_id=? AND def_key='flower-bundle'",
-        (project,))
+        "SELECT id FROM workflow_definitions WHERE project_id=? AND def_key=?",
+        (project, def_key))
     if existing:
         ver = conn.execute(
             "SELECT id FROM workflow_versions WHERE definition_id=?"
@@ -237,8 +294,9 @@ def fill_workflow(conn, project: str, d: dict) -> dict:
         return {"definition": existing, "reused": True,
                 "version": ver[0] if ver else None,
                 "binding": bind[0] if bind else None}
+
     defn = workflow.create_definition(conn, project, {
-        "key": "flower-bundle", "name": "花束捆扎（来自真实子任务）",
+        "key": def_key, "name": f"{d['sample']}（来自真实数据）",
     })
     ver = workflow.create_version(conn, defn["id"], {"dsl": {"nodes": nodes}})
     workflow.test_version(conn, ver["id"])
@@ -281,14 +339,14 @@ def fill_outcome(conn, project: str, d: dict) -> dict:
         val = values.get(key)
         if val is None:
             continue   # 真实值缺失就不写，不补 0
-        rid = f"omr_{key}"
+        rid = f"omr_{d['sample']}_{key}"
         conn.execute(
             "INSERT OR IGNORE INTO outcome_records"
             " (id, project_id, metric_key, metric_version, value, quality,"
             "  source, note, created_at)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
             (rid, project, key, 1, float(val), "verified",
-             f"import:{DATASET}", f"来自 {SAMPLE}", store.now_iso()))
+             f"import:{DATASET}", f"来自 {d['sample']}", store.now_iso()))
         written.append(key)
     conn.commit()
     return {"definitions": ids, "records": written}
@@ -331,8 +389,8 @@ def fill_catalog(conn, project: str, d: dict, workflow_version: str) -> dict:
         "capability_type": "workflow",
         "ref_id": workflow_version,
         "ref_version": "1",
-        "name": "花束捆扎流程（真实子任务）",
-        "summary": "由 Human-1M 真实子任务序列构造",
+        "name": f"{d['sample']} 流程（真实数据）",
+        "summary": f"由 Human-1M 样本 {d['sample']} 的真实数据构造",
         "owner": "import:human1m",
     })
     return {"listing": listing["id"], "ref_resolved": listing["ref_resolved"]}
@@ -341,44 +399,63 @@ def fill_catalog(conn, project: str, d: dict, workflow_version: str) -> dict:
 # ---------------------------------------------------------------- 主流程
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/tmp/hf-human1m")
+    ap.add_argument("--root", default="/tmp/hf-human1m-extra",
+                    help="多样本目录：root/<sample>/meta/info.json")
+    ap.add_argument("--samples", default=",".join(SAMPLES))
     ap.add_argument("--project", default="material")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
     root = Path(args.root)
-    if not (root / "meta/info.json").is_file():
-        print(f"✘ 数据集目录不完整：{root}")
-        return 2
+    names = [n.strip() for n in args.samples.split(",") if n.strip()]
 
-    d = load_sample(root)
-    summary = build_summary(d)
+    resolved: list[tuple[str, Path]] = []
+    for name in names:
+        candidate = root / name
+        if (candidate / "meta" / "info.json").is_file():
+            resolved.append((name, candidate))
+        elif (root / "meta" / "info.json").is_file():
+            # root 本身就是单个样本目录
+            resolved.append((name, root))
+        else:
+            print(f"✘ 样本目录不完整：{candidate}")
+            return 2
+
     print(f"数据集：{DATASET}")
-    print(f"样本：{SAMPLE}")
-    print(f"真实统计：{d['n_frames']} 帧 / {d['fps']} fps / "
-          f"{d['duration_s']:.2f}s / {len(d['columns'])} 列")
+    print(f"样本数：{len(resolved)}")
+
+    loaded = []
+    for name, path in resolved:
+        d = load_sample(path, name)
+        d["summary"] = build_summary(d)
+        loaded.append(d)
+        print(f"  {name}: {d['n_frames']} 帧 / {d['fps']} fps / "
+              f"{d['duration_s']:.2f}s / 子任务 {len(d['subtasks'])} 条")
+
     if not args.apply:
-        print("\n[dry-run] 将写入以下内容：")
-        print(summary[:600] + "\n...(略)")
+        print("\n[dry-run] 首个样本摘要预览：")
+        print(loaded[0]["summary"][:500] + "\n...(略)")
         print("\n加 --apply 才会写库。")
         return 0
 
     conn = store.connect()
     try:
         store.init_db(conn)
-        k = fill_knowledge(conn, args.project, d, summary)
-        e = fill_evaluation(conn, args.project, d, summary)
-        w = fill_workflow(conn, args.project, d)
-        o = fill_outcome(conn, args.project, d)
-        a = fill_autonomy(conn, args.project, d)
-        i = fill_improvement(conn, args.project, d, e["run"])
-        c = fill_catalog(conn, args.project, d, w["version"])
         print("\n=== 写入结果 ===")
-        for name, val in (("M2 Knowledge", k), ("M1 Evaluation", e),
-                          ("M3 Workflow", w), ("M6 Outcome", o),
-                          ("M7 Autonomy", a), ("M5 Improvement", i),
-                          ("M8 Catalog", c)):
-            print(f"  {name}: {json.dumps(val, ensure_ascii=False, default=str)}")
+        for d in loaded:
+            k = fill_knowledge(conn, args.project, d, d["summary"])
+            e = fill_evaluation(conn, args.project, d, d["summary"])
+            w = fill_workflow(conn, args.project, d)
+            o = fill_outcome(conn, args.project, d)
+            a = fill_autonomy(conn, args.project, d)
+            i = fill_improvement(conn, args.project, d, e.get("run"))
+            c = fill_catalog(conn, args.project, d, w.get("version"))
+            print(f"\n--- {d['sample']} ---")
+            for label, val in (("M2 Knowledge", k), ("M1 Evaluation", e),
+                               ("M3 Workflow", w), ("M6 Outcome", o),
+                               ("M7 Autonomy", a), ("M5 Improvement", i),
+                               ("M8 Catalog", c)):
+                print(f"  {label}: {json.dumps(val, ensure_ascii=False, default=str)}")
     finally:
         conn.close()
     return 0

@@ -497,3 +497,39 @@ def test_cost_quality_stays_paired_with_amount_on_retry(env, tmp_path, monkeypat
         assert row["cost_quality"] == "actual", "金额与质量脱节"
     finally:
         conn.close()
+
+
+def test_dispatch_logs_are_isolated_by_attempt(env, tmp_path, monkeypatch):
+    """R6 实测缺陷：重跑时日志按 attempt 隔离。
+
+    旧实现 seq 从头开始但 item_id 相同，两段日志混在一起，
+    排查时分不清哪段是第几次执行留下的。
+    """
+    item = _item(env, key="EX-LOG-ATTEMPT")
+    _enable_project(env)
+    first = _fake_claude(tmp_path, '{"type":"result","subtype":"success"}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(first))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        conn.execute("UPDATE dispatch_items SET status='queued', lease_owner=NULL,"
+                     " lease_expires_at=NULL WHERE id = ?", (item["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    second = _fake_claude(tmp_path, '{"type":"result","subtype":"success",'
+                                    '"note":"second-run"}')
+    monkeypatch.setattr(policy, "ALLOWED_BINARY", str(second))
+    executor.run_item(item["id"])
+
+    conn = _conn(env)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT attempt FROM dispatch_logs WHERE item_id = ?"
+            " ORDER BY attempt", (item["id"],)).fetchall()
+        attempts = [r["attempt"] for r in rows]
+        assert len(attempts) >= 2, f"日志没有按 attempt 隔离：{attempts}"
+    finally:
+        conn.close()

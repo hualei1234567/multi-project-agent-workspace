@@ -313,10 +313,14 @@ CREATE TABLE IF NOT EXISTS dispatch_logs (
   stream     TEXT NOT NULL DEFAULT 'stdout',  -- stdout/stderr/system
   seq        INTEGER NOT NULL DEFAULT 0,
   content    TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- R6：日志按 attempt 隔离。同一调度项重跑时，旧实现两段日志共用一个
+  -- item_id，排查时无法区分是第几次执行留下的（seq 也会从头重来）。
+  attempt    INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_dispatch_logs_item ON dispatch_logs(item_id, seq);
+CREATE INDEX IF NOT EXISTS idx_dispatch_logs_item
+  ON dispatch_logs(item_id, attempt, seq);
 
 -- 调度事件：状态机流转留痕
 CREATE TABLE IF NOT EXISTS dispatch_events (

@@ -36,6 +36,20 @@ ITEMS = [
 ]
 
 
+def _live_entry():
+    """起一个临时的真实 HTTP 服务，作为可探测的流量入口。
+
+    R6 起 publish(LIVE) 会实际探测入口可达性，用假的 ingress:// 字符串
+    过不了——这正是要防的「声称有流量但根本没接」。
+    """
+    import http.server
+    import threading
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_address[1]}/"
+
+
 def _release(conn, items=None):
     return release.create_release(conn, "p1", {
         "release_key": "rel-1", "name": "首个发布", "items": items or ITEMS,
@@ -148,7 +162,7 @@ def test_canary_stops_on_threshold_breach(conn):
     # R3 / M4：Canary 只对「有真实流量入口」的发布开放。
     # 本用例测的是停止阈值逻辑，所以声明 LIVE 并给出入口证据。
     release.publish(conn, created["id"], release_mode="LIVE",
-                    traffic_entry="ingress://canary-test")
+                    traffic_entry=_live_entry())
 
     canary = release.start_canary(
         conn, created["id"], traffic_pct=10, stop_threshold={"error_rate": 0.05}
@@ -169,7 +183,7 @@ def test_rollback_keeps_history(conn):
     approval = release.request_approval(conn, created["id"], requested_by="alice")
     release.approve(conn, approval["approval_id"], approved_by="bob")
     release.publish(conn, created["id"], release_mode="LIVE",
-                    traffic_entry="ingress://canary-test")
+                    traffic_entry=_live_entry())
     canary = release.start_canary(conn, created["id"], traffic_pct=5)
 
     result = release.rollback(conn, created["id"], reason="线上指标劣化",
@@ -181,3 +195,37 @@ def test_rollback_keeps_history(conn):
     assert after["status"] == "deprecated"
     assert after["manifest_digest"] == created["manifest_digest"]  # 历史未被改写
     assert release.get_canary(conn, canary["id"])["status"] == "rolled_back"
+
+
+def test_live_requires_reachable_traffic_entry(conn):
+    """R6：声明 LIVE 时入口必须实际可达。
+
+    只给一个字符串不算证据——旧实现只要能拼出 traffic_entry 就放行，
+    等于允许「声称有流量但根本没接」。现在必须真连得上。
+    """
+    created = _release(conn)
+    release.validate_release(conn, created["id"])
+    run = _passing_eval_run(conn)
+    release.attach_evaluation(conn, created["id"], run["id"])
+    approval = release.request_approval(conn, created["id"], requested_by="alice")
+    release.approve(conn, approval["approval_id"], approved_by="bob")
+
+    with pytest.raises(release.ReleaseError) as exc:
+        release.publish(conn, created["id"], release_mode="LIVE",
+                        traffic_entry="http://127.0.0.1:1/")  # 必然不可达
+    assert exc.value.code == "traffic_entry_unreachable"
+
+
+def test_simulated_release_records_no_probe(conn):
+    """SIMULATED 不做入口探测，且明确标注无真实流量。"""
+    created = _release(conn)
+    release.validate_release(conn, created["id"])
+    run = _passing_eval_run(conn)
+    release.attach_evaluation(conn, created["id"], run["id"])
+    approval = release.request_approval(conn, created["id"], requested_by="alice")
+    release.approve(conn, approval["approval_id"], approved_by="bob")
+
+    out = release.publish(conn, created["id"])
+    assert out["release_mode"] == "SIMULATED"
+    assert out["has_live_traffic"] is False
+    assert out["traffic_probe"] is None

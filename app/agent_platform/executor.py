@@ -183,6 +183,9 @@ def run_item(item_id: str, *, owner: str = "local", dry_run: bool = False) -> di
 
 def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dict[str, Any]:
     item_id = item["id"]
+    # 本次是第几次尝试：日志按它隔离，重跑不会和上一轮混在一起。
+    _row = dict(item)
+    attempt = int(_row.get("attempt") or 0) + 1
     started = store.now_iso()
     with store.write_tx(conn):
         conn.execute(
@@ -237,7 +240,7 @@ def _spawn(conn, item, spec: policy.ExecutionSpec, argv: list[str], task) -> dic
                     continue
                 total += len(chunk)
                 seq += 1
-                _append_log(log_conn, item_id, name, seq, chunk)
+                _append_log(log_conn, item_id, name, seq, chunk, attempt)
                 tail.append(chunk.rstrip())
                 del tail[:-20]
                 if name == "stdout" and '"total_cost_usd"' in chunk:
@@ -325,13 +328,20 @@ def _kill_group(proc: subprocess.Popen) -> None:
                 pass
 
 
-def _append_log(conn, item_id: str, stream: str, seq: int, content: str) -> None:
+def _append_log(conn, item_id: str, stream: str, seq: int, content: str,
+                attempt: int = 0) -> None:
+    """写一条调度日志。
+
+    ``attempt`` 必须带上：同一调度项重跑时 seq 会从头开始，不带 attempt
+    的话两段日志混在一起，排查时分不清是哪次执行留下的（R6 修复）。
+    """
     try:
         with store.write_tx(conn):
             conn.execute(
-                "INSERT INTO dispatch_logs (id, item_id, stream, seq, content, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (uuid.uuid4().hex, item_id, stream, seq, content, store.now_iso()),
+                "INSERT INTO dispatch_logs (id, item_id, stream, seq, content,"
+                " created_at, attempt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, item_id, stream, seq, content,
+                 store.now_iso(), attempt),
             )
     except Exception:  # noqa: BLE001,S110 - 日志写失败不能影响执行
         pass

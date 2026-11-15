@@ -235,6 +235,48 @@ def approve(conn: sqlite3.Connection, approval_id: str, *,
 RELEASE_MODES = ("SIMULATED", "LIVE")
 
 
+def probe_traffic_entry(entry: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    """实际探测流量入口是否可达（R6 / M4）。
+
+    这是「真实 Canary」与「仿真演练」的分界线：只有在**能实际连上**
+    的入口上分流，才谈得上真实流量。探测用无代理 opener，避免环境变量
+    把本地探测送去代理（CI 上有 http_proxy，会误判为不可达）。
+
+    支持的 entry 形式：
+      * ``http(s)://host:port/path`` —— HTTP 探测
+      * ``tcp://host:port`` / ``host:port`` —— TCP 连接检查
+    """
+    import socket
+    import urllib.error
+    import urllib.request
+
+    text = (entry or "").strip()
+    if not text:
+        return {"reachable": False, "reason": "入口为空"}
+
+    try:
+        if text.startswith(("http://", "https://")):
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                with opener.open(text, timeout=timeout) as resp:
+                    return {"reachable": True, "detail": f"HTTP {resp.status}"}
+            except urllib.error.HTTPError as exc:
+                # 4xx/5xx 说明服务在，只是这个路径不可用；仍算可达。
+                return {"reachable": True, "detail": f"HTTP {exc.code}"}
+        else:
+            hostport = text.removeprefix("tcp://")
+            host, _, port_s = hostport.partition(":")
+            if not port_s.isdigit():
+                return {"reachable": False, "reason": f"无法解析端口：{text}"}
+            with socket.create_connection((host, int(port_s)), timeout=timeout):
+                return {"reachable": True, "detail": f"TCP {host}:{port_s} 可连接"}
+    except OSError as exc:
+        return {"reachable": False, "reason": f"不可达：{exc}"}
+    except Exception as exc:  # noqa: BLE001 - 探测失败一律视为不可达
+        return {"reachable": False, "reason": f"探测异常：{exc}"}
+
+
+
 @audited("agent.release.publish", "agent_release", id_arg="release_id")
 def publish(conn: sqlite3.Connection, release_id: str, *,
             release_mode: str = "SIMULATED",
@@ -254,11 +296,21 @@ def publish(conn: sqlite3.Connection, release_id: str, *,
         raise ReleaseError("invalid_payload", 422,
                            f"release_mode 必须是 {RELEASE_MODES}")
     entry = (traffic_entry or "").strip() or None
-    if release_mode == "LIVE" and not entry:
-        raise ReleaseError(
-            "invalid_payload", 422,
-            "声明 LIVE 必须提供 traffic_entry：没有流量入口证据就不能说是真实发布",
-        )
+    probe: dict[str, Any] | None = None
+    if release_mode == "LIVE":
+        if not entry:
+            raise ReleaseError(
+                "invalid_payload", 422,
+                "声明 LIVE 必须提供 traffic_entry：没有流量入口证据就不能说是真实发布",
+            )
+        # 光给个字符串不算证据：必须实际连得上。连不上就只能标 SIMULATED。
+        probe = probe_traffic_entry(entry)
+        if not probe["reachable"]:
+            raise ReleaseError(
+                "traffic_entry_unreachable", 409,
+                f"流量入口不可达（{probe['reason']}）；无法在此入口分流，"
+                "请改标 SIMULATED 或先修复入口",
+            )
     if release_mode == "SIMULATED" and entry:
         # 有入口却标仿真：说明调用方自己也没搞清楚，拒绝而不是替它猜。
         raise ReleaseError(
@@ -276,7 +328,8 @@ def publish(conn: sqlite3.Connection, release_id: str, *,
                     payload={"release_mode": release_mode, "traffic_entry": entry})
     return {"release_id": release_id, "status": "published",
             "release_mode": release_mode, "traffic_entry": entry,
-            "has_live_traffic": release_mode == "LIVE"}
+            "has_live_traffic": release_mode == "LIVE",
+            "traffic_probe": probe}
 
 
 # --------------------------------------------------------------------------
