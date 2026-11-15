@@ -59,7 +59,8 @@ def load_sample(root: Path) -> dict:
 
     # 手部追踪置信度：真实统计，字段不存在就留空
     conf: dict[str, dict] = {}
-    for col in ("left_hand_confidence", "right_hand_confidence"):
+    # 真实列名（见 parquet 实际 schema，不是文档里的推测名）
+    for col in ("left_hand_pose_confidence", "right_hand_pose_confidence"):
         if col not in frames.column_names:
             continue
         vals = [v for v in frames.column(col).to_pylist() if v is not None]
@@ -72,7 +73,7 @@ def load_sample(root: Path) -> dict:
             }
     # 手部存在掩码：真实比例
     masks: dict[str, float] = {}
-    for col in ("left_hand_mask", "right_hand_mask"):
+    for col in ("hand_mask",):
         if col in frames.column_names:
             vals = [v for v in frames.column(col).to_pylist() if v is not None]
             if vals:
@@ -273,7 +274,7 @@ def fill_outcome(conn, project: str, d: dict) -> dict:
 
     values = {"frames_total": d["n_frames"],
               "duration_seconds": d["duration_s"],
-              "hand_visibility": (d["hand_presence"].get("left_hand_mask")
+              "hand_visibility": (d["hand_presence"].get("hand_mask")
                                   if d["hand_presence"] else None)}
     written = []
     for key, *_rest in defs:
